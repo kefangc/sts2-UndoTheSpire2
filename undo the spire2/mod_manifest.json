@@ -1,7 +1,7 @@
 {
   "pck_name": "UndoTheSpire2",
   "name": "Undo the Spire 2",
-  "author": "21253",
-  "description": "Combat-only undo and redo for Slay the Spire 2.",
+  "author": "kefeng",
+  "description": "为《杀戮尖塔2》设计的撤销/重做mod，仅战斗中可用。Combat-only undo and redo for Slay the Spire 2.",
   "version": "v0.1.0"
 }

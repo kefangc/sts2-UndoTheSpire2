@@ -8,6 +8,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
     <RestoreIgnoreFailedSources>true</RestoreIgnoreFailedSources>
+    <ExportPckOnBuild Condition="'$(ExportPckOnBuild)' == ''">true</ExportPckOnBuild>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -84,6 +85,11 @@
     <Message Text="Copying .dll to mods folder." Importance="high" />
     <MakeDir Directories="$(Sts2Path)/mods" Condition="'$(Sts2Path)' != ''" />
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(Sts2Path)/mods/" Condition="'$(Sts2Path)' != ''" />
+  </Target>
+
+  <Target Name="GodotBuildExport" AfterTargets="CopyToModsFolderOnBuild" Condition="'$(ExportPckOnBuild)' == 'true' and '$(GodotPath)' != '' and Exists('$(GodotPath)')">
+    <Message Text="Exporting Godot .pck to mods folder on build" Importance="high" />
+    <Exec Command="&quot;$(GodotPath)&quot; --headless --path &quot;$(MSBuildProjectDirectory)&quot; --export-pack &quot;Windows Desktop&quot; &quot;$(Sts2Path)/mods/$(AssemblyName).pck&quot;" ContinueOnError="WarnAndContinue" />
   </Target>
 
   <Target Name="GodotPublish" AfterTargets="Publish" Condition="'$(GodotPath)' != '' and Exists('$(GodotPath)')">

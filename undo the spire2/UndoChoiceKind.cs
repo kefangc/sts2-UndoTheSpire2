@@ -1,8 +1,9 @@
-namespace UndoTheSpire2;
+﻿namespace UndoTheSpire2;
 
 internal enum UndoChoiceKind
 {
     None = 0,
     ChooseACard = 1,
-    HandSelection = 2
+    HandSelection = 2,
+    SimpleGridSelection = 3
 }
