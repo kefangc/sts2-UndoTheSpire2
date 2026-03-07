@@ -1,0 +1,9 @@
+﻿<Project>
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <UndoTheSpire2BuildRoot Condition="'$(UndoTheSpire2BuildRoot)' == ''">F:\projects\undo-the-spire2-cache\</UndoTheSpire2BuildRoot>
+    <BaseOutputPath>$(UndoTheSpire2BuildRoot)bin\</BaseOutputPath>
+    <OutputPath>$(UndoTheSpire2BuildRoot)bin\$(Configuration)\</OutputPath>
+    <BaseIntermediateOutputPath>$(UndoTheSpire2BuildRoot)obj\</BaseIntermediateOutputPath>
+    <IntermediateOutputPath>$(UndoTheSpire2BuildRoot)obj\$(Configuration)\</IntermediateOutputPath>
+  </PropertyGroup>
+</Project>

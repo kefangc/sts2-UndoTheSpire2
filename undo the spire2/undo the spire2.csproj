@@ -1,0 +1,97 @@
+﻿<Project Sdk="Godot.NET.Sdk/4.5.1">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <AssemblyName>UndoTheSpire2</AssemblyName>
+    <RootNamespace>UndoTheSpire2</RootNamespace>
+    <ImplicitUsings>true</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+    <RestoreIgnoreFailedSources>true</RestoreIgnoreFailedSources>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <IsWindows>false</IsWindows>
+    <IsLinux>false</IsLinux>
+    <IsOSX>false</IsOSX>
+    <IsWindows Condition="$([MSBuild]::IsOSPlatform('Windows'))">true</IsWindows>
+    <IsLinux Condition="$([MSBuild]::IsOSPlatform('Linux'))">true</IsLinux>
+    <IsOSX Condition="$([MSBuild]::IsOSPlatform('OSX'))">true</IsOSX>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(IsWindows)' == 'true'">
+    <SteamRoot Condition="'$(SteamRoot)' == '' and Exists('E:\SteamLibrary\steamapps\common\Slay the Spire 2')">E:\SteamLibrary</SteamRoot>
+    <SteamRoot Condition="'$(SteamRoot)' == ''">$(registry:HKEY_CURRENT_USER\Software\Valve\Steam@SteamPath)</SteamRoot>
+    <SteamLibraryPath Condition="'$(SteamLibraryPath)' == '' and '$(SteamRoot)' != '' and Exists('$(SteamRoot)\steamapps')">$(SteamRoot)\steamapps</SteamLibraryPath>
+    <SteamLibraryPath Condition="'$(SteamLibraryPath)' == '' and Exists('E:\SteamLibrary\steamapps')">E:\SteamLibrary\steamapps</SteamLibraryPath>
+    <Sts2Path Condition="'$(Sts2Path)' == '' and '$(SteamLibraryPath)' != ''">$(SteamLibraryPath)/common/Slay the Spire 2</Sts2Path>
+    <Sts2DataDir Condition="'$(Sts2DataDir)' == ''">$(Sts2Path)/data_sts2_windows_x86_64</Sts2DataDir>
+    <GodotPath Condition="'$(GodotPath)' == ''">F:\programing\Godot_v4.5.1-stable_mono_win64\Godot_v4.5.1-stable_mono_win64_console.exe</GodotPath>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(IsLinux)' == 'true'">
+    <SteamLibraryPath Condition="'$(SteamLibraryPath)' == ''">$(HOME)/.local/share/Steam/steamapps</SteamLibraryPath>
+    <Sts2Path Condition="'$(Sts2Path)' == ''">$(SteamLibraryPath)/common/Slay the Spire 2</Sts2Path>
+    <Sts2DataDir Condition="'$(Sts2DataDir)' == ''">$(Sts2Path)/data_sts2_linuxbsd_x86_64</Sts2DataDir>
+    <GodotPath Condition="'$(GodotPath)' == ''">$(SteamLibraryPath)/common/Megadot/MegaDot.x86_64</GodotPath>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(IsOSX)' == 'true'">
+    <SteamLibraryPath Condition="'$(SteamLibraryPath)' == ''">$(HOME)/Library/Application Support/Steam/steamapps</SteamLibraryPath>
+    <Sts2Path Condition="'$(Sts2Path)' == ''">$(SteamLibraryPath)/common/Slay the Spire 2</Sts2Path>
+    <Sts2DataDir Condition="'$(Sts2DataDir)' == ''">$(Sts2Path)/data_sts2_macos_x86_64</Sts2DataDir>
+    <GodotPath Condition="'$(GodotPath)' == ''"></GodotPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="0Harmony">
+      <HintPath>$(Sts2DataDir)/0Harmony.dll</HintPath>
+    </Reference>
+    <Reference Include="sts2">
+      <HintPath>$(Sts2DataDir)/sts2.dll</HintPath>
+    </Reference>
+
+    <AdditionalFiles Include="UndoTheSpire2\localization\**\*.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="bin\**" />
+    <Compile Remove="obj\**" />
+    <Compile Remove=".godot\**" />
+    <EmbeddedResource Remove="bin\**" />
+    <EmbeddedResource Remove="obj\**" />
+    <EmbeddedResource Remove=".godot\**" />
+    <None Remove="bin\**" />
+    <None Remove="obj\**" />
+    <None Remove=".godot\**" />
+    <Content Remove="bin\**" />
+    <Content Remove="obj\**" />
+    <Content Remove=".godot\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="UndoTheSpire2\localization\**\*.json">
+      <LogicalName>$(AssemblyName).localization.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+    <Content Include="mod_manifest.json" />
+    <Content Include="project.godot" />
+    <Content Include="export_presets.cfg" />
+    <Content Include="icon.svg" />
+    <Content Include="UndoTheSpire2\**" />
+  </ItemGroup>
+
+  <Target Name="CopyToModsFolderOnBuild" AfterTargets="PostBuildEvent">
+    <Message Text="Copying .dll to mods folder." Importance="high" />
+    <MakeDir Directories="$(Sts2Path)/mods" Condition="'$(Sts2Path)' != ''" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(Sts2Path)/mods/" Condition="'$(Sts2Path)' != ''" />
+  </Target>
+
+  <Target Name="GodotPublish" AfterTargets="Publish" Condition="'$(GodotPath)' != '' and Exists('$(GodotPath)')">
+    <Message Text="Exporting Godot .pck to mods folder" Importance="high" />
+    <Exec Command="&quot;$(GodotPath)&quot; --headless --path &quot;$(MSBuildProjectDirectory)&quot; --export-pack &quot;Windows Desktop&quot; &quot;$(Sts2Path)/mods/$(AssemblyName).pck&quot;" ContinueOnError="WarnAndContinue" />
+  </Target>
+
+  <Target Name="GodotPublishSkipped" AfterTargets="Publish" Condition="'$(GodotPath)' == '' or !Exists('$(GodotPath)')">
+    <Message Text="Skipping Godot .pck export because GodotPath is not configured." Importance="high" />
+  </Target>
+</Project>

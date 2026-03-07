@@ -1,0 +1,16 @@
+﻿{
+  "hud.undo": "撤销",
+  "hud.redo": "重做",
+  "hud.undo_tooltip": "撤销 (Ctrl+Z)",
+  "hud.redo_tooltip": "重做 (Ctrl+Y)",
+  "hud.undo_hover_title": "撤销 (Ctrl+Z)",
+  "hud.redo_hover_title": "重做 (Ctrl+Y)",
+  "hud.undo_hover_empty": "当前没有可撤销的操作。",
+  "hud.redo_hover_empty": "当前没有可重做的操作。",
+  "action.undo": "撤销",
+  "action.play_card": "打出 {0}",
+  "action.use_potion": "使用 {0}",
+  "action.discard_potion": "丢弃 {0}",
+  "action.end_turn": "结束回合",
+  "action.player_choice": "进行选择"
+}

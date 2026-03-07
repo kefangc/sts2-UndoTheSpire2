@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "dgSpecHash": "TC7xdSJcHhc=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\undo the spire2.csproj",
+  "expectedPackageFiles": [
+    "F:\\projects\\undo-the-spire2-cache\\nuget-packages\\godot.sourcegenerators\\4.5.1\\godot.sourcegenerators.4.5.1.nupkg.sha512",
+    "F:\\projects\\undo-the-spire2-cache\\nuget-packages\\godotsharp\\4.5.1\\godotsharp.4.5.1.nupkg.sha512",
+    "F:\\projects\\undo-the-spire2-cache\\nuget-packages\\godotsharpeditor\\4.5.1\\godotsharpeditor.4.5.1.nupkg.sha512"
+  ],
+  "logs": []
+}

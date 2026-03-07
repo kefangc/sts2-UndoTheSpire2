@@ -1,0 +1,16 @@
+﻿{
+  "hud.undo": "Undo",
+  "hud.redo": "Redo",
+  "hud.undo_tooltip": "Undo (Ctrl+Z)",
+  "hud.redo_tooltip": "Redo (Ctrl+Y)",
+  "hud.undo_hover_title": "Undo (Ctrl+Z)",
+  "hud.redo_hover_title": "Redo (Ctrl+Y)",
+  "hud.undo_hover_empty": "No action to undo.",
+  "hud.redo_hover_empty": "No action to redo.",
+  "action.undo": "Undo",
+  "action.play_card": "Play {0}",
+  "action.use_potion": "Use {0}",
+  "action.discard_potion": "Discard {0}",
+  "action.end_turn": "End turn",
+  "action.player_choice": "Make a choice"
+}
