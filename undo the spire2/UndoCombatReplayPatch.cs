@@ -1,4 +1,4 @@
-using HarmonyLib;
+﻿using HarmonyLib;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions;
@@ -37,5 +37,6 @@ public static class UndoCombatReplayPatch
     public static void RecordPlayerChoicePostfix(Player player, uint choiceId, NetPlayerChoiceResult result)
     {
         MainFile.Controller.RecordReplayPlayerChoice(player, choiceId, result);
+        MainFile.Controller.OnPlayerChoiceResolved(player, result);
     }
 }
