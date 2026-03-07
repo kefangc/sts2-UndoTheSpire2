@@ -52,7 +52,7 @@
               "RelativeDocumentMoniker": "undo the spire2\\mod_manifest.json",
               "ToolTip": "C:\\Users\\21253\\source\\repos\\undo the spire2\\undo the spire2\\mod_manifest.json",
               "RelativeToolTip": "undo the spire2\\mod_manifest.json",
-              "ViewState": "AgIAAAAAAAAAAAAAAADwvwcAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAAAAAAAAAAAAAADwvwQAAABcAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001642|",
               "WhenOpened": "2026-03-07T12:39:02.09Z",
               "EditorCaption": ""
@@ -67,8 +67,7 @@
               "RelativeToolTip": "undo the spire2\\UndoTheSpire2\\localization\\en.json",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001642|",
-              "WhenOpened": "2026-03-07T05:39:01.513Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-03-07T05:39:01.513Z"
             },
             {
               "$type": "Document",

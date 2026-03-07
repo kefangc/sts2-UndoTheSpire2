@@ -649,8 +649,13 @@ public sealed class UndoController
         branchSourcePileState.cards.RemoveAt(selectedSourceIndex);
         branchPlayerState.piles[branchSourcePileIndex] = branchSourcePileState;
 
-        if (!TryFindSourceSelectionDestinationSlot(anchorPlayerState, templateSnapshot.CombatState.FullState.Players[playerIndex], sourcePileType, templateSelectedCardState, out int destinationPileIndex, out int destinationCardIndex))
+        int destinationPileIndex;
+        int destinationCardIndex;
+        if (!TryFindDeterministicSourceSelectionDestinationSlot(anchorPlayerState, templateSnapshot.CombatState.FullState.Players[playerIndex], sourcePileType, out destinationPileIndex, out destinationCardIndex)
+            && !TryFindSourceSelectionDestinationSlot(anchorPlayerState, templateSnapshot.CombatState.FullState.Players[playerIndex], sourcePileType, templateSelectedCardState, out destinationPileIndex, out destinationCardIndex))
+        {
             return false;
+        }
 
         if (destinationPileIndex >= 0)
         {
@@ -672,6 +677,44 @@ public sealed class UndoController
             templateSnapshot.CombatState.NextHookId,
             templateSnapshot.CombatState.NextChecksumId);
         return true;
+    }
+
+    private static bool TryFindDeterministicSourceSelectionDestinationSlot(
+        NetFullCombatState.PlayerState anchorPlayerState,
+        NetFullCombatState.PlayerState templatePlayerState,
+        PileType sourcePileType,
+        out int destinationPileIndex,
+        out int destinationCardIndex)
+    {
+        destinationPileIndex = -1;
+        destinationCardIndex = -1;
+        bool foundDestination = false;
+
+        for (int i = 0; i < templatePlayerState.piles.Count; i++)
+        {
+            NetFullCombatState.CombatPileState templatePileState = templatePlayerState.piles[i];
+            if (templatePileState.pileType == sourcePileType)
+                continue;
+
+            int anchorPileIndex = FindPileIndex(anchorPlayerState.piles, templatePileState.pileType);
+            if (anchorPileIndex < 0)
+                return false;
+
+            NetFullCombatState.CombatPileState anchorPileState = anchorPlayerState.piles[anchorPileIndex];
+            List<int> unmatchedIndexes = FindUnmatchedCardIndexes(anchorPileState.cards, templatePileState.cards);
+            if (unmatchedIndexes.Count == 0)
+                continue;
+            if (unmatchedIndexes.Count != 1)
+                return false;
+            if (foundDestination)
+                return false;
+
+            foundDestination = true;
+            destinationPileIndex = i;
+            destinationCardIndex = unmatchedIndexes[0];
+        }
+
+        return foundDestination;
     }
 
     private static bool TryFindSourceSelectionDestinationSlot(
