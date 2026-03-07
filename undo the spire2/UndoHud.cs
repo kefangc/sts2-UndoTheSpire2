@@ -1,4 +1,4 @@
-﻿using Godot;
+using Godot;
 using MegaCrit.Sts2.Core.HoverTips;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 
@@ -15,7 +15,9 @@ public partial class UndoHud : Control
         Name = "UndoHud";
         MouseFilter = MouseFilterEnum.Ignore;
         ProcessMode = Node.ProcessModeEnum.Inherit;
-        ZIndex = 100;
+        TopLevel = true;
+        ZAsRelative = false;
+        ZIndex = 5000;
         SetAnchorsPreset(LayoutPreset.TopLeft);
 
         _undoButton = CreateButton("UndoButton", true);
@@ -55,8 +57,9 @@ public partial class UndoHud : Control
         if (!Visible)
             return;
 
-        Vector2 energyPosition = _combatUi.EnergyCounterContainer.Position;
-        Position = energyPosition + new Vector2(6f, -Size.Y - 12f);
+        MoveToFront();
+        Vector2 energyPosition = _combatUi.EnergyCounterContainer.GetGlobalRect().Position;
+        Position = energyPosition + new Vector2(-4f, -Size.Y - 20f);
         _undoButton.IsEnabled = controller.CanUndoNow(_combatUi);
         _redoButton.IsEnabled = controller.CanRedoNow(_combatUi);
         _undoButton.HoverTitle = ModLocalization.Get("hud.undo_hover_title", "Undo (Ctrl+Z)");

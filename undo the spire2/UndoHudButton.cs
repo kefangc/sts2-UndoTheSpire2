@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using Godot;
 using MegaCrit.Sts2.Core.HoverTips;
 using MegaCrit.Sts2.Core.Localization;
@@ -242,7 +242,7 @@ public partial class UndoHudButton : Control
             HoverTipAlignment.Right => 18f,
             _ => 0f
         };
-        hoverTipSet.SetExtraFollowOffset(new Vector2(xOffset, -Size.Y * 2.9f));
+        hoverTipSet.SetExtraFollowOffset(new Vector2(xOffset, -Size.Y * 3.6f));
         hoverTipSet.SetFollowOwner();
     }
 

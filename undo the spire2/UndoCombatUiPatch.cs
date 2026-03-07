@@ -1,4 +1,5 @@
-﻿using HarmonyLib;
+using Godot;
+using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Nodes;
@@ -14,12 +15,15 @@ public static class UndoCombatUiPatch
     [HarmonyPostfix]
     public static void CombatUiReadyPostfix(NCombatUi __instance)
     {
-        if (__instance.GetNodeOrNull<UndoHud>("UndoHud") != null)
-            return;
+        Node hudParent = (Node?)NRun.Instance?.GlobalUi ?? __instance;
+        UndoHud? hud = hudParent.GetNodeOrNull<UndoHud>("UndoHud") ?? __instance.GetNodeOrNull<UndoHud>("UndoHud");
+        if (hud == null)
+        {
+            hud = new UndoHud();
+            hudParent.AddChildSafely(hud);
+        }
 
-        UndoHud hud = new();
         hud.Bind(__instance);
-        __instance.AddChildSafely(hud);
     }
 
     [HarmonyPatch(typeof(NCombatUi), nameof(NCombatUi.Activate))]

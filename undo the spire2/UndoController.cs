@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using Godot;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Context;
@@ -23,6 +23,7 @@ using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
+using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
 using MegaCrit.Sts2.Core.Nodes.Screens.Capstones;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
 using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
@@ -277,24 +278,32 @@ public sealed class UndoController
         LinkedList<UndoSnapshot> destination,
         string operation)
     {
-        if (source.First?.Value is not UndoSnapshot snapshot || _combatReplay == null)
+        if (_combatReplay == null)
             return;
-
-        UndoSnapshot? baseSnapshot = source.First?.Next?.Value;
 
         if (!CanRestoreState())
             return;
 
-        UndoSnapshot currentSnapshot = new(
-            CaptureCurrentCombatFullState(),
-            GetCurrentReplayEventCount(),
-            snapshot.ActionKind,
-            _nextSequenceId++,
-            snapshot.ActionLabel);
+        bool movedCurrentChoiceAnchor = MoveCurrentChoiceAnchorToDestinationIfNeeded(source, destination);
+        if (source.First?.Value is not UndoSnapshot snapshot)
+            return;
+
+        UndoSnapshot? baseSnapshot = source.First.Next?.Value;
 
         source.RemoveFirst();
-        destination.AddFirst(currentSnapshot);
-        TrimSnapshots(destination);
+        if (!movedCurrentChoiceAnchor)
+        {
+            UndoSnapshot currentSnapshot = new(
+                CaptureCurrentCombatFullState(),
+                GetCurrentReplayEventCount(),
+                snapshot.ActionKind,
+                _nextSequenceId++,
+                snapshot.ActionLabel);
+
+            destination.AddFirst(currentSnapshot);
+            TrimSnapshots(destination);
+        }
+
         IsRestoring = true;
         NotifyStateChanged();
 
@@ -317,7 +326,6 @@ public sealed class UndoController
             NotifyStateChanged();
         }
     }
-
     private async Task<string> RestoreSnapshotAsync(UndoSnapshot snapshot, UndoSnapshot? baseSnapshot)
     {
         if (snapshot.ActionKind == UndoActionKind.PlayerChoice)
@@ -393,6 +401,7 @@ public sealed class UndoController
 
         try
         {
+            DismissSupportedChoiceUiIfPresent();
             RunManager.Instance.ActionQueueSet.Reset();
             RebuildActionQueues(runState.Players);
             runState.Rng.LoadFromSerializable(snapshot.FullState.Rng);
@@ -654,6 +663,9 @@ public sealed class UndoController
 
     private static bool IsUiBlocking(NCombatUi combatUi)
     {
+        if (IsSupportedChoiceUiActive(combatUi))
+            return false;
+
         if (NOverlayStack.Instance != null && NOverlayStack.Instance.ScreenCount > 0)
             return true;
 
@@ -664,6 +676,54 @@ public sealed class UndoController
             return true;
 
         return combatUi.Hand.InCardPlay || combatUi.Hand.IsInCardSelection;
+    }
+
+    private bool MoveCurrentChoiceAnchorToDestinationIfNeeded(LinkedList<UndoSnapshot> source, LinkedList<UndoSnapshot> destination)
+    {
+        if (source.First?.Value is not UndoSnapshot snapshot
+            || snapshot.ActionKind != UndoActionKind.PlayerChoice
+            || source.First.Next == null
+            || !IsCurrentStateAtChoiceAnchor(snapshot))
+        {
+            return false;
+        }
+
+        source.RemoveFirst();
+        destination.AddFirst(snapshot);
+        TrimSnapshots(destination);
+        MainFile.Logger.Info("Skipped restoring the current player choice anchor because the choice UI is already active.");
+        return true;
+    }
+
+    private bool IsCurrentStateAtChoiceAnchor(UndoSnapshot snapshot)
+    {
+        NCombatUi? combatUi = NCombatRoom.Instance?.Ui;
+        GameAction? action = RunManager.Instance.ActionExecutor.CurrentlyRunningAction;
+        return combatUi != null
+            && action?.State == GameActionState.GatheringPlayerChoice
+            && IsSupportedChoiceUiActive(combatUi)
+            && snapshot.ReplayEventCount == GetCurrentReplayEventCount();
+    }
+
+    private static bool IsSupportedChoiceUiActive(NCombatUi combatUi)
+    {
+        if (NCombatRoom.Instance?.Ui != combatUi)
+            return false;
+
+        if (combatUi.Hand.IsInCardSelection)
+            return true;
+
+        return NOverlayStack.Instance?.Peek() is NChooseACardSelectionScreen;
+    }
+
+    private static void DismissSupportedChoiceUiIfPresent()
+    {
+        if (NOverlayStack.Instance?.Peek() is NChooseACardSelectionScreen choiceScreen)
+            NOverlayStack.Instance.Remove(choiceScreen);
+
+        NPlayerHand? hand = NCombatRoom.Instance?.Ui?.Hand;
+        if (hand?.IsInCardSelection == true)
+            InvokePrivateMethod(hand, "CancelHandSelectionIfNecessary");
     }
 
     private static bool ShouldCapture(GameAction action)
