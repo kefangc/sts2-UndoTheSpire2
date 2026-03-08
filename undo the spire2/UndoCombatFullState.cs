@@ -17,7 +17,11 @@ internal sealed class UndoCombatFullState
         uint nextHookId,
         uint nextChecksumId,
         IReadOnlyList<UndoMonsterState> monsterStates,
-        IReadOnlyList<UndoPlayerPileCardCostState> cardCostStates)
+        IReadOnlyList<UndoPlayerPileCardCostState> cardCostStates,
+        IReadOnlyList<UndoPlayerPileCardRuntimeState>? cardRuntimeStates = null,
+        IReadOnlyList<UndoPowerRuntimeState>? powerRuntimeStates = null,
+        IReadOnlyList<UndoRelicRuntimeState>? relicRuntimeStates = null,
+        UndoSelectionSessionState? selectionSessionState = null)
     {
         FullState = fullState;
         RoundNumber = roundNumber;
@@ -28,6 +32,10 @@ internal sealed class UndoCombatFullState
         NextChecksumId = nextChecksumId;
         MonsterStates = monsterStates;
         CardCostStates = cardCostStates;
+        CardRuntimeStates = cardRuntimeStates ?? [];
+        PowerRuntimeStates = powerRuntimeStates ?? [];
+        RelicRuntimeStates = relicRuntimeStates ?? [];
+        SelectionSessionState = selectionSessionState;
     }
 
     public NetFullCombatState FullState { get; }
@@ -47,6 +55,14 @@ internal sealed class UndoCombatFullState
     public IReadOnlyList<UndoMonsterState> MonsterStates { get; }
 
     public IReadOnlyList<UndoPlayerPileCardCostState> CardCostStates { get; }
+
+    public IReadOnlyList<UndoPlayerPileCardRuntimeState> CardRuntimeStates { get; }
+
+    public IReadOnlyList<UndoPowerRuntimeState> PowerRuntimeStates { get; }
+
+    public IReadOnlyList<UndoRelicRuntimeState> RelicRuntimeStates { get; }
+
+    public UndoSelectionSessionState? SelectionSessionState { get; }
 }
 
 internal sealed class UndoPlayerPileCardCostState
@@ -57,4 +73,3 @@ internal sealed class UndoPlayerPileCardCostState
 
     public required IReadOnlyList<UndoCardCostState> Cards { get; init; }
 }
-

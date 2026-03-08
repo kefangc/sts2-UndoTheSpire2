@@ -5,6 +5,7 @@ using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Enchantments;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Entities.Models;
 using MegaCrit.Sts2.Core.Entities.Orbs;
@@ -16,6 +17,7 @@ using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Multiplayer.Replay;
@@ -33,6 +35,7 @@ using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
 using MegaCrit.Sts2.Core.Nodes.Vfx;
 using MegaCrit.Sts2.Core.Nodes.Vfx.Cards;
 using MegaCrit.Sts2.Core.Nodes.Potions;
+using MegaCrit.Sts2.Core.Nodes.Relics;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
@@ -69,6 +72,7 @@ public sealed class UndoController
     private UndoSyntheticChoiceSession? _syntheticChoiceSession;
     private bool _blockUndoUntilNextPlayerTurn;
     private int _blockedTurnRound = -1;
+    private string? _lastRestoreFailureReason;
 
     public event Action? StateChanged;
 
@@ -462,6 +466,7 @@ public sealed class UndoController
             if (currentSnapshot != null)
                 destination.RemoveFirst();
             source.AddFirst(snapshot);
+            WriteInteractionLog("restore_noop", $"operation={operation} reason={_lastRestoreFailureReason ?? ex.Message}");
             MainFile.Logger.Error($"Failed to {operation}: {ex}");
         }
         finally
@@ -474,10 +479,15 @@ public sealed class UndoController
     {
         if (snapshot.IsChoiceAnchor)
         {
-            if (!UndoModSettings.EnableChoiceUndo && baseSnapshot != null && await TryApplyFullStateInPlaceAsync(baseSnapshot.CombatState))
+            if (!UndoModSettings.EnableChoiceUndo && baseSnapshot != null)
             {
-                WriteInteractionLog("restore_choice_skipped", $"label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount}");
-                return "choice_skipped";
+                if (await TryApplyFullStateInPlaceAsync(baseSnapshot.CombatState))
+                {
+                    WriteInteractionLog("restore_choice_skipped", $"label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount}");
+                    return "choice_skipped";
+                }
+
+                throw new InvalidOperationException(_lastRestoreFailureReason ?? "Choice skip restore failed.");
             }
 
             if (UndoModSettings.EnableUnifiedEffectMode && snapshot.ChoiceSpec?.SupportsSyntheticRestore == true)
@@ -486,21 +496,19 @@ public sealed class UndoController
                     return "choice_instant";
 
                 WriteInteractionLog("restore_choice_instant_failed", $"label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount}");
+                throw new InvalidOperationException(_lastRestoreFailureReason ?? "Choice instant restore failed.");
             }
-            else if (baseSnapshot != null && await TryRestorePlayerChoiceInPlaceAsync(baseSnapshot, snapshot))
-            {
-                return "choice_delta";
-            }
+
+            throw new InvalidOperationException("Choice restore is unsupported for instant full-state recovery.");
         }
-        else if (await TryApplyFullStateInPlaceAsync(snapshot.CombatState))
+
+        if (await TryApplyFullStateInPlaceAsync(snapshot.CombatState))
         {
             WriteInteractionLog("restore_full_state", $"kind={snapshot.ActionKind} label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount}");
             return "full_state";
         }
 
-        WriteInteractionLog("restore_fallback_to_replay", $"kind={snapshot.ActionKind} label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount}");
-        await RestoreCombatReplayAsync(snapshot.ReplayEventCount, snapshot.IsChoiceAnchor);
-        return "replay";
+        throw new InvalidOperationException(_lastRestoreFailureReason ?? "Full-state restore failed.");
     }
     private async Task<bool> TryRestoreSyntheticChoiceAsync(UndoSnapshot snapshot, UndoSnapshot? branchSnapshot)
     {
@@ -650,16 +658,7 @@ public sealed class UndoController
 
         branchPlayerState.piles[pileIndex] = branchPileState;
         fullState.Players[playerIndex] = branchPlayerState;
-        combatState = new UndoCombatFullState(
-            fullState,
-            templateSnapshot.CombatState.RoundNumber,
-            templateSnapshot.CombatState.CurrentSide,
-            templateSnapshot.CombatState.SynchronizerCombatState,
-            templateSnapshot.CombatState.NextActionId,
-            templateSnapshot.CombatState.NextHookId,
-            templateSnapshot.CombatState.NextChecksumId,
-            templateSnapshot.CombatState.MonsterStates,
-            templateSnapshot.CombatState.CardCostStates);
+        combatState = CreateDerivedCombatState(templateSnapshot.CombatState, fullState);
         return true;
     }
 
@@ -808,16 +807,7 @@ public sealed class UndoController
 
         branchPlayerState.piles[branchSourcePileIndex] = branchSourcePileState;
         fullState.Players[playerIndex] = branchPlayerState;
-        combatState = new UndoCombatFullState(
-            fullState,
-            templateSnapshot.CombatState.RoundNumber,
-            templateSnapshot.CombatState.CurrentSide,
-            templateSnapshot.CombatState.SynchronizerCombatState,
-            templateSnapshot.CombatState.NextActionId,
-            templateSnapshot.CombatState.NextHookId,
-            templateSnapshot.CombatState.NextChecksumId,
-            templateSnapshot.CombatState.MonsterStates,
-            templateSnapshot.CombatState.CardCostStates);
+        combatState = CreateDerivedCombatState(templateSnapshot.CombatState, fullState);
         return true;
     }
 
@@ -1117,16 +1107,7 @@ public sealed class UndoController
         }
 
         fullState.Players[playerIndex] = branchPlayerState;
-        combatState = new UndoCombatFullState(
-            fullState,
-            templateSnapshot.CombatState.RoundNumber,
-            templateSnapshot.CombatState.CurrentSide,
-            templateSnapshot.CombatState.SynchronizerCombatState,
-            templateSnapshot.CombatState.NextActionId,
-            templateSnapshot.CombatState.NextHookId,
-            templateSnapshot.CombatState.NextChecksumId,
-            templateSnapshot.CombatState.MonsterStates,
-            templateSnapshot.CombatState.CardCostStates);
+        combatState = CreateDerivedCombatState(templateSnapshot.CombatState, fullState);
         return true;
     }
 
@@ -1196,16 +1177,7 @@ public sealed class UndoController
         }
 
         fullState.Players[playerIndex] = branchPlayerState;
-        combatState = new UndoCombatFullState(
-            fullState,
-            templateSnapshot.CombatState.RoundNumber,
-            templateSnapshot.CombatState.CurrentSide,
-            templateSnapshot.CombatState.SynchronizerCombatState,
-            templateSnapshot.CombatState.NextActionId,
-            templateSnapshot.CombatState.NextHookId,
-            templateSnapshot.CombatState.NextChecksumId,
-            templateSnapshot.CombatState.MonsterStates,
-            templateSnapshot.CombatState.CardCostStates);
+        combatState = CreateDerivedCombatState(templateSnapshot.CombatState, fullState);
         return true;
     }
 
@@ -1878,14 +1850,19 @@ public sealed class UndoController
 
     private async Task<bool> TryApplyFullStateInPlaceAsync(UndoCombatFullState snapshot, bool hideCurrentRun = false)
     {
+        _lastRestoreFailureReason = null;
         RunState? runState = RunManager.Instance.DebugOnlyGetState();
         CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
         if (runState == null || combatState == null)
+        {
+            _lastRestoreFailureReason = "missing_run_state";
             return false;
+        }
 
         if (!CanApplyFullStateInPlace(snapshot.FullState, runState, combatState, out string reason))
         {
-            MainFile.Logger.Info($"Falling back to replay restore. Reason={reason}");
+            _lastRestoreFailureReason = reason;
+            MainFile.Logger.Warn($"Skipped in-place restore. Reason={reason}");
             return false;
         }
 
@@ -1902,8 +1879,7 @@ public sealed class UndoController
             runState.Rng.LoadFromSerializable(snapshot.FullState.Rng);
 
             RestorePlayers(runState, combatState, snapshot);
-            RestoreCreatures(runState, combatState, snapshot.FullState);
-            RestoreMonsterStates(combatState, snapshot.MonsterStates);
+            RestoreCreatures(runState, combatState, snapshot);
 
             combatState.RoundNumber = snapshot.RoundNumber;
             combatState.CurrentSide = snapshot.CurrentSide;
@@ -1914,6 +1890,7 @@ public sealed class UndoController
             RunManager.Instance.PlayerChoiceSynchronizer.FastForwardChoiceIds([.. snapshot.FullState.nextChoiceIds]);
             RestoreActionSynchronizationState(snapshot.SynchronizerCombatState);
             RebuildTransientCombatCaches(runState);
+            NormalizeRelicInventoryUi(runState);
 
             foreach (Player player in runState.Players)
             {
@@ -1924,11 +1901,20 @@ public sealed class UndoController
             }
 
             await RefreshCombatUiAsync(combatState);
+            if (!TryValidateRestoredState(snapshot, hideCurrentRun, out reason))
+            {
+                _lastRestoreFailureReason = reason;
+                MainFile.Logger.Warn($"Restore validation failed. Reason={reason}");
+                WriteInteractionLog("restore_noop", $"reason={reason}");
+                return false;
+            }
+
             return true;
         }
         catch (Exception ex)
         {
-            MainFile.Logger.Warn($"Full-state restore failed, falling back to replay. {ex}");
+            _lastRestoreFailureReason = ex.GetType().Name + ": " + ex.Message;
+            MainFile.Logger.Warn($"Full-state restore failed. {ex}");
             return false;
         }
         finally
@@ -2339,15 +2325,17 @@ public sealed class UndoController
         {
             TaskCompletionSource<IEnumerable<CardModel>>? selectionCompletionSource = GetPrivateFieldValue<TaskCompletionSource<IEnumerable<CardModel>>>(hand, "_selectionCompletionSource");
             Task<IEnumerable<CardModel>>? selectionTask = selectionCompletionSource?.Task;
-            bool isSelectionPending = hand.IsInCardSelection || (selectionTask != null && !selectionTask.IsCompleted);
+            bool hasSelectedCards = GetPrivateFieldValue<System.Collections.IList>(hand, "_selectedCards")?.Count > 0;
+            bool isSelectionPending = hand.IsInCardSelection || hasSelectedCards || (selectionTask != null && !selectionTask.IsCompleted);
             if (isSelectionPending)
             {
                 if (selectionTask != null && !selectionTask.IsCompleted)
                     selectionCompletionSource!.SetResult(Array.Empty<CardModel>());
 
-                NCombatRoom.Instance?.Ui?.OnHandSelectModeExited();
                 await WaitOneFrameAsync();
                 await WaitOneFrameAsync();
+                InvokePrivateMethod(hand, "CancelHandSelectionIfNecessary");
+                ResetPlayerHandUi(hand);
                 SetPrivateFieldValue(hand, "_selectionCompletionSource", null);
             }
         }
@@ -2535,7 +2523,11 @@ public sealed class UndoController
             RunManager.Instance.ActionQueueSynchronizer.NextHookId,
             RunManager.Instance.ChecksumTracker.NextId,
             CaptureMonsterStates(combatState.Creatures),
-            CaptureCardCostStates(runState));
+            CaptureCardCostStates(runState),
+            CaptureCardRuntimeStates(runState),
+            CapturePowerRuntimeStates(combatState.Creatures),
+            CaptureRelicRuntimeStates(runState),
+            CaptureSelectionSessionState());
     }
 
     private static IReadOnlyList<UndoMonsterState> CaptureMonsterStates(IReadOnlyList<Creature> creatures)
@@ -2552,15 +2544,23 @@ public sealed class UndoController
             string creatureKey = BuildCreatureKey(creature, i);
             string? currentStateId = GetPrivateFieldValue<MonsterState>(moveStateMachine, "_currentState")?.Id;
             bool performedFirstMove = FindField(moveStateMachine.GetType(), "_performedFirstMove")?.GetValue(moveStateMachine) is true;
-            bool nextMovePerformedAtLeastOnce = FindField(monster.NextMove.GetType(), "_performedAtLeastOnce")?.GetValue(monster.NextMove) is true;
+            bool nextMovePerformedAtLeastOnce = monster.NextMove != null
+                && FindField(monster.NextMove.GetType(), "_performedAtLeastOnce")?.GetValue(monster.NextMove) is true;
+            bool isHovering = FindProperty(monster.GetType(), "IsHovering")?.GetValue(monster) is bool hovering && hovering;
+            string? specialNodeStateKey = creature.Powers.OfType<SwipePower>().Any(static power => power.StolenCard != null)
+                ? "%StolenCardPos"
+                : null;
             states.Add(new UndoMonsterState
             {
                 CreatureKey = creatureKey,
+                SlotName = string.IsNullOrWhiteSpace(creature.SlotName) ? null : creature.SlotName,
                 CurrentStateId = currentStateId,
                 NextMoveId = monster.NextMove?.Id,
+                IsHovering = isHovering,
                 SpawnedThisTurn = monster.SpawnedThisTurn,
                 PerformedFirstMove = performedFirstMove,
                 NextMovePerformedAtLeastOnce = nextMovePerformedAtLeastOnce,
+                SpecialNodeStateKey = specialNodeStateKey,
                 StateLogIds = [.. moveStateMachine.StateLog.Select(static state => state.Id)]
             });
         }
@@ -2577,6 +2577,20 @@ public sealed class UndoController
             return $"monster:{index}:{creature.Monster.Id.Entry}";
 
         return $"creature:{index}";
+    }
+
+    private static string? TryResolveCreatureKey(IReadOnlyList<Creature> creatures, Creature? target)
+    {
+        if (target == null)
+            return null;
+
+        for (int i = 0; i < creatures.Count; i++)
+        {
+            if (ReferenceEquals(creatures[i], target))
+                return BuildCreatureKey(target, i);
+        }
+
+        return null;
     }
 
     private static IReadOnlyList<UndoPlayerPileCardCostState> CaptureCardCostStates(RunState runState)
@@ -2600,6 +2614,114 @@ public sealed class UndoController
         }
 
         return states;
+    }
+
+    private static IReadOnlyList<UndoPlayerPileCardRuntimeState> CaptureCardRuntimeStates(RunState runState)
+    {
+        List<UndoPlayerPileCardRuntimeState> states = [];
+        foreach (Player player in runState.Players)
+        {
+            foreach (PileType pileType in CombatPileOrder)
+            {
+                CardPile? pile = CardPile.Get(pileType, player);
+                if (pile == null)
+                    continue;
+
+                states.Add(new UndoPlayerPileCardRuntimeState
+                {
+                    PlayerNetId = player.NetId,
+                    PileType = pileType,
+                    Cards = [.. pile.Cards.Select(CaptureCardRuntimeState)]
+                });
+            }
+        }
+
+        return states;
+    }
+
+    private static UndoCardRuntimeState CaptureCardRuntimeState(CardModel card)
+    {
+        UndoEnchantmentRuntimeState? enchantmentState = card.Enchantment == null
+            ? null
+            : new UndoEnchantmentRuntimeState
+            {
+                Status = card.Enchantment.Status
+            };
+
+        return new UndoCardRuntimeState
+        {
+            HasSingleTurnRetain = FindProperty(card.GetType(), "HasSingleTurnRetain")?.GetValue(card) is bool retain && retain,
+            HasSingleTurnSly = FindProperty(card.GetType(), "HasSingleTurnSly")?.GetValue(card) is bool sly && sly,
+            ExhaustOnNextPlay = card.ExhaustOnNextPlay,
+            EnchantmentState = enchantmentState
+        };
+    }
+
+    private static IReadOnlyList<UndoPowerRuntimeState> CapturePowerRuntimeStates(IReadOnlyList<Creature> creatures)
+    {
+        List<UndoPowerRuntimeState> states = [];
+        for (int i = 0; i < creatures.Count; i++)
+        {
+            Creature creature = creatures[i];
+            string ownerCreatureKey = BuildCreatureKey(creature, i);
+            Dictionary<ModelId, int> ordinalsByPowerId = [];
+            foreach (PowerModel power in creature.Powers)
+            {
+                int ordinal = ordinalsByPowerId.TryGetValue(power.Id, out int existingOrdinal) ? existingOrdinal : 0;
+                ordinalsByPowerId[power.Id] = ordinal + 1;
+                states.Add(new UndoPowerRuntimeState
+                {
+                    OwnerCreatureKey = ownerCreatureKey,
+                    PowerId = power.Id,
+                    Ordinal = ordinal,
+                    TargetCreatureKey = TryResolveCreatureKey(creatures, power.Target),
+                    ApplierCreatureKey = TryResolveCreatureKey(creatures, power.Applier),
+                    StolenCard = power is SwipePower swipe && swipe.StolenCard != null
+                        ? ClonePacketSerializable(swipe.StolenCard.ToSerializable())
+                        : null
+                });
+            }
+        }
+
+        return states;
+    }
+
+    private static IReadOnlyList<UndoRelicRuntimeState> CaptureRelicRuntimeStates(RunState runState)
+    {
+        List<UndoRelicRuntimeState> states = [];
+        foreach (Player player in runState.Players)
+        {
+            Dictionary<ModelId, int> ordinalsByRelicId = [];
+            foreach (RelicModel relic in player.Relics)
+            {
+                int ordinal = ordinalsByRelicId.TryGetValue(relic.Id, out int existingOrdinal) ? existingOrdinal : 0;
+                ordinalsByRelicId[relic.Id] = ordinal + 1;
+                states.Add(new UndoRelicRuntimeState
+                {
+                    PlayerNetId = player.NetId,
+                    RelicId = relic.Id,
+                    Ordinal = ordinal,
+                    Status = relic.Status,
+                    IsActivating = FindProperty(relic.GetType(), "IsActivating")?.GetValue(relic) is bool activating ? activating : null
+                });
+            }
+        }
+
+        return states;
+    }
+
+    private static UndoSelectionSessionState CaptureSelectionSessionState()
+    {
+        NCombatUi? combatUi = NCombatRoom.Instance?.Ui;
+        object? overlay = NOverlayStack.Instance?.Peek();
+        return new UndoSelectionSessionState
+        {
+            HandSelectionActive = combatUi?.Hand?.IsInCardSelection == true,
+            OverlaySelectionActive = overlay is NChooseACardSelectionScreen or NCardGridSelectionScreen,
+            SupportedChoiceUiActive = combatUi != null && IsSupportedChoiceUiActive(combatUi),
+            OverlayScreenType = overlay?.GetType().Name,
+            ChoiceSpec = TryCaptureCurrentChoiceSpecFromUi()
+        };
     }
 
     private static UndoCardCostState CaptureCardCostState(CardModel card)
@@ -2676,19 +2798,44 @@ public sealed class UndoController
             player.RelicGrabBag.LoadFromSerializable(playerState.relicGrabBag);
             player.Gold = playerState.gold;
 
-            RestoreRelics(player, playerState);
+            RestoreRelics(player, playerState, GetRelicRuntimeStatesForPlayer(snapshotState, player.NetId));
             RestorePotions(player, playerState);
-            RestorePlayerCombatState(player, combatState, playerState, GetCardCostStatesForPlayer(snapshotState, player.NetId));
+            RestorePlayerCombatState(
+                player,
+                combatState,
+                playerState,
+                GetCardCostStatesForPlayer(snapshotState, player.NetId),
+                GetCardRuntimeStatesForPlayer(snapshotState, player.NetId));
         }
     }
 
-    private static void RestoreRelics(Player player, NetFullCombatState.PlayerState playerState)
+    private static void RestoreRelics(Player player, NetFullCombatState.PlayerState playerState, IReadOnlyList<UndoRelicRuntimeState>? relicRuntimeStates)
     {
         foreach (RelicModel relic in player.Relics.ToList())
             player.RemoveRelicInternal(relic, true);
 
         foreach (NetFullCombatState.RelicState relicState in playerState.relics)
             player.AddRelicInternal(RelicModel.FromSerializable(relicState.relic), -1, true);
+
+        if (relicRuntimeStates == null || relicRuntimeStates.Count == 0)
+            return;
+
+        Dictionary<ModelId, int> ordinalsByRelicId = [];
+        foreach (RelicModel relic in player.Relics)
+        {
+            int ordinal = ordinalsByRelicId.TryGetValue(relic.Id, out int existingOrdinal) ? existingOrdinal : 0;
+            ordinalsByRelicId[relic.Id] = ordinal + 1;
+            UndoRelicRuntimeState? runtimeState = relicRuntimeStates.FirstOrDefault(state => state.RelicId == relic.Id && state.Ordinal == ordinal);
+            if (runtimeState == null)
+                continue;
+
+            relic.Status = runtimeState.Status;
+            if (runtimeState.IsActivating.HasValue)
+            {
+                if (!TrySetPrivateAutoPropertyBackingField(relic, "IsActivating", runtimeState.IsActivating.Value))
+                    SetPrivatePropertyValue(relic, "IsActivating", runtimeState.IsActivating.Value);
+            }
+        }
     }
 
     private static void RestorePotions(Player player, NetFullCombatState.PlayerState playerState)
@@ -2719,7 +2866,12 @@ public sealed class UndoController
         }
     }
 
-    private static void RestorePlayerCombatState(Player player, CombatState combatState, NetFullCombatState.PlayerState playerState, IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardCostState>>? cardCostStatesByPile)
+    private static void RestorePlayerCombatState(
+        Player player,
+        CombatState combatState,
+        NetFullCombatState.PlayerState playerState,
+        IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardCostState>>? cardCostStatesByPile,
+        IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardRuntimeState>>? cardRuntimeStatesByPile)
     {
         PlayerCombatState playerCombatState = player.PlayerCombatState
             ?? throw new InvalidOperationException($"Player {player.NetId} has no combat state.");
@@ -2741,7 +2893,9 @@ public sealed class UndoController
                 ?? throw new InvalidOperationException($"Pile {pileType} was not available for player {player.NetId}.");
 
             IReadOnlyList<UndoCardCostState>? pileCardCostStates = null;
+            IReadOnlyList<UndoCardRuntimeState>? pileCardRuntimeStates = null;
             cardCostStatesByPile?.TryGetValue(pileType, out pileCardCostStates);
+            cardRuntimeStatesByPile?.TryGetValue(pileType, out pileCardRuntimeStates);
             if (pilesByType.TryGetValue(pileType, out NetFullCombatState.CombatPileState pileState))
             {
                 for (int cardIndex = 0; cardIndex < pileState.cards.Count; cardIndex++)
@@ -2749,7 +2903,11 @@ public sealed class UndoController
                     NetFullCombatState.CardState cardState = pileState.cards[cardIndex];
                     CardModel card = CardModel.FromSerializable(cardState.card);
                     combatState.AddCard(card, player);
-                    RestoreCardState(card, cardState, pileCardCostStates != null && cardIndex < pileCardCostStates.Count ? pileCardCostStates[cardIndex] : null);
+                    RestoreCardState(
+                        card,
+                        cardState,
+                        pileCardCostStates != null && cardIndex < pileCardCostStates.Count ? pileCardCostStates[cardIndex] : null,
+                        pileCardRuntimeStates != null && cardIndex < pileCardRuntimeStates.Count ? pileCardRuntimeStates[cardIndex] : null);
                     pile.AddInternal(card, -1, true);
                 }
             }
@@ -2763,7 +2921,7 @@ public sealed class UndoController
         playerCombatState.RecalculateCardValues();
     }
 
-    private static void RestoreCardState(CardModel card, NetFullCombatState.CardState cardState, UndoCardCostState? costState)
+    private static void RestoreCardState(CardModel card, NetFullCombatState.CardState cardState, UndoCardCostState? costState, UndoCardRuntimeState? runtimeState)
     {
         HashSet<CardKeyword> desiredKeywords = cardState.keywords != null
             ? [.. cardState.keywords]
@@ -2792,6 +2950,7 @@ public sealed class UndoController
         }
 
         RestoreCardCostState(card, costState);
+        RestoreCardRuntimeState(card, runtimeState);
     }
 
     private static IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardCostState>>? GetCardCostStatesForPlayer(UndoCombatFullState snapshotState, ulong playerNetId)
@@ -2802,6 +2961,40 @@ public sealed class UndoController
             .ToDictionary(static state => state.PileType, static state => state.Cards);
 
         return states.Count == 0 ? null : states;
+    }
+
+    private static IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardRuntimeState>>? GetCardRuntimeStatesForPlayer(UndoCombatFullState snapshotState, ulong playerNetId)
+    {
+        Dictionary<PileType, IReadOnlyList<UndoCardRuntimeState>> states = snapshotState.CardRuntimeStates
+            .Where(static state => state != null)
+            .Where(state => state.PlayerNetId == playerNetId)
+            .ToDictionary(static state => state.PileType, static state => state.Cards);
+
+        return states.Count == 0 ? null : states;
+    }
+
+    private static IReadOnlyList<UndoRelicRuntimeState>? GetRelicRuntimeStatesForPlayer(UndoCombatFullState snapshotState, ulong playerNetId)
+    {
+        List<UndoRelicRuntimeState> states = snapshotState.RelicRuntimeStates
+            .Where(static state => state != null)
+            .Where(state => state.PlayerNetId == playerNetId)
+            .ToList();
+
+        return states.Count == 0 ? null : states;
+    }
+
+    private static void RestoreCardRuntimeState(CardModel card, UndoCardRuntimeState? runtimeState)
+    {
+        if (runtimeState == null)
+            return;
+
+        if (!TrySetPrivateAutoPropertyBackingField(card, "HasSingleTurnRetain", runtimeState.HasSingleTurnRetain))
+            SetPrivatePropertyValue(card, "HasSingleTurnRetain", runtimeState.HasSingleTurnRetain);
+        if (!TrySetPrivateAutoPropertyBackingField(card, "HasSingleTurnSly", runtimeState.HasSingleTurnSly))
+            SetPrivatePropertyValue(card, "HasSingleTurnSly", runtimeState.HasSingleTurnSly);
+        card.ExhaustOnNextPlay = runtimeState.ExhaustOnNextPlay;
+        if (runtimeState.EnchantmentState != null && card.Enchantment != null)
+            card.Enchantment.Status = runtimeState.EnchantmentState.Status;
     }
 
     private static void RestoreCardCostState(CardModel card, UndoCardCostState? costState)
@@ -3004,13 +3197,141 @@ public sealed class UndoController
         SetPrivateFieldValue(potionContainer, "_focusedHolder", null);
         potionContainer.Initialize(runState);
     }
-    private static void RestoreCreatures(RunState runState, CombatState combatState, NetFullCombatState snapshot)
+    private static void NormalizeRelicInventoryUi(RunState runState)
     {
-        SyncCombatCreaturesToSnapshot(runState, combatState, snapshot);
+        NRelicInventory? relicInventory = NRun.Instance?.GlobalUi?.RelicInventory;
+        if (relicInventory == null)
+            return;
+
+        RunManager.Instance.HoveredModelTracker.OnLocalRelicUnhovered();
+        if (GetPrivateFieldValue<System.Collections.IList>(relicInventory, "_relicNodes") is { } relicNodes)
+        {
+            foreach (Node node in relicNodes.Cast<Node>().ToList())
+            {
+                if (!GodotObject.IsInstanceValid(node))
+                    continue;
+
+                node.GetParent()?.RemoveChild(node);
+                node.QueueFree();
+            }
+
+            relicNodes.Clear();
+        }
+
+        ClearNodeChildren(relicInventory);
+        relicInventory.Initialize(runState);
+        InvokePrivateMethod(relicInventory, "UpdateNavigation");
+    }
+
+    private static bool TryValidateRestoredState(UndoCombatFullState snapshot, bool runMayBeHidden, out string reason)
+    {
+        RunState? runState = RunManager.Instance.DebugOnlyGetState();
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        if (runState == null || combatState == null)
+        {
+            reason = "missing_runtime_state";
+            return false;
+        }
+
+        if (combatState.RoundNumber != snapshot.RoundNumber)
+        {
+            reason = "round_mismatch";
+            return false;
+        }
+
+        if (combatState.CurrentSide != snapshot.CurrentSide)
+        {
+            reason = "side_mismatch";
+            return false;
+        }
+
+        if (RunManager.Instance.ActionQueueSynchronizer.CombatState != snapshot.SynchronizerCombatState)
+        {
+            reason = "synchronizer_state_mismatch";
+            return false;
+        }
+
+        if (combatState.Creatures.Count != snapshot.FullState.Creatures.Count)
+        {
+            reason = "creature_count_mismatch";
+            return false;
+        }
+
+        NRun? currentRun = NGame.Instance?.CurrentRunNode;
+        if (!runMayBeHidden && currentRun != null && !currentRun.Visible)
+        {
+            reason = "run_hidden";
+            return false;
+        }
+
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatRoom != null)
+        {
+            Control? encounterSlots = GetPrivateFieldValue<Control>(combatRoom, "<EncounterSlots>k__BackingField")
+                ?? GetPrivateFieldValue<Control>(combatRoom, "EncounterSlots");
+            foreach (Creature creature in combatState.Creatures)
+            {
+                if (combatRoom.GetCreatureNode(creature) == null)
+                {
+                    reason = $"missing_creature_node:{creature}";
+                    return false;
+                }
+            }
+
+            foreach (Creature creature in combatState.Enemies)
+            {
+                if (string.IsNullOrWhiteSpace(creature.SlotName))
+                    continue;
+
+                if (encounterSlots == null || !encounterSlots.HasNode(creature.SlotName))
+                {
+                    reason = $"invalid_slot:{creature.SlotName}";
+                    return false;
+                }
+            }
+
+            Player? me = LocalContext.GetMe(combatState);
+            if (me != null)
+            {
+                int handCount = PileType.Hand.GetPile(me).Cards.Count;
+                int holderCount = combatRoom.Ui.Hand.CardHolderContainer.GetChildCount();
+                if (holderCount != handCount)
+                {
+                    reason = $"hand_holder_mismatch:{holderCount}:{handCount}";
+                    return false;
+                }
+            }
+
+            bool choiceUiActive = IsSupportedChoiceUiActive(combatRoom.Ui);
+            if (snapshot.SelectionSessionState?.SupportedChoiceUiActive != true && choiceUiActive)
+            {
+                reason = "unexpected_choice_ui";
+                return false;
+            }
+        }
+
+        if (NOverlayStack.Instance != null
+            && NOverlayStack.Instance.ScreenCount > 0
+            && snapshot.SelectionSessionState?.OverlaySelectionActive != true)
+        {
+            reason = "unexpected_overlay";
+            return false;
+        }
+
+        reason = string.Empty;
+        return true;
+    }
+
+    private static void RestoreCreatures(RunState runState, CombatState combatState, UndoCombatFullState snapshotState)
+    {
+        SyncCombatCreaturesToSnapshot(runState, combatState, snapshotState);
 
         IReadOnlyList<Creature> creatures = combatState.Creatures;
-        for (int i = 0; i < snapshot.Creatures.Count; i++)
-            RestoreCreatureState(creatures[i], snapshot.Creatures[i]);
+        for (int i = 0; i < snapshotState.FullState.Creatures.Count; i++)
+            RestoreCreatureState(creatures[i], snapshotState.FullState.Creatures[i]);
+
+        RestorePowerRuntimeStates(combatState, snapshotState.PowerRuntimeStates);
+        RestoreMonsterStates(combatState, snapshotState.MonsterStates);
 
         foreach (Player player in runState.Players)
         {
@@ -3021,9 +3342,9 @@ public sealed class UndoController
         }
     }
 
-    private static void SyncCombatCreaturesToSnapshot(RunState runState, CombatState combatState, NetFullCombatState snapshot)
+    private static void SyncCombatCreaturesToSnapshot(RunState runState, CombatState combatState, UndoCombatFullState snapshotState)
     {
-        List<Creature> desiredAllies = snapshot.Players
+        List<Creature> desiredAllies = snapshotState.FullState.Players
             .Select(playerState => runState.GetPlayer(playerState.playerId)?.Creature
                 ?? throw new InvalidOperationException($"Could not map player creature {playerState.playerId}."))
             .ToList();
@@ -3031,19 +3352,22 @@ public sealed class UndoController
         List<Creature> currentEnemies = combatState.Enemies.ToList();
         HashSet<Creature> usedEnemies = [];
         List<Creature> desiredEnemies = [];
-        List<string?> encounterSlots = ResolveSnapshotEnemySlots(combatState, snapshot);
+        List<UndoMonsterState> snapshotMonsterStates = snapshotState.MonsterStates.ToList();
         int enemyIndex = 0;
-        foreach (NetFullCombatState.CreatureState creatureState in snapshot.Creatures)
+        foreach (NetFullCombatState.CreatureState creatureState in snapshotState.FullState.Creatures)
         {
             if (creatureState.playerId != null)
                 continue;
 
-            string? desiredSlot = enemyIndex < encounterSlots.Count ? encounterSlots[enemyIndex] : null;
+            UndoMonsterState? monsterState = enemyIndex < snapshotMonsterStates.Count ? snapshotMonsterStates[enemyIndex] : null;
+            string? desiredSlot = string.IsNullOrWhiteSpace(monsterState?.SlotName) ? null : monsterState!.SlotName;
             Creature? existingEnemy = currentEnemies.FirstOrDefault(creature =>
                 !usedEnemies.Contains(creature)
                 && creature.Monster?.Id == creatureState.monsterId
-                && creature.SlotName == desiredSlot);
-            existingEnemy ??= currentEnemies.FirstOrDefault(creature => !usedEnemies.Contains(creature) && creature.Monster?.Id == creatureState.monsterId);
+                && string.Equals(creature.SlotName, desiredSlot, StringComparison.Ordinal));
+            existingEnemy ??= currentEnemies.FirstOrDefault(creature =>
+                !usedEnemies.Contains(creature)
+                && creature.Monster?.Id == creatureState.monsterId);
             if (existingEnemy == null)
             {
                 if (creatureState.monsterId == null)
@@ -3054,11 +3378,8 @@ public sealed class UndoController
                 monster.SetUpForCombat();
                 CombatManager.Instance.StateTracker.Subscribe(existingEnemy);
             }
-            else
-            {
-                existingEnemy.SlotName = desiredSlot;
-            }
 
+            existingEnemy.SlotName = desiredSlot;
             desiredEnemies.Add(existingEnemy);
             usedEnemies.Add(existingEnemy);
             enemyIndex++;
@@ -3078,31 +3399,62 @@ public sealed class UndoController
         NotifyCombatCreaturesChanged(combatState);
     }
 
-    private static List<string?> ResolveSnapshotEnemySlots(CombatState combatState, NetFullCombatState snapshot)
+    private static void RestorePowerRuntimeStates(CombatState combatState, IReadOnlyList<UndoPowerRuntimeState> runtimeStates)
     {
-        List<string?> slots = [];
-        List<(ModelId Id, string? Slot)> encounterMonsters = [];
-        EncounterModel? encounter = combatState.Encounter;
-        if (encounter != null)
+        if (runtimeStates.Count == 0)
+            return;
+
+        Dictionary<string, Creature> creaturesByKey = BuildCreatureKeyMap(combatState.Creatures);
+        for (int creatureIndex = 0; creatureIndex < combatState.Creatures.Count; creatureIndex++)
         {
-            foreach (var monsterWithSlot in encounter.MonstersWithSlots)
-                encounterMonsters.Add((monsterWithSlot.Item1.Id, monsterWithSlot.Item2));
+            Creature creature = combatState.Creatures[creatureIndex];
+            string ownerCreatureKey = BuildCreatureKey(creature, creatureIndex);
+            Dictionary<ModelId, int> ordinalsByPowerId = [];
+            foreach (PowerModel power in creature.Powers)
+            {
+                int ordinal = ordinalsByPowerId.TryGetValue(power.Id, out int existingOrdinal) ? existingOrdinal : 0;
+                ordinalsByPowerId[power.Id] = ordinal + 1;
+                UndoPowerRuntimeState? runtimeState = runtimeStates.FirstOrDefault(state =>
+                    state.OwnerCreatureKey == ownerCreatureKey
+                    && state.PowerId == power.Id
+                    && state.Ordinal == ordinal);
+                if (runtimeState == null)
+                    continue;
+
+                power.Target = ResolveCreatureByKey(creaturesByKey, runtimeState.TargetCreatureKey);
+                power.Applier = ResolveCreatureByKey(creaturesByKey, runtimeState.ApplierCreatureKey);
+                if (power is not SwipePower swipe)
+                    continue;
+
+                if (runtimeState.StolenCard == null)
+                {
+                    swipe.StolenCard = null;
+                    continue;
+                }
+
+                CardModel stolenCard = CardModel.FromSerializable(ClonePacketSerializable(runtimeState.StolenCard));
+                if (power.Target?.Player != null)
+                    stolenCard.Owner = power.Target.Player;
+                swipe.StolenCard = stolenCard;
+            }
         }
+    }
 
-        Dictionary<string, int> usedOrdinals = [];
-        foreach (NetFullCombatState.CreatureState creatureState in snapshot.Creatures)
-        {
-            if (creatureState.playerId != null || creatureState.monsterId == null)
-                continue;
+    private static Dictionary<string, Creature> BuildCreatureKeyMap(IReadOnlyList<Creature> creatures)
+    {
+        Dictionary<string, Creature> creaturesByKey = [];
+        for (int i = 0; i < creatures.Count; i++)
+            creaturesByKey[BuildCreatureKey(creatures[i], i)] = creatures[i];
 
-            string key = creatureState.monsterId.Entry;
-            int ordinal = usedOrdinals.TryGetValue(key, out int existingOrdinal) ? existingOrdinal : 0;
-            usedOrdinals[key] = ordinal + 1;
-            string? slot = encounterMonsters.Where(tuple => tuple.Id == creatureState.monsterId).Skip(ordinal).Select(tuple => tuple.Slot).FirstOrDefault();
-            slots.Add(slot);
-        }
+        return creaturesByKey;
+    }
 
-        return slots;
+    private static Creature? ResolveCreatureByKey(IReadOnlyDictionary<string, Creature> creaturesByKey, string? creatureKey)
+    {
+        if (string.IsNullOrWhiteSpace(creatureKey))
+            return null;
+
+        return creaturesByKey.TryGetValue(creatureKey, out Creature? creature) ? creature : null;
     }
 
     private static void ReplaceCombatCreatureList(CombatState combatState, string fieldName, IEnumerable<Creature> desiredCreatures)
@@ -3159,8 +3511,11 @@ public sealed class UndoController
         if (moveStateMachine == null)
             return;
 
+        monster.Creature.SlotName = string.IsNullOrWhiteSpace(state.SlotName) ? null : state.SlotName;
         SetPrivateFieldValue(monster, "_spawnedThisTurn", state.SpawnedThisTurn);
         SetPrivateFieldValue(moveStateMachine, "_performedFirstMove", state.PerformedFirstMove);
+        if (FindProperty(monster.GetType(), "IsHovering") != null)
+            SetPrivatePropertyValue(monster, "IsHovering", state.IsHovering);
 
         if (moveStateMachine.StateLog is List<MonsterState> stateLog)
         {
@@ -3210,6 +3565,7 @@ public sealed class UndoController
             player.PlayerCombatState?.RecalculateCardValues();
         NormalizeCombatInteractionState(combatState);
         RebuildCombatCreatureNodesIfNeeded(combatState);
+        RestoreThievingHopperDisplayCards(combatState);
         RebuildCombatUiCards(combatState);
         NCombatRoom? combatRoom = NCombatRoom.Instance;
         if (combatRoom != null)
@@ -3230,6 +3586,40 @@ public sealed class UndoController
             ForceCombatUiInteractiveState(NCombatRoom.Instance.Ui, combatState, LocalContext.GetMe(combatState));
 
         NotifyCombatStateChangedMethod?.Invoke(CombatManager.Instance.StateTracker, ["UndoRefreshCombatUiAsync"]);
+    }
+
+    private static void RestoreThievingHopperDisplayCards(CombatState combatState)
+    {
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatRoom == null)
+            return;
+
+        foreach (Creature creature in combatState.Enemies)
+        {
+            NCreature? creatureNode = combatRoom.GetCreatureNode(creature);
+            if (creatureNode == null)
+                continue;
+
+            Marker2D? stolenCardPos = creatureNode.GetSpecialNode<Marker2D>("%StolenCardPos");
+            if (stolenCardPos == null)
+                continue;
+
+            ClearNodeChildren(stolenCardPos);
+            SwipePower? swipePower = creature.Powers.OfType<SwipePower>().FirstOrDefault(static power => power.StolenCard != null);
+            if (swipePower?.StolenCard == null)
+                continue;
+
+            if (swipePower.StolenCard.Owner == null && swipePower.Target?.Player != null)
+                swipePower.StolenCard.Owner = swipePower.Target.Player;
+
+            NCard? cardNode = NCard.Create(swipePower.StolenCard, ModelVisibility.Visible);
+            if (cardNode == null)
+                continue;
+
+            stolenCardPos.AddChild(cardNode);
+            cardNode.Position += cardNode.Size * 0.5f;
+            cardNode.UpdateVisuals(PileType.Deck, CardPreviewMode.Normal);
+        }
     }
     private static void NormalizeCombatInteractionState(CombatState combatState)
     {
@@ -3277,14 +3667,17 @@ public sealed class UndoController
         List<Creature> creatures = combatState.Creatures.ToList();
         List<NCreature> creatureNodes = combatRoom.CreatureNodes.ToList();
         List<NCreature> removingNodes = combatRoom.RemovingCreatureNodes.ToList();
-        bool slotPositionMismatch = false;
         Control? encounterSlots = GetPrivateFieldValue<Control>(combatRoom, "<EncounterSlots>k__BackingField")
             ?? GetPrivateFieldValue<Control>(combatRoom, "EncounterSlots");
-        if (encounterSlots != null)
+        bool hasInvalidEnemySlots = combatState.Enemies.Any(creature =>
+            !string.IsNullOrWhiteSpace(creature.SlotName)
+            && (encounterSlots == null || !encounterSlots.HasNode(creature.SlotName)));
+        bool slotPositionMismatch = false;
+        if (!hasInvalidEnemySlots && encounterSlots != null)
         {
             foreach (Creature creature in combatState.Enemies)
             {
-                if (creature.SlotName == null)
+                if (string.IsNullOrWhiteSpace(creature.SlotName))
                     continue;
 
                 NCreature? node = combatRoom.GetCreatureNode(creature);
@@ -3303,7 +3696,8 @@ public sealed class UndoController
         bool topologyMismatch = creatureNodes.Count != creatures.Count
             || removingNodes.Count > 0
             || creatures.Any(creature => combatRoom.GetCreatureNode(creature) == null)
-            || slotPositionMismatch;
+            || slotPositionMismatch
+            || hasInvalidEnemySlots;
         if (!topologyMismatch)
             return;
 
@@ -3324,9 +3718,41 @@ public sealed class UndoController
 
         SetPrivatePropertyValue(combatRoom, "EncounterSlots", null);
         InvokePrivateMethod(combatRoom, "CreateAllyNodes");
-        InvokePrivateMethod(combatRoom, "CreateEnemyNodes");
+        if (hasInvalidEnemySlots)
+            RebuildEnemyNodesWithFallbackLayout(combatRoom, combatState);
+        else
+            InvokePrivateMethod(combatRoom, "CreateEnemyNodes");
         InvokePrivateMethod(combatRoom, "AdjustCreatureScaleForAspectRatio");
         InvokePrivateMethod(combatRoom, "UpdateCreatureNavigation");
+    }
+
+    private static void RebuildEnemyNodesWithFallbackLayout(NCombatRoom combatRoom, CombatState combatState)
+    {
+        Dictionary<Creature, string?> originalSlots = combatState.Enemies.ToDictionary(static creature => creature, static creature => creature.SlotName);
+        foreach (Creature creature in combatState.Enemies)
+            creature.SlotName = null;
+
+        foreach (Creature creature in combatState.Enemies)
+            combatRoom.AddCreature(creature);
+
+        foreach ((Creature creature, string? slotName) in originalSlots)
+            creature.SlotName = slotName;
+
+        List<NCreature> enemyNodes = combatState.Enemies
+            .Select(combatRoom.GetCreatureNode)
+            .Where(static node => node != null)
+            .Cast<NCreature>()
+            .ToList();
+        InvokePrivateMethod(combatRoom, "PositionEnemies", enemyNodes, GetCombatRoomEncounterScaling(combatRoom));
+        InvokePrivateMethod(combatRoom, "RandomizeEnemyScalesAndHues");
+    }
+
+    private static float GetCombatRoomEncounterScaling(NCombatRoom combatRoom)
+    {
+        object? visuals = GetPrivateFieldValue<object>(combatRoom, "_visuals");
+        object? encounter = visuals == null ? null : FindProperty(visuals.GetType(), "Encounter")?.GetValue(visuals);
+        object? scaling = encounter == null ? null : FindMethod(encounter.GetType(), "GetCameraScaling")?.Invoke(encounter, null);
+        return scaling is float floatScaling ? floatScaling : 1f;
     }
     private static void ResetPlayerHandUi(NPlayerHand hand)
     {
@@ -3344,6 +3770,7 @@ public sealed class UndoController
             currentCardPlay.GetParent()?.RemoveChild(currentCardPlay);
             currentCardPlay.QueueFree();
         }
+
         GetPrivateFieldValue<System.Collections.IDictionary>(hand, "_holdersAwaitingQueue")?.Clear();
         GetPrivateFieldValue<System.Collections.IList>(hand, "_selectedCards")?.Clear();
         SetPrivateFieldValue(hand, "_currentCardPlay", null);
@@ -3351,6 +3778,9 @@ public sealed class UndoController
         SetPrivateFieldValue(hand, "_lastFocusedHolderIdx", -1);
         SetPrivateFieldValue(hand, "_currentMode", NPlayerHand.Mode.Play);
         SetPrivateFieldValue(hand, "_isDisabled", false);
+        SetPrivateFieldValue(hand, "_selectionCompletionSource", null);
+        SetPrivateFieldValue(hand, "_currentSelectionFilter", null);
+        SetPrivateFieldValue(hand, "_prefs", default(CardSelectorPrefs));
         SetPrivatePropertyValue(hand, "FocusedHolder", null);
         hand.CardHolderContainer.FocusMode = Control.FocusModeEnum.All;
         hand.Position = GetStaticFieldValue<Vector2>(typeof(NPlayerHand), "_showPosition");
@@ -3594,7 +4024,6 @@ public sealed class UndoController
 
         return null;
     }
-
     private static MethodInfo? FindMethod(Type? type, string name)
     {
         while (type != null)
@@ -3608,7 +4037,26 @@ public sealed class UndoController
 
         return null;
     }
-private static SerializableRun CloneRun(SerializableRun run)
+
+    private static UndoCombatFullState CreateDerivedCombatState(UndoCombatFullState source, NetFullCombatState fullState)
+    {
+        return new UndoCombatFullState(
+            fullState,
+            source.RoundNumber,
+            source.CurrentSide,
+            source.SynchronizerCombatState,
+            source.NextActionId,
+            source.NextHookId,
+            source.NextChecksumId,
+            source.MonsterStates,
+            source.CardCostStates,
+            source.CardRuntimeStates,
+            source.PowerRuntimeStates,
+            source.RelicRuntimeStates,
+            source.SelectionSessionState);
+    }
+
+    private static SerializableRun CloneRun(SerializableRun run)
     {
         string json = SaveManager.ToJson(run);
         ReadSaveResult<SerializableRun> result = SaveManager.FromJson<SerializableRun>(json);
@@ -3749,6 +4197,23 @@ private static SerializableRun CloneRun(SerializableRun run)
 
     private sealed record SyntheticTransformVfxCard(SerializableCard Card, int SourcePileIndex);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
