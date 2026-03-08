@@ -3038,16 +3038,25 @@ public sealed class UndoController
             if (creatureState.playerId != null)
                 continue;
 
-            Creature? existingEnemy = currentEnemies.FirstOrDefault(creature => !usedEnemies.Contains(creature) && creature.Monster?.Id == creatureState.monsterId);
+            string? desiredSlot = enemyIndex < encounterSlots.Count ? encounterSlots[enemyIndex] : null;
+            Creature? existingEnemy = currentEnemies.FirstOrDefault(creature =>
+                !usedEnemies.Contains(creature)
+                && creature.Monster?.Id == creatureState.monsterId
+                && creature.SlotName == desiredSlot);
+            existingEnemy ??= currentEnemies.FirstOrDefault(creature => !usedEnemies.Contains(creature) && creature.Monster?.Id == creatureState.monsterId);
             if (existingEnemy == null)
             {
                 if (creatureState.monsterId == null)
                     throw new InvalidOperationException($"Snapshot enemy state at index {enemyIndex} had no monster id.");
 
                 MonsterModel monster = ModelDb.GetById<MonsterModel>(creatureState.monsterId).ToMutable();
-                existingEnemy = combatState.CreateCreature(monster, CombatSide.Enemy, enemyIndex < encounterSlots.Count ? encounterSlots[enemyIndex] : null);
+                existingEnemy = combatState.CreateCreature(monster, CombatSide.Enemy, desiredSlot);
                 monster.SetUpForCombat();
                 CombatManager.Instance.StateTracker.Subscribe(existingEnemy);
+            }
+            else
+            {
+                existingEnemy.SlotName = desiredSlot;
             }
 
             desiredEnemies.Add(existingEnemy);
@@ -3065,6 +3074,7 @@ public sealed class UndoController
 
         ReplaceCombatCreatureList(combatState, "_allies", desiredAllies);
         ReplaceCombatCreatureList(combatState, "_enemies", desiredEnemies);
+        combatState.SortEnemiesBySlotName();
         NotifyCombatCreaturesChanged(combatState);
     }
 
@@ -3267,9 +3277,33 @@ public sealed class UndoController
         List<Creature> creatures = combatState.Creatures.ToList();
         List<NCreature> creatureNodes = combatRoom.CreatureNodes.ToList();
         List<NCreature> removingNodes = combatRoom.RemovingCreatureNodes.ToList();
+        bool slotPositionMismatch = false;
+        Control? encounterSlots = GetPrivateFieldValue<Control>(combatRoom, "<EncounterSlots>k__BackingField")
+            ?? GetPrivateFieldValue<Control>(combatRoom, "EncounterSlots");
+        if (encounterSlots != null)
+        {
+            foreach (Creature creature in combatState.Enemies)
+            {
+                if (creature.SlotName == null)
+                    continue;
+
+                NCreature? node = combatRoom.GetCreatureNode(creature);
+                if (node == null || !encounterSlots.HasNode(creature.SlotName))
+                    continue;
+
+                Vector2 expectedPosition = encounterSlots.GetNode<Marker2D>(creature.SlotName).GlobalPosition;
+                if (node.GlobalPosition.DistanceTo(expectedPosition) > 1f)
+                {
+                    slotPositionMismatch = true;
+                    break;
+                }
+            }
+        }
+
         bool topologyMismatch = creatureNodes.Count != creatures.Count
             || removingNodes.Count > 0
-            || creatures.Any(creature => combatRoom.GetCreatureNode(creature) == null);
+            || creatures.Any(creature => combatRoom.GetCreatureNode(creature) == null)
+            || slotPositionMismatch;
         if (!topologyMismatch)
             return;
 
