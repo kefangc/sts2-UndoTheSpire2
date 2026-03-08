@@ -2921,6 +2921,8 @@ public sealed class UndoController
 
                 MonsterModel monster = ModelDb.GetById<MonsterModel>(creatureState.monsterId).ToMutable();
                 existingEnemy = combatState.CreateCreature(monster, CombatSide.Enemy, enemyIndex < encounterSlots.Count ? encounterSlots[enemyIndex] : null);
+                monster.SetUpForCombat();
+                CombatManager.Instance.StateTracker.Subscribe(existingEnemy);
             }
 
             desiredEnemies.Add(existingEnemy);
