@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using Godot;
 using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Combat;
@@ -36,6 +36,7 @@ using MegaCrit.Sts2.Core.Nodes.Potions;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
+using MegaCrit.Sts2.Core.Settings;
 using MegaCrit.Sts2.Core.Assets;
 using MegaCrit.Sts2.Core.Entities.Actions;
 using MegaCrit.Sts2.Core.Multiplayer;
@@ -66,19 +67,20 @@ public sealed class UndoController
     private UndoChoiceSpec? _lastResolvedChoiceSpec;
     private UndoChoiceResultKey? _lastResolvedChoiceResultKey;
     private UndoSyntheticChoiceSession? _syntheticChoiceSession;
+    private bool _blockUndoUntilNextPlayerTurn;
+    private int _blockedTurnRound = -1;
 
     public event Action? StateChanged;
 
     public bool IsRestoring { get; private set; }
 
-    public bool HasUndo => _pastSnapshots.Count > 0;
+    public bool HasUndo => GetVisibleSnapshot(_pastSnapshots) != null;
 
-    public bool HasRedo => _futureSnapshots.Count > 0;
+    public bool HasRedo => GetVisibleSnapshot(_futureSnapshots) != null;
 
-    public string UndoLabel => _pastSnapshots.First?.Value.ActionLabel ?? string.Empty;
+    public string UndoLabel => GetVisibleSnapshot(_pastSnapshots)?.ActionLabel ?? string.Empty;
 
-    public string RedoLabel => _futureSnapshots.First?.Value.ActionLabel ?? string.Empty;
-
+    public string RedoLabel => GetVisibleSnapshot(_futureSnapshots)?.ActionLabel ?? string.Empty;
     public void OnCombatUiActivated(NCombatUi combatUi, CombatState combatState)
     {
         NotifyStateChanged();
@@ -87,6 +89,73 @@ public sealed class UndoController
     public void OnCombatUiDeactivated(NCombatUi combatUi)
     {
         NotifyStateChanged();
+    }
+
+    private UndoSnapshot? GetVisibleSnapshot(LinkedList<UndoSnapshot> snapshots)
+    {
+        LinkedListNode<UndoSnapshot>? node = snapshots.First;
+        if (!UndoModSettings.EnableChoiceUndo)
+        {
+            while (node != null && node.Value.IsChoiceAnchor)
+                node = node.Next;
+        }
+
+        return node?.Value;
+    }
+
+    private void DiscardHiddenChoiceAnchors(LinkedList<UndoSnapshot> snapshots, string operation)
+    {
+        if (UndoModSettings.EnableChoiceUndo)
+            return;
+
+        while (snapshots.First?.Value is UndoSnapshot snapshot && snapshot.IsChoiceAnchor)
+        {
+            snapshots.RemoveFirst();
+            MainFile.Logger.Info($"Skipped hidden choice anchor during {operation}. ReplayEvents={snapshot.ReplayEventCount}");
+        }
+    }
+
+    private void BeginTurnTransitionBlock()
+    {
+        CombatState? state = CombatManager.Instance.DebugOnlyGetState();
+        _blockUndoUntilNextPlayerTurn = true;
+        _blockedTurnRound = state?.RoundNumber ?? -1;
+        WriteInteractionLog("turn_transition_block_started", $"round={_blockedTurnRound}");
+        NotifyStateChanged();
+    }
+
+    private void ClearTurnTransitionBlock()
+    {
+        _blockUndoUntilNextPlayerTurn = false;
+        _blockedTurnRound = -1;
+    }
+    private bool IsUndoRedoTemporarilyBlocked(NCombatUi combatUi)
+    {
+        if (!_blockUndoUntilNextPlayerTurn)
+            return false;
+
+        if (ContainsDescendantOfType<NCardFlyVfx>(NCombatRoom.Instance?.CombatVfxContainer)
+            || ContainsDescendantOfType<NCardFlyVfx>(NRun.Instance?.GlobalUi?.TopBar?.TrailContainer))
+        {
+            return true;
+        }
+
+        CombatState? state = CombatManager.Instance.DebugOnlyGetState();
+        if (state == null || state.RoundNumber < _blockedTurnRound)
+        {
+            ClearTurnTransitionBlock();
+            return false;
+        }
+
+        if (state.CurrentSide == CombatSide.Player
+            && state.RoundNumber > _blockedTurnRound
+            && !IsCombatUiTransitioning(combatUi))
+        {
+            ClearTurnTransitionBlock();
+            return false;
+        }
+
+        return true;
     }
 
     public void OnCombatReplayInitialized(SerializableRun initialRun)
@@ -110,6 +179,7 @@ public sealed class UndoController
         _pastSnapshots.Clear();
         _futureSnapshots.Clear();
         _nextSequenceId = 1;
+        ClearTurnTransitionBlock();
         MainFile.Logger.Info("Initialized combat replay state for undo.");
         NotifyStateChanged();
     }
@@ -231,9 +301,11 @@ public sealed class UndoController
         if (!ShouldCapture(action))
             return;
 
+        if (actionKind == UndoActionKind.EndTurn)
+            BeginTurnTransitionBlock();
+
         TryCaptureSnapshot(actionKind, GetReplayEventCountBeforeCurrentAction(), DescribeAction(actionKind, action));
     }
-
     public void TryCapturePlayerChoice(GameAction action)
     {
         if (!ShouldCapture(action))
@@ -349,6 +421,7 @@ public sealed class UndoController
 
         UndoSnapshot? currentChoiceAnchor = GetCurrentChoiceAnchorSnapshot();
         bool movedCurrentChoiceAnchor = MoveCurrentChoiceAnchorToDestinationIfNeeded(source, destination);
+        DiscardHiddenChoiceAnchors(source, operation);
         if (source.First?.Value is not UndoSnapshot snapshot)
             return;
 
@@ -374,6 +447,7 @@ public sealed class UndoController
         }
 
         IsRestoring = true;
+        ClearTurnTransitionBlock();
         NotifyStateChanged();
 
         try
@@ -396,12 +470,17 @@ public sealed class UndoController
             NotifyStateChanged();
         }
     }
-
     private async Task<string> RestoreSnapshotAsync(UndoSnapshot snapshot, UndoSnapshot? baseSnapshot, UndoSnapshot? branchSnapshot)
     {
         if (snapshot.IsChoiceAnchor)
         {
-            if (snapshot.ChoiceSpec?.SupportsSyntheticRestore == true)
+            if (!UndoModSettings.EnableChoiceUndo && baseSnapshot != null && await TryApplyFullStateInPlaceAsync(baseSnapshot.CombatState))
+            {
+                WriteInteractionLog("restore_choice_skipped", $"label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount}");
+                return "choice_skipped";
+            }
+
+            if (UndoModSettings.EnableUnifiedEffectMode && snapshot.ChoiceSpec?.SupportsSyntheticRestore == true)
             {
                 if (await TryRestoreSyntheticChoiceAsync(snapshot, branchSnapshot))
                     return "choice_instant";
@@ -423,7 +502,6 @@ public sealed class UndoController
         await RestoreCombatReplayAsync(snapshot.ReplayEventCount, snapshot.IsChoiceAnchor);
         return "replay";
     }
-
     private async Task<bool> TryRestoreSyntheticChoiceAsync(UndoSnapshot snapshot, UndoSnapshot? branchSnapshot)
     {
         if (snapshot.ChoiceSpec == null)
@@ -799,7 +877,7 @@ public sealed class UndoController
         NetFullCombatState.CombatPileState anchorExhaustPileState = anchorPlayerState.piles[anchorExhaustPileIndex];
         NetFullCombatState.CombatPileState branchExhaustPileState = branchPlayerState.piles[branchExhaustPileIndex];
         if (anchorHandPileState.cards.Count - branchHandPileState.cards.Count != selectedCount
-            || branchExhaustPileState.cards.Count - anchorExhaustPileState.cards.Count != selectedCount)
+            || branchExhaustPileState.cards.Count - anchorExhaustPileState.cards.Count < selectedCount)
         {
             return false;
         }
@@ -900,34 +978,38 @@ public sealed class UndoController
             if (me == null || combatRoom == null)
                 return null;
 
-            foreach (SyntheticExhaustVfxCard exhaustCard in request.ExhaustCards)
+            for (int i = 0; i < request.ExhaustCards.Count; i++)
             {
+                SyntheticExhaustVfxCard exhaustCard = request.ExhaustCards[i];
                 CardModel card = CardModel.FromSerializable(ClonePacketSerializable(exhaustCard.Card));
                 if (card.Owner == null)
                     card.Owner = me;
 
                 NCard cardNode = CreateCardNode(card, PileType.Hand);
                 combatRoom.Ui.AddChildSafely(cardNode);
-                cardNode.Position = exhaustCard.GlobalPosition - combatRoom.Ui.GlobalPosition;
+                cardNode.GlobalPosition = exhaustCard.GlobalPosition;
                 cardNode.ZIndex = 100;
+                cardNode.RotationDegrees = (i % 2 == 0 ? -3f : 3f);
 
-                Tween tween = combatRoom.CreateTween().SetParallel(true);
-                tween.TweenProperty(cardNode, "position", cardNode.Position + Vector2.Down * 25f, 0.3);
-                tween.TweenProperty(cardNode, "modulate", StsColors.exhaustGray, 0.3);
-                tween.Chain().TweenCallback(Callable.From(() =>
+                NExhaustVfx? exhaustVfx = NExhaustVfx.Create(cardNode);
+                if (exhaustVfx != null)
                 {
-                    NExhaustVfx? exhaustVfx = NExhaustVfx.Create(cardNode);
-                    if (exhaustVfx != null)
-                        combatRoom.Ui.AddChildSafely(exhaustVfx);
-                }));
+                    exhaustVfx.ZIndex = 130;
+                    combatRoom.Ui.AddChildSafely(exhaustVfx);
+                }
+
+                float duration = SaveManager.Instance.PrefsSave.FastMode == FastModeType.Fast ? 0.2f : 0.3f;
+                Tween tween = combatRoom.CreateTween();
+                tween.SetParallel(true);
+                tween.TweenProperty(cardNode, "modulate", StsColors.exhaustGray, duration);
+                tween.Chain().TweenInterval(0.1f);
                 tween.Chain().TweenCallback(Callable.From(cardNode.QueueFreeSafely));
             }
-
             if (request.TransformPileType != null)
             {
                 IReadOnlyList<CardModel> liveSourceCards = request.TransformPileType.Value.GetPile(me).Cards;
                 Vector2 transformCenter = combatRoom.GetViewportRect().GetCenter();
-                float transformSpacing = request.TransformCards.Count <= 1 ? 0f : 84f;
+                float transformSpacing = request.TransformCards.Count <= 1 ? 0f : 260f;
                 for (int i = 0; i < request.TransformCards.Count; i++)
                 {
                     SyntheticTransformVfxCard transformCard = request.TransformCards[i];
@@ -944,7 +1026,8 @@ public sealed class UndoController
                     {
                         combatRoom.CombatVfxContainer.AddChildSafely(transformVfx);
                         float offsetX = (i - (request.TransformCards.Count - 1) * 0.5f) * transformSpacing;
-                        transformVfx.GlobalPosition = transformCenter + new Vector2(offsetX, 0f);
+                        float offsetY = 0f;
+                        transformVfx.GlobalPosition = transformCenter + new Vector2(offsetX, offsetY);
                     }
                 }
             }
@@ -2095,10 +2178,31 @@ public sealed class UndoController
             && NGame.Instance?.CurrentRunNode != null;
     }
 
-    private static bool IsUiBlocking(NCombatUi combatUi)
+    private bool MoveCurrentChoiceAnchorToDestinationIfNeeded(LinkedList<UndoSnapshot> source, LinkedList<UndoSnapshot> destination)
+    {
+        if (source.First?.Value is not UndoSnapshot snapshot
+            || !snapshot.IsChoiceAnchor
+            || source.First.Next == null
+            || !IsCurrentStateAtChoiceAnchor(snapshot))
+        {
+            return false;
+        }
+
+        source.RemoveFirst();
+        destination.AddFirst(snapshot);
+        TrimSnapshots(destination);
+        MainFile.Logger.Info("Skipped restoring the current player choice anchor because the choice UI is already active.");
+        return true;
+    }
+
+
+    private bool IsUiBlocking(NCombatUi combatUi)
     {
         if (IsSupportedChoiceUiActive(combatUi))
             return false;
+
+        if (IsUndoRedoTemporarilyBlocked(combatUi))
+            return true;
 
         if (NOverlayStack.Instance != null && NOverlayStack.Instance.ScreenCount > 0)
             return true;
@@ -2119,59 +2223,8 @@ public sealed class UndoController
         if (CombatManager.Instance.EndingPlayerTurnPhaseOne || CombatManager.Instance.EndingPlayerTurnPhaseTwo)
             return true;
 
-        NPlayerHand hand = combatUi.Hand;
-        if (IsTweenRunning(hand, "_animInTween")
-            || IsTweenRunning(hand, "_animOutTween")
-            || IsTweenRunning(hand, "_animEnableTween")
-            || IsTweenRunning(hand, "_selectedCardScaleTween"))
-        {
-            return true;
-        }
-
-        if (FindField(hand.GetType(), "_holdersAwaitingQueue")?.GetValue(hand) is System.Collections.ICollection awaitingQueue
-            && awaitingQueue.Count > 0)
-        {
-            return true;
-        }
-
-        if (combatUi.PlayQueue.GetChildCount() > 0)
-            return true;
-
-        if (ContainsDescendantOfType<NCardFlyVfx>(NCombatRoom.Instance?.CombatVfxContainer)
-            || ContainsDescendantOfType<NCardFlyVfx>(NRun.Instance?.GlobalUi?.TopBar?.TrailContainer))
-        {
-            return true;
-        }
-
-        foreach (Node child in hand.CardHolderContainer.GetChildren())
-        {
-            if (child is not NHandCardHolder holder)
-                continue;
-
-            if (holder.Position.DistanceSquaredTo(holder.TargetPosition) > 4f)
-                return true;
-        }
-
-        return false;
+        return IsTweenRunning(combatUi.Hand, "_selectedCardScaleTween");
     }
-
-    private bool MoveCurrentChoiceAnchorToDestinationIfNeeded(LinkedList<UndoSnapshot> source, LinkedList<UndoSnapshot> destination)
-    {
-        if (source.First?.Value is not UndoSnapshot snapshot
-            || !snapshot.IsChoiceAnchor
-            || source.First.Next == null
-            || !IsCurrentStateAtChoiceAnchor(snapshot))
-        {
-            return false;
-        }
-
-        source.RemoveFirst();
-        destination.AddFirst(snapshot);
-        TrimSnapshots(destination);
-        MainFile.Logger.Info("Skipped restoring the current player choice anchor because the choice UI is already active.");
-        return true;
-    }
-
     private UndoSnapshot? GetCurrentChoiceAnchorSnapshot()
     {
         if (_syntheticChoiceSession != null)
@@ -2385,6 +2438,7 @@ public sealed class UndoController
         _lastResolvedChoiceSpec = null;
         _lastResolvedChoiceResultKey = null;
         _syntheticChoiceSession = null;
+        ClearTurnTransitionBlock();
         if (_pastSnapshots.Count == 0 && _futureSnapshots.Count == 0)
             return;
 

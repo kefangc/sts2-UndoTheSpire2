@@ -12,5 +12,10 @@
   "action.use_potion": "Use {0}",
   "action.discard_potion": "Discard {0}",
   "action.end_turn": "End turn",
-  "action.player_choice": "Make a choice"
+  "action.player_choice": "Make a choice",
+  "settings.panel_title": "Undo Settings",
+  "settings.choice_undo_title": "Enable Choice Undo",
+  "settings.choice_undo_description": "When enabled, undo on cards or potions with choices returns to the choice screen; when disabled, undo defaults to before the card or potion was played.",
+  "settings.unified_effect_title": "Enable Unified Effect Mode",
+  "settings.unified_effect_description": "Prefer the current generic instant-effect synthesis path; disable it to fall back to the more conservative choice restore path."
 }
