@@ -634,10 +634,19 @@ public sealed class UndoController
                 throw new InvalidOperationException(_lastRestoreFailureReason ?? "Choice skip restore failed.");
             }
 
-            if (UndoModSettings.EnableUnifiedEffectMode && snapshot.ChoiceSpec?.SupportsSyntheticRestore == true)
+            if (UndoModSettings.EnableUnifiedEffectMode)
             {
-                if (await TryRestoreSyntheticChoiceAsync(snapshot, branchSnapshot))
-                    return "choice_instant";
+                if (await TryRestorePrimaryChoiceAsync(snapshot, branchSnapshot))
+                {
+                    WriteInteractionLog("primary_restore", $"label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount} mode=choice_anchor");
+                    return "primary_choice";
+                }
+
+                if (snapshot.ChoiceSpec?.SupportsSyntheticRestore == true && await TryRestoreSyntheticChoiceAsync(snapshot, branchSnapshot))
+                {
+                    WriteInteractionLog("fallback_restore", $"label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount} mode=choice_anchor");
+                    return "fallback_choice";
+                }
 
                 WriteInteractionLog("restore_choice_instant_failed", $"label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount}");
                 throw new InvalidOperationException(_lastRestoreFailureReason ?? "Choice instant restore failed.");
@@ -651,6 +660,13 @@ public sealed class UndoController
             UndoSelectionSessionState? selectionSession = snapshot.CombatState.SelectionSessionState;
             UndoChoiceSpec? restorableChoiceSpec = selectionSession?.ChoiceSpec
                 ?? TryCaptureChoiceSpecFromActionContext(snapshot);
+            UndoSnapshot? templateSnapshot = FindSyntheticChoiceTemplateSnapshot(baseSnapshot, snapshot.ReplayEventCount);
+            if (UndoModSettings.EnableUnifiedEffectMode && await TryRestorePrimaryChoiceAsync(snapshot, templateSnapshot, stateAlreadyApplied: true))
+            {
+                WriteInteractionLog("primary_restore", $"kind={snapshot.ActionKind} label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount}");
+                return "primary_choice";
+            }
+
             bool shouldRestoreChoiceSession = UndoModSettings.EnableUnifiedEffectMode
                 && restorableChoiceSpec?.SupportsSyntheticRestore == true
                 && (UndoModSettings.EnableChoiceUndo
@@ -667,11 +683,10 @@ public sealed class UndoController
                     snapshot.ActionLabel,
                     isChoiceAnchor: true,
                     choiceSpec: restorableChoiceSpec);
-                UndoSnapshot? templateSnapshot = FindSyntheticChoiceTemplateSnapshot(baseSnapshot, snapshot.ReplayEventCount);
                 await WaitOneFrameAsync();
                 OpenSyntheticChoiceSession(syntheticAnchor, templateSnapshot);
-                WriteInteractionLog("restore_selection_session", $"kind={snapshot.ActionKind} label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount}");
-                return "choice_instant";
+                WriteInteractionLog("fallback_restore", $"kind={snapshot.ActionKind} label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount}");
+                return "fallback_choice";
             }
 
             WriteInteractionLog("restore_full_state", $"kind={snapshot.ActionKind} label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount}");
@@ -679,6 +694,83 @@ public sealed class UndoController
         }
 
         throw new InvalidOperationException(_lastRestoreFailureReason ?? "Full-state restore failed.");
+    }
+    private async Task<bool> TryRestorePrimaryChoiceAsync(UndoSnapshot snapshot, UndoSnapshot? branchSnapshot, bool stateAlreadyApplied = false)
+    {
+        PausedChoiceState? pausedChoiceState = snapshot.CombatState.ActionKernelState.PausedChoiceState;
+        if (pausedChoiceState?.ChoiceSpec == null)
+            return false;
+
+        RestoreCapabilityReport capability = UndoActionCodecRegistry.EvaluateCapability(pausedChoiceState);
+        if (capability.Result != RestoreCapabilityResult.Supported)
+            return false;
+
+        if (!stateAlreadyApplied && !await TryApplyFullStateInPlaceAsync(snapshot.CombatState))
+            return false;
+
+        RunState? runState = RunManager.Instance.DebugOnlyGetState();
+        if (runState == null)
+            return false;
+
+        await WaitOneFrameAsync();
+
+        UndoChoiceResultKey? selectedKey;
+        try
+        {
+            selectedKey = await UndoActionCodecRegistry.RestoreAsync(pausedChoiceState, runState);
+        }
+        catch (TaskCanceledException)
+        {
+            return false;
+        }
+
+        if (selectedKey == null)
+            return false;
+
+        UndoChoiceSpec choiceSpec = pausedChoiceState.ChoiceSpec;
+        UndoSyntheticChoiceSession primarySession = new(snapshot, choiceSpec);
+        if (branchSnapshot?.ChoiceResultKey != null)
+            primarySession.CachedBranches[branchSnapshot.ChoiceResultKey] = branchSnapshot;
+
+        if (primarySession.CachedBranches.TryGetValue(selectedKey, out UndoSnapshot? cachedBranchSnapshot))
+        {
+            if (!await TryApplySynthesizedChoiceBranchAsync(primarySession, cachedBranchSnapshot, selectedKey, vfxRequest: null))
+                return false;
+
+            return true;
+        }
+
+        if (!TryCreateSyntheticChoiceBranchSnapshot(primarySession, selectedKey, out UndoSnapshot? synthesizedBranch))
+        {
+            MainFile.Logger.Warn($"Could not synthesize primary branch for restored choice {selectedKey}.");
+            return false;
+        }
+
+        return await TryApplySynthesizedChoiceBranchAsync(primarySession, synthesizedBranch!, selectedKey, vfxRequest: null);
+    }
+
+    private async Task<bool> TryApplySynthesizedChoiceBranchAsync(
+        UndoSyntheticChoiceSession session,
+        UndoSnapshot synthesizedBranch,
+        UndoChoiceResultKey selectedKey,
+        SyntheticChoiceVfxRequest? vfxRequest)
+    {
+        _syntheticChoiceSession = null;
+        _lastResolvedChoiceSpec = session.ChoiceSpec;
+        _lastResolvedChoiceResultKey = selectedKey;
+        session.CachedBranches[selectedKey] = synthesizedBranch;
+        _futureSnapshots.Clear();
+
+        RewriteReplayChoiceBranch(session.AnchorSnapshot, synthesizedBranch);
+        if (!await TryApplyFullStateInPlaceAsync(synthesizedBranch.CombatState))
+            throw new InvalidOperationException($"Failed to apply synthesized choice branch {selectedKey}.");
+
+        _combatReplay!.ActiveEventCount = synthesizedBranch.ReplayEventCount;
+        NotifyStateChanged();
+        if (vfxRequest != null)
+            _ = TaskHelper.RunSafely(PlaySyntheticChoiceVfxAsync(vfxRequest));
+
+        return true;
     }
 
     private async Task<bool> TryRestoreSyntheticChoiceAsync(UndoSnapshot snapshot, UndoSnapshot? branchSnapshot)

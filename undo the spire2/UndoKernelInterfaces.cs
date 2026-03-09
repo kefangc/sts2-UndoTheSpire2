@@ -1,14 +1,14 @@
+using MegaCrit.Sts2.Core.Runs;
+
 namespace UndoTheSpire2;
 
-internal interface IUndoActionCodec<TAction, TState>
+internal interface IUndoActionCodec<TActionState>
 {
     string CodecId { get; }
 
-    bool CanHandle(TAction action);
+    bool CanHandle(TActionState state);
 
-    TState? Capture(TAction action);
-
-    void Restore(TAction action, TState state);
+    Task<UndoChoiceResultKey?> RestoreAsync(TActionState state, RunState runState);
 }
 
 internal interface IUndoTopologyCodec<TState>

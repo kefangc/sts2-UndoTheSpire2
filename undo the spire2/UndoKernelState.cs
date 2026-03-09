@@ -6,7 +6,7 @@ namespace UndoTheSpire2;
 
 internal sealed class ActionKernelState
 {
-    public const int CurrentSchemaVersion = 2;
+    public const int CurrentSchemaVersion = 3;
 
     public static ActionKernelState Empty { get; } = new()
     {
@@ -82,6 +82,8 @@ internal sealed class PausedChoiceState
 
     public ulong? OwnerNetId { get; init; }
 
+    public uint? ChoiceId { get; init; }
+
     public string? Prompt { get; init; }
 
     public int MinSelections { get; init; }
@@ -93,6 +95,12 @@ internal sealed class PausedChoiceState
     public IReadOnlyList<CardRef> PreselectedCardRefs { get; init; } = [];
 
     public ActionRef? SourceActionRef { get; init; }
+
+    public string? SourceActionCodecId { get; init; }
+
+    public UndoSerializedActionPayload? SourceActionPayload { get; init; }
+
+    public uint? ResumeActionId { get; init; }
 
     public uint? ResumeToken { get; init; }
 

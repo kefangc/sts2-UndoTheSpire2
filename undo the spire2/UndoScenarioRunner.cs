@@ -28,7 +28,7 @@ internal sealed class UndoScenarioDefinition : IUndoScenario
 
 internal sealed class UndoScenarioReport
 {
-    public required IReadOnlyList<UndoScenarioDefinition> Scenarios { get; init; }
+    public required IReadOnlyList<UndoScenarioExecutionResult> Results { get; init; }
 
     public required AuditCoverageValidationResult CoverageValidation { get; init; }
 
@@ -37,16 +37,27 @@ internal sealed class UndoScenarioReport
         StringBuilder builder = new();
         builder.AppendLine("# Scenario Run Report");
         builder.AppendLine();
-        builder.AppendLine($"- Scenario definitions loaded: {Scenarios.Count}");
+        builder.AppendLine($"- Scenario definitions loaded: {Results.Count}");
         builder.AppendLine($"- Audit coverage aligned: {CoverageValidation.IsSuccess}");
+        builder.AppendLine($"- Passed: {Results.Count(static result => result.Status == UndoScenarioExecutionStatus.Passed)}");
+        builder.AppendLine($"- Failed: {Results.Count(static result => result.Status == UndoScenarioExecutionStatus.Failed)}");
+        builder.AppendLine($"- Skipped: {Results.Count(static result => result.Status == UndoScenarioExecutionStatus.Skipped)}");
         builder.AppendLine();
-        foreach (UndoScenarioDefinition scenario in Scenarios)
+        foreach (UndoScenarioExecutionResult result in Results)
         {
-            builder.AppendLine($"## {scenario.Title}");
-            builder.AppendLine($"- Id: {scenario.Id}");
-            builder.AppendLine($"- Assertions: {(scenario.Assertions.Count == 0 ? "none" : string.Join(", ", scenario.Assertions))}");
-            if (scenario.ExpectedUnsupportedCapabilities.Count > 0)
-                builder.AppendLine($"- Expected unsupported: {string.Join(", ", scenario.ExpectedUnsupportedCapabilities)}");
+            builder.AppendLine($"## {result.Scenario.Title}");
+            builder.AppendLine($"- Id: {result.Scenario.Id}");
+            builder.AppendLine($"- Status: {result.Status}");
+            if (!string.IsNullOrWhiteSpace(result.Detail))
+                builder.AppendLine($"- Detail: {result.Detail}");
+            if (result.UnsupportedCapabilities.Count > 0)
+                builder.AppendLine($"- Unsupported: {string.Join(", ", result.UnsupportedCapabilities)}");
+            if (result.Assertions.Count > 0)
+            {
+                builder.AppendLine("- Assertions:");
+                foreach (UndoScenarioAssertionResult assertion in result.Assertions)
+                    builder.AppendLine($"  - {(assertion.Passed ? "pass" : "fail")} {assertion.Assertion}{(string.IsNullOrWhiteSpace(assertion.Detail) ? string.Empty : $" ({assertion.Detail})")}");
+            }
             builder.AppendLine();
         }
 
@@ -96,26 +107,52 @@ internal static class UndoScenarioRunner
     {
         IReadOnlyList<UndoScenarioDefinition> scenarios = LoadScenarioDefinitions(scenarioRoot);
         AuditCoverageValidationResult coverage = AuditCoverageValidator.ValidateAgainstCache();
+        IReadOnlyList<UndoScenarioExecutionResult> results = scenarios.Select(scenario => new UndoScenarioExecutionResult
+        {
+            Scenario = scenario,
+            Status = UndoScenarioExecutionStatus.Skipped,
+            Detail = "definition_only"
+        }).ToList();
         return new UndoScenarioReport
         {
-            Scenarios = scenarios,
+            Results = results,
+            CoverageValidation = coverage
+        };
+    }
+
+    public static async Task<UndoScenarioReport> RunAsync(string? scenarioRoot = null)
+    {
+        IReadOnlyList<UndoScenarioDefinition> scenarios = LoadScenarioDefinitions(scenarioRoot);
+        AuditCoverageValidationResult coverage = AuditCoverageValidator.ValidateAgainstCache();
+        IReadOnlyList<UndoScenarioExecutionResult> results = await UndoScenarioExecutor.RunAllAsync(scenarios);
+        return new UndoScenarioReport
+        {
+            Results = results,
             CoverageValidation = coverage
         };
     }
 
     public static void WriteReports(string? scenarioRoot = null, string? reportsRoot = null)
     {
-        UndoScenarioReport report = BuildDefinitionReport(scenarioRoot);
+        UndoScenarioReport report = RunAsync(scenarioRoot).GetAwaiter().GetResult();
         string root = string.IsNullOrWhiteSpace(reportsRoot) ? DefaultReportsRoot : reportsRoot;
         Directory.CreateDirectory(root);
         File.WriteAllText(Path.Combine(root, "scenario-run-report.md"), report.ToMarkdown());
         File.WriteAllText(Path.Combine(root, "audit-coverage-report.md"), AuditCoverageValidator.BuildMarkdownReport(report.CoverageValidation));
         File.WriteAllText(
             Path.Combine(root, "unsupported-capabilities-report.md"),
-            report.Scenarios.Any(static scenario => scenario.ExpectedUnsupportedCapabilities.Count > 0)
-                ? string.Join(Environment.NewLine, report.Scenarios
-                    .Where(static scenario => scenario.ExpectedUnsupportedCapabilities.Count > 0)
-                    .Select(scenario => $"- {scenario.Id}: {string.Join(", ", scenario.ExpectedUnsupportedCapabilities)}"))
-                : "- none");
+            BuildUnsupportedCapabilitiesMarkdown(report.Results));
+    }
+
+    private static string BuildUnsupportedCapabilitiesMarkdown(IReadOnlyList<UndoScenarioExecutionResult> results)
+    {
+        IReadOnlyList<string> lines = results
+            .Where(static result => result.UnsupportedCapabilities.Count > 0)
+            .Select(result => $"- {result.Scenario.Id}: {string.Join(", ", result.UnsupportedCapabilities)}")
+            .ToList();
+
+        return lines.Count == 0
+            ? "# Unsupported Capabilities Report" + Environment.NewLine + Environment.NewLine + "- none"
+            : "# Unsupported Capabilities Report" + Environment.NewLine + Environment.NewLine + string.Join(Environment.NewLine, lines);
     }
 }

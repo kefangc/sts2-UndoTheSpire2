@@ -113,9 +113,16 @@ $knownCases = @(
 
 $implementedCodecIds = @()
 $runtimeCodecFile = Join-Path $RepoRoot 'UndoRuntimeCodecs.cs'
+$actionCodecFile = Join-Path $RepoRoot 'UndoActionCodecs.cs'
+$codecTexts = @()
 if (Test-Path $runtimeCodecFile) {
-    $runtimeCodecText = Read-Text $runtimeCodecFile
-    $implementedCodecIds = ([regex]::Matches($runtimeCodecText, 'CodecId\s*=>\s*"([^"]+)"') | ForEach-Object { $_.Groups[1].Value }) | Sort-Object -Unique
+    $codecTexts += Read-Text $runtimeCodecFile
+}
+if (Test-Path $actionCodecFile) {
+    $codecTexts += Read-Text $actionCodecFile
+}
+if ($codecTexts.Count -gt 0) {
+    $implementedCodecIds = ($codecTexts | ForEach-Object { ([regex]::Matches($_, 'CodecId\s*=>\s*"([^"]+)"') | ForEach-Object { $_.Groups[1].Value }) }) | Sort-Object -Unique
 }
 
 $officialRuntimePatterns = @(
@@ -133,7 +140,7 @@ $officialRuntimePatterns = @(
     [pscustomobject]@{ id='topology:Decimillipede'; category='topology'; sourceFile='DecimillipedeSegment.cs'; stateShape='segment graph + starter move'; implemented=$true },
     [pscustomobject]@{ id='topology:TestSubject'; category='topology'; sourceFile='TestSubject.cs'; stateShape='phase state'; implemented=$true },
     [pscustomobject]@{ id='topology:InfestedPrism'; category='topology'; sourceFile='InfestedPrism.cs'; stateShape='monster topology marker'; implemented=$true },
-    [pscustomobject]@{ id='action:WellLaidPlans.choice'; category='action'; sourceFile='WellLaidPlansPower.cs'; stateShape='paused player choice'; implemented=$false },
+    [pscustomobject]@{ id='action:WellLaidPlans.choice'; category='action'; sourceFile='WellLaidPlansPower.cs'; stateShape='paused player choice'; implemented=(($implementedCodecIds -contains 'action:WellLaidPlans.choice') -or ($implementedCodecIds -contains 'action:from-hand')) },
     [pscustomobject]@{ id='history:CombatHistory.entries'; category='history'; sourceFile='CombatHistory.cs'; stateShape='17 official entry types'; implemented=$true }
 )
 $officialRuntimePatterns | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $artifactsDir 'official-runtime-patterns.json')
@@ -260,7 +267,7 @@ Implemented runtime codecs: $($implementedCodecIds.Count)
 - This report is generated from official source scanning plus curated known regressions.
 - The cache artifacts are intended to be implementation inputs for the undo kernel refactor.
 - Action kernel coverage is intentionally partial in this increment; the artifacts mark it separately.
-- Runtime coverage now includes card, relic, power, and topology registry seeds.
+- Runtime coverage now includes card, relic, power, topology, and action registry seeds.
 "@
 $auditSummary | Set-Content (Join-Path $reportsDir 'audit-summary.md')
 
@@ -283,10 +290,12 @@ $((@($knownCases) | ForEach-Object { "## $($_.title)`r`n- id: $($_.id)`r`n- asse
 "@
 $scenarioRunReport | Set-Content (Join-Path $reportsDir 'scenario-run-report.md')
 
+$unsupportedCapabilityIds = @($officialRuntimePatterns | Where-Object { -not $_.implemented } | ForEach-Object { $_.id })
+$unsupportedCapabilityLines = if ($unsupportedCapabilityIds.Count -eq 0) { @('- none') } else { $unsupportedCapabilityIds | ForEach-Object { "- $_" } }
 $unsupportedCapabilitiesReport = @"
 # Unsupported Capabilities Report
 
-- action:WellLaidPlans.choice
+$($unsupportedCapabilityLines -join "`r`n")
 "@
 $unsupportedCapabilitiesReport | Set-Content (Join-Path $reportsDir 'unsupported-capabilities-report.md')
 

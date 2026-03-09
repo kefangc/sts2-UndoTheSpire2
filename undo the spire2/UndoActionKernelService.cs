@@ -2,8 +2,8 @@ using System.Reflection;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Actions;
 using MegaCrit.Sts2.Core.Entities.Cards;
-using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Runs;
@@ -34,7 +34,7 @@ internal static class UndoActionKernelService
             CurrentHookActionRef = currentAction is GenericHookGameAction hookAction
                 ? new ActionRef { HookId = hookAction.HookId, TypeName = hookAction.GetType().FullName }
                 : null,
-            PausedChoiceState = CapturePausedChoiceState(runState, currentAction, activeChoiceSpec),
+            PausedChoiceState = CapturePausedChoiceState(runState, currentAction, activeChoiceSpec, waitingForResume),
             Queues = queueStates,
             WaitingForResumptionCount = waitingForResume.Count,
             WaitingForResumption = waitingForResume
@@ -95,14 +95,8 @@ internal static class UndoActionKernelService
             };
         }
 
-        if (state.PausedChoiceState?.ChoiceSpec?.SupportsSyntheticRestore == true)
-        {
-            return new RestoreCapabilityReport
-            {
-                Result = RestoreCapabilityResult.FallbackToSyntheticChoice,
-                Detail = state.PausedChoiceState.ChoiceKind.ToString()
-            };
-        }
+        if (state.PausedChoiceState != null)
+            return UndoActionCodecRegistry.EvaluateCapability(state.PausedChoiceState);
 
         return RestoreCapabilityReport.SupportedReport();
     }
@@ -144,22 +138,25 @@ internal static class UndoActionKernelService
 
         foreach (object rawState in rawWaiting)
         {
-            uint? oldId = UndoReflectionUtil.FindField(rawState.GetType(), "oldId")?.GetValue(rawState) as uint?;
-            uint? newId = UndoReflectionUtil.FindField(rawState.GetType(), "newId")?.GetValue(rawState) as uint?;
-            if (oldId == null || newId == null)
+            if (UndoReflectionUtil.FindField(rawState.GetType(), "oldId")?.GetValue(rawState) is not uint oldId
+                || UndoReflectionUtil.FindField(rawState.GetType(), "newId")?.GetValue(rawState) is not uint newId)
                 continue;
 
             states.Add(new ActionResumeState
             {
-                OldActionId = oldId.Value,
-                NewActionId = newId.Value
+                OldActionId = oldId,
+                NewActionId = newId
             });
         }
 
         return states;
     }
 
-    private static PausedChoiceState? CapturePausedChoiceState(RunState runState, GameAction? currentAction, UndoChoiceSpec? activeChoiceSpec)
+    private static PausedChoiceState? CapturePausedChoiceState(
+        RunState runState,
+        GameAction? currentAction,
+        UndoChoiceSpec? activeChoiceSpec,
+        IReadOnlyList<ActionResumeState> waitingForResume)
     {
         if (currentAction?.State != GameActionState.GatheringPlayerChoice || activeChoiceSpec == null)
             return null;
@@ -180,16 +177,51 @@ internal static class UndoActionKernelService
             };
         }
 
+        uint? actionId = currentAction.Id;
+        uint? resumeActionId = actionId == null
+            ? null
+            : waitingForResume.FirstOrDefault(state => state.OldActionId == actionId.Value)?.NewActionId;
+        uint? choiceId = ownerPlayer == null ? null : TryGetCurrentPendingChoiceId(runState, ownerPlayer);
+        UndoSerializedActionPayload? payload = TryCaptureActionPayload(currentAction);
         return new PausedChoiceState
         {
             ChoiceKind = activeChoiceSpec.Kind,
             OwnerNetId = ownerPlayer?.NetId,
+            ChoiceId = choiceId,
             Prompt = activeChoiceSpec.SelectionPrefs.Prompt?.ToString(),
             MinSelections = activeChoiceSpec.SelectionPrefs.MinSelect,
             MaxSelections = activeChoiceSpec.SelectionPrefs.MaxSelect,
             CandidateCardRefs = candidateCards,
             SourceActionRef = CaptureActionRef(currentAction),
+            SourceActionCodecId = DeterminePausedChoiceCodecId(currentAction, activeChoiceSpec),
+            SourceActionPayload = payload,
+            ResumeActionId = resumeActionId,
+            ResumeToken = choiceId,
             ChoiceSpec = activeChoiceSpec
+        };
+    }
+
+    private static uint? TryGetCurrentPendingChoiceId(RunState runState, Player player)
+    {
+        int slot = runState.GetPlayerSlotIndex(player);
+        IReadOnlyList<uint> choiceIds = RunManager.Instance.PlayerChoiceSynchronizer.ChoiceIds;
+        if (slot < 0 || slot >= choiceIds.Count || choiceIds[slot] == 0)
+            return null;
+
+        return choiceIds[slot] - 1;
+    }
+
+    private static string DeterminePausedChoiceCodecId(GameAction action, UndoChoiceSpec choiceSpec)
+    {
+        if (action is GenericHookGameAction)
+            return "action:hook-choice";
+
+        return choiceSpec.Kind switch
+        {
+            UndoChoiceKind.HandSelection => "action:from-hand",
+            UndoChoiceKind.ChooseACard => "action:choose-a-card",
+            UndoChoiceKind.SimpleGridSelection => "action:simple-grid",
+            _ => "action:opaque-choice"
         };
     }
 
@@ -296,6 +328,7 @@ internal static class UndoActionKernelService
             }
 
             action.OnEnqueued(popAction, actionId);
+            UndoReflectionUtil.TrySetPropertyValue(action, "State", entry.State);
             actionsList.Add(action);
         }
 
@@ -348,3 +381,5 @@ internal static class UndoActionKernelService
         return true;
     }
 }
+
+
