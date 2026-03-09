@@ -1,0 +1,76 @@
+using System.Reflection;
+
+namespace UndoTheSpire2;
+
+internal static class UndoReflectionUtil
+{
+    public static FieldInfo? FindField(Type? type, string name)
+    {
+        while (type != null)
+        {
+            FieldInfo? field = type.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (field != null)
+                return field;
+
+            type = type.BaseType;
+        }
+
+        return null;
+    }
+
+    public static PropertyInfo? FindProperty(Type? type, string name)
+    {
+        while (type != null)
+        {
+            PropertyInfo? property = type.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (property != null)
+                return property;
+
+            type = type.BaseType;
+        }
+
+        return null;
+    }
+
+    public static MethodInfo? FindMethod(Type? type, string name)
+    {
+        while (type != null)
+        {
+            MethodInfo? method = type.GetMethod(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (method != null)
+                return method;
+
+            type = type.BaseType;
+        }
+
+        return null;
+    }
+
+    public static T? GetFieldValue<T>(object target, string fieldName)
+    {
+        object? value = FindField(target.GetType(), fieldName)?.GetValue(target);
+        return value is T typed ? typed : default;
+    }
+
+    public static bool TrySetFieldValue(object target, string fieldName, object? value)
+    {
+        FieldInfo? field = FindField(target.GetType(), fieldName);
+        if (field == null)
+            return false;
+
+        field.SetValue(target, value);
+        return true;
+    }
+
+    public static bool TrySetPropertyValue(object target, string propertyName, object? value)
+    {
+        PropertyInfo? property = FindProperty(target.GetType(), propertyName);
+        if (property?.SetMethod != null)
+        {
+            property.SetValue(target, value);
+            return true;
+        }
+
+        return TrySetFieldValue(target, $"<{propertyName}>k__BackingField", value);
+    }
+}

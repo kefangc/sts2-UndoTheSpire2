@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Enchantments;
@@ -26,6 +26,8 @@ internal sealed class UndoCardRuntimeState
     public bool ExhaustOnNextPlay { get; init; }
 
     public UndoEnchantmentRuntimeState? EnchantmentState { get; init; }
+
+    public IReadOnlyList<UndoComplexRuntimeState> ComplexStates { get; init; } = [];
 }
 
 internal sealed class UndoEnchantmentRuntimeState
@@ -75,6 +77,8 @@ internal sealed class UndoPowerRuntimeState
     public IReadOnlyList<UndoNamedIntState> IntProperties { get; init; } = [];
 
     public IReadOnlyList<UndoNamedEnumState> EnumProperties { get; init; } = [];
+
+    public IReadOnlyList<UndoComplexRuntimeState> ComplexStates { get; init; } = [];
 }
 
 internal sealed class UndoRelicRuntimeState
@@ -94,6 +98,8 @@ internal sealed class UndoRelicRuntimeState
     public IReadOnlyList<UndoNamedIntState> IntProperties { get; init; } = [];
 
     public IReadOnlyList<UndoNamedEnumState> EnumProperties { get; init; } = [];
+
+    public IReadOnlyList<UndoComplexRuntimeState> ComplexStates { get; init; } = [];
 }
 
 internal sealed class UndoSelectionSessionState
