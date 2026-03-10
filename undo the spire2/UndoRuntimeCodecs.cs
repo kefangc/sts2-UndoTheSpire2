@@ -8,11 +8,15 @@ using MegaCrit.Sts2.Core.Models.Cards;
 using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Models.Relics;
 using MegaCrit.Sts2.Core.Entities.Models;
+using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves.Runs;
 
 namespace UndoTheSpire2;
 
+// Runtime codecs persist official private state that is not covered by
+// SavedProperty or NetFullCombatState. They do not own creature topology or
+// paused choice continuation.
 internal sealed class UndoRuntimeCaptureContext
 {
     public required RunState RunState { get; init; }
@@ -63,6 +67,11 @@ internal sealed class UndoPairIntRuntimeComplexState : UndoComplexRuntimeState
 internal sealed class UndoCardRefRuntimeComplexState : UndoComplexRuntimeState
 {
     public CardRef? Card { get; init; }
+}
+
+internal sealed class UndoCardPlayRuntimeComplexState : UndoComplexRuntimeState
+{
+    public UndoCardPlayState? CardPlay { get; init; }
 }
 
 internal sealed class UndoDetachedCardRuntimeComplexState : UndoComplexRuntimeState
@@ -215,6 +224,7 @@ internal static class UndoRuntimeStateCodecRegistry
 
     private static readonly IReadOnlyList<IUndoRelicRuntimeCodec> RelicCodecs =
     [
+        new PaelsLegionAffectedCardPlayRelicCodec(),
         new PenNibAttackToDoubleRelicCodec(),
         new PocketwatchTurnCountRelicCodec(),
         new VelvetChokerCardsPlayedRelicCodec()
@@ -576,6 +586,34 @@ internal static class UndoRuntimeStateCodecRegistry
         }
     }
 
+    private sealed class PaelsLegionAffectedCardPlayRelicCodec : UndoRelicRuntimeCodec<UndoCardPlayRuntimeComplexState>
+    {
+        public override string CodecId => "relic:PaelsLegion.affectedCardPlay";
+
+        public override bool CanHandle(RelicModel relic)
+        {
+            return relic is PaelsLegion;
+        }
+
+        public override UndoCardPlayRuntimeComplexState? Capture(RelicModel relic, UndoRuntimeCaptureContext context)
+        {
+            CardPlay? affectedCardPlay = UndoReflectionUtil.FindProperty(relic.GetType(), "AffectedCardPlay")?.GetValue(relic) as CardPlay;
+            return new UndoCardPlayRuntimeComplexState
+            {
+                CodecId = CodecId,
+                CardPlay = affectedCardPlay == null ? null : UndoCombatHistoryCodec.CaptureCardPlay(context.RunState, context.CombatState.Creatures, affectedCardPlay)
+            };
+        }
+
+        public override void Restore(RelicModel relic, UndoCardPlayRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            Dictionary<string, Creature> creaturesByKey = UndoStableRefs.BuildCreatureKeyMap(context.CombatState.Creatures);
+            CardPlay? affectedCardPlay = state.CardPlay == null
+                ? null
+                : UndoCombatHistoryCodec.RestoreCardPlay(context.RunState, creaturesByKey, state.CardPlay);
+            UndoReflectionUtil.TrySetPropertyValue(relic, "AffectedCardPlay", affectedCardPlay);
+        }
+    }
     private sealed class PenNibAttackToDoubleRelicCodec : UndoRelicRuntimeCodec<UndoCardRefRuntimeComplexState>
     {
         public override string CodecId => "relic:PenNib.AttackToDouble";
@@ -657,3 +695,7 @@ internal static class UndoRuntimeStateCodecRegistry
         }
     }
 }
+
+
+
+

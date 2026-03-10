@@ -1,4 +1,4 @@
-﻿using System.Collections;
+using System.Collections;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Combat.History;
 using MegaCrit.Sts2.Core.Combat.History.Entries;
@@ -339,7 +339,7 @@ internal static class UndoCombatHistoryCodec
         throw new InvalidOperationException($"Could not capture history actor for {entry.GetType().Name}.");
     }
 
-    private static UndoCardPlayState CaptureCardPlay(RunState runState, IReadOnlyList<Creature> creatures, CardPlay cardPlay)
+    internal static UndoCardPlayState CaptureCardPlay(RunState runState, IReadOnlyList<Creature> creatures, CardPlay cardPlay)
     {
         return new UndoCardPlayState
         {
@@ -359,7 +359,7 @@ internal static class UndoCombatHistoryCodec
         };
     }
 
-    private static CardPlay RestoreCardPlay(RunState runState, IReadOnlyDictionary<string, Creature> creaturesByKey, UndoCardPlayState state)
+    internal static CardPlay RestoreCardPlay(RunState runState, IReadOnlyDictionary<string, Creature> creaturesByKey, UndoCardPlayState state)
     {
         return new CardPlay
         {
@@ -525,6 +525,7 @@ internal static class UndoCombatHistoryCodec
         return new MoveState(moveId, _ => Task.CompletedTask);
     }
 }
+
 
 
 

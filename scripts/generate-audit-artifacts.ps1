@@ -96,13 +96,14 @@ $coverageMatrix = @($cards + $powers + $relics + $monsters + $actions)
 $coverageMatrix | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $auditDir 'coverage-matrix.json')
 
 $knownCases = @(
-    [pscustomobject]@{ id='well-laid-plans'; title='Well Laid Plans'; category='power'; sourceFiles=@('WellLaidPlansPower.cs','CardSelectCmd.cs'); primaryRisk='Paused choice continuation'; scenarioTags=@('choice','retain','end-turn'); assertions=@('undo_returns_to_choice_boundary','no_hidden_replay','retain_selection_reopens') },
+    [pscustomobject]@{ id='well-laid-plans'; title='Well Laid Plans'; category='power'; sourceFiles=@('WellLaidPlansPower.cs','CardSelectCmd.cs'); primaryRisk='Paused choice continuation'; scenarioTags=@('choice','retain','end-turn'); assertions=@('paused_choice_captured','primary_choice_supported','retain_selection_reopens','no_hidden_replay') },
     [pscustomobject]@{ id='forgotten-ritual'; title='Forgotten Ritual'; category='card'; sourceFiles=@('ForgottenRitual.cs','CardExhaustedEntry.cs'); primaryRisk='CombatHistory missing'; scenarioTags=@('history','exhaust'); assertions=@('exhaust_history_survives_undo','gold_glow_matches_history') },
     [pscustomobject]@{ id='death-march'; title='Death March'; category='card'; sourceFiles=@('DeathMarch.cs','CardDrawnEntry.cs'); primaryRisk='Per-turn draw history'; scenarioTags=@('history','draw-count'); assertions=@('draw_count_damage_restores') },
     [pscustomobject]@{ id='automation-power'; title='Automation Power'; category='power'; sourceFiles=@('AutomationPower.cs'); primaryRisk='Internal counter cardsLeft'; scenarioTags=@('internal-data','counter'); assertions=@('cards_left_restores','display_counter_restores') },
     [pscustomobject]@{ id='infested-prism'; title='Infested Prism'; category='monster'; sourceFiles=@('InfestedPrism.cs','VitalSparkPower.cs'); primaryRisk='playersTriggeredThisTurn'; scenarioTags=@('monster','power','internal-data'); assertions=@('first_damage_only_triggers_once_after_undo') },
     [pscustomobject]@{ id='decimillipede'; title='Decimillipede'; category='monster'; sourceFiles=@('DecimillipedeSegment.cs','ReattachPower.cs'); primaryRisk='revive topology'; scenarioTags=@('monster','revive','topology'); assertions=@('reviving_state_restores','segment_rejoins_correctly') },
     [pscustomobject]@{ id='door-maker'; title='Doormaker'; category='monster'; sourceFiles=@('Door.cs','Doormaker.cs','DoorRevivalPower.cs'); primaryRisk='cross-creature topology'; scenarioTags=@('monster','boss','topology'); assertions=@('door_phase_restores','times_got_back_in_restores') },
+    [pscustomobject]@{ id='paels-legion'; title='Pael''s Legion'; category='relic'; sourceFiles=@('PaelsLegion.cs','PaelsLegion.cs'); primaryRisk='pet ownership topology'; scenarioTags=@('relic','pet','topology'); assertions=@('pet_role_restores','pet_owner_restores','no_duplicate_pet_after_undo') },
     [pscustomobject]@{ id='throwing-axe'; title='Throwing Axe'; category='relic'; sourceFiles=@('ThrowingAxe.cs'); primaryRisk='simple combat flag'; scenarioTags=@('relic','counter'); assertions=@('first_card_double_flag_restores') },
     [pscustomobject]@{ id='happy-flower'; title='Happy Flower'; category='relic'; sourceFiles=@('HappyFlower.cs'); primaryRisk='saved property plus runtime flag'; scenarioTags=@('relic','counter'); assertions=@('turn_counter_restores','activation_flag_restores') },
     [pscustomobject]@{ id='history-course'; title='History Course'; category='relic'; sourceFiles=@('HistoryCourse.cs'); primaryRisk='last turn card identity'; scenarioTags=@('relic','history'); assertions=@('last_turn_card_replay_restores') },
@@ -136,6 +137,7 @@ $officialRuntimePatterns = @(
     [pscustomobject]@{ id='relic:PenNib.AttackToDouble'; category='relic'; sourceFile='PenNib.cs'; stateShape='CardModel ref'; implemented=($implementedCodecIds -contains 'relic:PenNib.AttackToDouble') },
     [pscustomobject]@{ id='relic:Pocketwatch.turnCounts'; category='relic'; sourceFile='Pocketwatch.cs'; stateShape='int + int'; implemented=($implementedCodecIds -contains 'relic:Pocketwatch.turnCounts') },
     [pscustomobject]@{ id='relic:VelvetChoker.cardsPlayedThisTurn'; category='relic'; sourceFile='VelvetChoker.cs'; stateShape='int'; implemented=($implementedCodecIds -contains 'relic:VelvetChoker.cardsPlayedThisTurn') },
+    [pscustomobject]@{ id='relic:PaelsLegion.affectedCardPlay'; category='relic'; sourceFile='PaelsLegion.cs'; stateShape='CardPlay ref'; implemented=($implementedCodecIds -contains 'relic:PaelsLegion.affectedCardPlay') },
     [pscustomobject]@{ id='topology:DoorAndDoormaker'; category='topology'; sourceFile='Door.cs'; stateShape='linked creature refs + phase'; implemented=$true },
     [pscustomobject]@{ id='topology:Decimillipede'; category='topology'; sourceFile='DecimillipedeSegment.cs'; stateShape='segment graph + starter move'; implemented=$true },
     [pscustomobject]@{ id='topology:TestSubject'; category='topology'; sourceFile='TestSubject.cs'; stateShape='phase state'; implemented=$true },
@@ -151,6 +153,7 @@ $codecRegistrySeed = [pscustomobject]@{
     plannedCodecIds = @(
         'power:VigorPower.commandToModify',
         'power:ReattachPower.isReviving',
+        'relic:PaelsLegion.affectedCardPlay',
         'action:WellLaidPlans.choice'
     )
 }

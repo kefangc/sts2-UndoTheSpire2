@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
 using MegaCrit.Sts2.Core.Combat;
@@ -15,6 +15,9 @@ using MegaCrit.Sts2.Core.Runs;
 
 namespace UndoTheSpire2;
 
+// Scenario execution is a live runtime validator for undo/redo invariants.
+// It checks current combat state and round-trips supported scenarios, but it
+// does not build full combat worlds from scratch.
 internal enum UndoScenarioExecutionStatus
 {
     Passed,
@@ -80,6 +83,7 @@ internal static class UndoScenarioExecutor
             ["infested-prism"] = ExecuteRoundtripScenarioAsync,
             ["decimillipede"] = ExecuteRoundtripScenarioAsync,
             ["door-maker"] = ExecuteRoundtripScenarioAsync,
+            ["paels-legion"] = ExecuteRoundtripScenarioAsync,
             ["throwing-axe"] = ExecuteRoundtripScenarioAsync,
             ["happy-flower"] = ExecuteRoundtripScenarioAsync,
             ["history-course"] = ExecuteRoundtripScenarioAsync,
@@ -265,36 +269,47 @@ internal static class UndoScenarioExecutor
     {
         UndoController controller = MainFile.Controller;
         UndoChoiceSpec? activeChoice = TryCaptureActiveChoiceSpec(controller);
-        PausedChoiceState? pausedChoice = TryCaptureCurrentCombatFullState(controller)?.ActionKernelState.PausedChoiceState;
+        UndoCombatFullState? currentSnapshot = TryCaptureCurrentCombatFullState(controller);
+        PausedChoiceState? pausedChoice = currentSnapshot?.ActionKernelState.PausedChoiceState;
         RestoreCapabilityReport capability = UndoActionCodecRegistry.EvaluateCapability(pausedChoice);
         bool supportedChoiceUiActive = IsSupportedChoiceUiActive();
+        bool pausedChoiceCaptured = pausedChoice?.ChoiceSpec?.Kind == UndoChoiceKind.HandSelection
+            && pausedChoice.SourceActionRef.ActionId != null;
+        bool primaryChoiceSupported = capability.Result == RestoreCapabilityResult.Supported;
         List<UndoScenarioAssertionResult> assertions =
         [
             new UndoScenarioAssertionResult
             {
-                Assertion = "undo_returns_to_choice_boundary",
-                Passed = activeChoice?.Kind == UndoChoiceKind.HandSelection,
-                Detail = activeChoice == null ? "no_active_choice_spec" : activeChoice.Kind.ToString()
+                Assertion = "paused_choice_captured",
+                Passed = pausedChoiceCaptured,
+                Detail = pausedChoice == null ? "no_paused_choice_state" : pausedChoice.SourceActionCodecId ?? "missing_codec_id"
             },
             new UndoScenarioAssertionResult
             {
-                Assertion = "no_hidden_replay",
-                Passed = capability.Result == RestoreCapabilityResult.Supported && !HasSyntheticChoiceSession(controller),
+                Assertion = "primary_choice_supported",
+                Passed = primaryChoiceSupported,
                 Detail = capability.Detail ?? capability.Result.ToString()
             },
             new UndoScenarioAssertionResult
             {
                 Assertion = "retain_selection_reopens",
-                Passed = supportedChoiceUiActive,
+                Passed = supportedChoiceUiActive && activeChoice?.Kind == UndoChoiceKind.HandSelection,
                 Detail = supportedChoiceUiActive ? "supported_choice_ui_active" : "supported_choice_ui_inactive"
+            },
+            new UndoScenarioAssertionResult
+            {
+                Assertion = "no_hidden_replay",
+                Passed = !HasSyntheticChoiceSession(controller),
+                Detail = HasSyntheticChoiceSession(controller) ? "synthetic_choice_session_active" : "primary_choice_ui_active"
             }
         ];
 
+        bool passed = assertions.All(static assertion => assertion.Passed);
         return Task.FromResult(new UndoScenarioExecutionResult
         {
             Scenario = scenario,
-            Status = UndoScenarioExecutionStatus.Skipped,
-            Detail = "manual_choice_input_required_for_paused_choice_roundtrip",
+            Status = passed ? UndoScenarioExecutionStatus.Passed : UndoScenarioExecutionStatus.Failed,
+            Detail = passed ? "choice_anchor_ready" : "choice_anchor_incomplete",
             Assertions = assertions
         });
     }
@@ -329,6 +344,7 @@ internal static class UndoScenarioExecutor
             "infested-prism" => Require(AnyMonsterType(combatState, "InfestedPrism") || AnyCreatureHasPower(combatState, "VitalSparkPower"), "infested_prism_required"),
             "decimillipede" => Require(AnyMonsterType(combatState, "DecimillipedeSegment"), "decimillipede_required"),
             "door-maker" => Require(AnyMonsterType(combatState, "Door") || AnyMonsterType(combatState, "Doormaker"), "door_or_doormaker_required"),
+            "paels-legion" => Require(me != null && PlayerHasRelic(me, "PaelsLegion") && combatState.Allies.Any(creature => creature.PetOwner == me && HasTypeName(creature.Monster, "PaelsLegion")), "paels_legion_pet_required"),
             "throwing-axe" => Require(me != null && PlayerHasRelic(me, "ThrowingAxe"), "throwing_axe_required"),
             "happy-flower" => Require(me != null && PlayerHasRelic(me, "HappyFlower"), "happy_flower_required"),
             "history-course" => Require(me != null && PlayerHasRelic(me, "HistoryCourse"), "history_course_required"),
@@ -452,6 +468,9 @@ internal static class UndoScenarioExecutor
                 "segment_rejoins_correctly" => CompareProjection(assertion, ProjectTopology(targetState.MonsterTopologyStates), ProjectTopology(redoState.MonsterTopologyStates), "monster_topology_roundtrip"),
                 "door_phase_restores" => CompareProjection(assertion, ProjectTopology(targetState.MonsterTopologyStates), ProjectTopology(redoState.MonsterTopologyStates), "monster_topology_roundtrip"),
                 "times_got_back_in_restores" => CompareProjection(assertion, ProjectTopology(targetState.MonsterTopologyStates), ProjectTopology(redoState.MonsterTopologyStates), "monster_topology_roundtrip"),
+                "pet_role_restores" => CompareProjection(assertion, ProjectTopology(targetState.MonsterTopologyStates), ProjectTopology(redoState.MonsterTopologyStates), "monster_topology_roundtrip"),
+                "pet_owner_restores" => CompareProjection(assertion, ProjectTopology(targetState.MonsterTopologyStates), ProjectTopology(redoState.MonsterTopologyStates), "monster_topology_roundtrip"),
+                "no_duplicate_pet_after_undo" => CompareProjection(assertion, ProjectTopology(targetState.MonsterTopologyStates), ProjectTopology(redoState.MonsterTopologyStates), "monster_topology_roundtrip"),
                 "turn_counter_restores" => CompareProjection(assertion, targetState.RuntimeGraphState.RelicRuntimeStates, redoState.RuntimeGraphState.RelicRuntimeStates, "relic_runtime_roundtrip"),
                 "activation_flag_restores" => CompareProjection(assertion, targetState.RuntimeGraphState.RelicRuntimeStates, redoState.RuntimeGraphState.RelicRuntimeStates, "relic_runtime_roundtrip"),
                 "last_turn_card_replay_restores" => CompareProjection(assertion, targetState.CombatHistoryState, redoState.CombatHistoryState, "combat_history_roundtrip"),
@@ -481,7 +500,10 @@ internal static class UndoScenarioExecutor
             .Select(state => new
             {
                 CreatureKey = state.CreatureRef?.Key,
+                state.Role,
+                state.Side,
                 MonsterId = state.MonsterId?.Entry,
+                state.PetOwnerPlayerNetId,
                 state.SlotName,
                 state.Exists,
                 state.IsDead,
@@ -556,6 +578,7 @@ internal static class UndoScenarioExecutor
             "infested-prism" => ["power:VitalSparkPower.playersTriggeredThisTurn", "topology:InfestedPrism"],
             "decimillipede" => ["topology:Decimillipede"],
             "door-maker" => ["topology:DoorAndDoormaker", "power:DoorRevivalPower.isHalfDead"],
+            "paels-legion" => ["relic:PaelsLegion.affectedCardPlay"],
             "throwing-axe" => [],
             "happy-flower" => [],
             "history-course" => ["history:CombatHistory.entries"],
@@ -569,3 +592,6 @@ internal static class UndoScenarioExecutor
         return required.Where(requiredId => !implemented.Contains(requiredId)).ToList();
     }
 }
+
+
+

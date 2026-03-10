@@ -2229,14 +2229,6 @@ public sealed class UndoController
             RunManager.Instance.ChecksumTracker.LoadReplayChecksums([], snapshot.NextChecksumId);
             RunManager.Instance.PlayerChoiceSynchronizer.FastForwardChoiceIds([.. snapshot.FullState.nextChoiceIds]);
 
-            RestoreCapabilityReport actionKernelReport = UndoActionKernelService.Restore(snapshot.ActionKernelState, runState);
-            _lastRestoreCapabilityReport = actionKernelReport;
-            if (actionKernelReport.IsFailure)
-            {
-                _lastRestoreFailureReason = actionKernelReport.Detail ?? actionKernelReport.Result.ToString();
-                return false;
-            }
-
             RestoreCapabilityReport topologyReport = UndoMonsterTopologyCodecRegistry.Restore(snapshot.MonsterTopologyStates, combatState.Creatures);
             if (topologyReport.IsFailure)
             {
@@ -2245,6 +2237,13 @@ public sealed class UndoController
                 return false;
             }
 
+            RestoreCapabilityReport actionKernelReport = UndoActionKernelService.Restore(snapshot.ActionKernelState, runState);
+            _lastRestoreCapabilityReport = actionKernelReport;
+            if (actionKernelReport.IsFailure)
+            {
+                _lastRestoreFailureReason = actionKernelReport.Detail ?? actionKernelReport.Result.ToString();
+                return false;
+            }
             ResetActionExecutorForRestore();
             if (!RestoreActionSynchronizationState(snapshot.SynchronizerCombatState, snapshot.ActionKernelState.BoundaryKind, out reason))
             {
@@ -4096,47 +4095,67 @@ public sealed class UndoController
         }
     }
 
+    // Creature ordering must match NetFullCombatState.Creatures exactly so later
+    // per-creature state restore can address the correct live creature. Pets are
+    // restored as allies owned by a player, never inferred as enemies.
     private static void SyncCombatCreaturesToSnapshot(RunState runState, CombatState combatState, UndoCombatFullState snapshotState)
     {
-        List<Creature> desiredAllies = snapshotState.FullState.Players
-            .Select(playerState => runState.GetPlayer(playerState.playerId)?.Creature
-                ?? throw new InvalidOperationException($"Could not map player creature {playerState.playerId}."))
-            .ToList();
-
+        List<Creature> currentAllies = combatState.Allies.ToList();
         List<Creature> currentEnemies = combatState.Enemies.ToList();
+        HashSet<Creature> usedAllies = [];
         HashSet<Creature> usedEnemies = [];
+        List<Creature> desiredAllies = [];
         List<Creature> desiredEnemies = [];
+        List<MonsterTopologyState> topologyStates = snapshotState.MonsterTopologyStates.ToList();
         List<UndoMonsterState> snapshotMonsterStates = snapshotState.MonsterStates.ToList();
-        int enemyIndex = 0;
+        int monsterIndex = 0;
+
         foreach (NetFullCombatState.CreatureState creatureState in snapshotState.FullState.Creatures)
         {
-            if (creatureState.playerId != null)
-                continue;
-
-            UndoMonsterState? monsterState = enemyIndex < snapshotMonsterStates.Count ? snapshotMonsterStates[enemyIndex] : null;
-            string? desiredSlot = string.IsNullOrWhiteSpace(monsterState?.SlotName) ? null : monsterState!.SlotName;
-            Creature? existingEnemy = currentEnemies.FirstOrDefault(creature =>
-                !usedEnemies.Contains(creature)
-                && creature.Monster?.Id == creatureState.monsterId
-                && string.Equals(creature.SlotName, desiredSlot, StringComparison.Ordinal));
-            existingEnemy ??= currentEnemies.FirstOrDefault(creature =>
-                !usedEnemies.Contains(creature)
-                && creature.Monster?.Id == creatureState.monsterId);
-            if (existingEnemy == null)
+            if (creatureState.playerId is ulong playerNetId)
             {
-                if (creatureState.monsterId == null)
-                    throw new InvalidOperationException($"Snapshot enemy state at index {enemyIndex} had no monster id.");
-
-                MonsterModel monster = ModelDb.GetById<MonsterModel>(creatureState.monsterId).ToMutable();
-                existingEnemy = combatState.CreateCreature(monster, CombatSide.Enemy, desiredSlot);
-                monster.SetUpForCombat();
-                CombatManager.Instance.StateTracker.Subscribe(existingEnemy);
+                Creature playerCreature = runState.GetPlayer(playerNetId)?.Creature
+                    ?? throw new InvalidOperationException($"Could not map player creature {playerNetId}.");
+                desiredAllies.Add(playerCreature);
+                usedAllies.Add(playerCreature);
+                continue;
             }
 
-            existingEnemy.SlotName = desiredSlot;
-            desiredEnemies.Add(existingEnemy);
-            usedEnemies.Add(existingEnemy);
-            enemyIndex++;
+            MonsterTopologyState? topologyState = monsterIndex < topologyStates.Count ? topologyStates[monsterIndex] : null;
+            UndoMonsterState? monsterState = monsterIndex < snapshotMonsterStates.Count ? snapshotMonsterStates[monsterIndex] : null;
+            monsterIndex++;
+
+            Creature creature = ResolveSnapshotMonsterCreature(
+                runState,
+                combatState,
+                creatureState,
+                topologyState,
+                monsterState,
+                currentAllies,
+                currentEnemies,
+                usedAllies,
+                usedEnemies);
+
+            if (topologyState?.Role == CreatureRole.Pet)
+            {
+                desiredAllies.Add(creature);
+                usedAllies.Add(creature);
+            }
+            else
+            {
+                desiredEnemies.Add(creature);
+                usedEnemies.Add(creature);
+            }
+        }
+
+        SyncPlayerPetCollections(runState, desiredAllies);
+
+        foreach (Creature ally in currentAllies)
+        {
+            if (usedAllies.Contains(ally) || ally.IsPlayer)
+                continue;
+
+            ally.CombatState = null;
         }
 
         foreach (Creature enemy in currentEnemies)
@@ -4153,6 +4172,108 @@ public sealed class UndoController
         NotifyCombatCreaturesChanged(combatState);
     }
 
+    private static Creature ResolveSnapshotMonsterCreature(
+        RunState runState,
+        CombatState combatState,
+        NetFullCombatState.CreatureState creatureState,
+        MonsterTopologyState? topologyState,
+        UndoMonsterState? monsterState,
+        IReadOnlyList<Creature> currentAllies,
+        IReadOnlyList<Creature> currentEnemies,
+        ISet<Creature> usedAllies,
+        ISet<Creature> usedEnemies)
+    {
+        ModelId monsterId = creatureState.monsterId ?? topologyState?.MonsterId
+            ?? throw new InvalidOperationException("Snapshot creature state had no monster id.");
+        string? desiredSlot = !string.IsNullOrWhiteSpace(topologyState?.SlotName)
+            ? topologyState!.SlotName
+            : string.IsNullOrWhiteSpace(monsterState?.SlotName) ? null : monsterState!.SlotName;
+
+        if (topologyState?.Role == CreatureRole.Pet)
+        {
+            if (topologyState.PetOwnerPlayerNetId is not ulong ownerNetId)
+                throw new InvalidOperationException($"Pet topology for {monsterId.Entry} was missing an owner.");
+
+            Player owner = runState.GetPlayer(ownerNetId)
+                ?? throw new InvalidOperationException($"Could not map pet owner {ownerNetId} for {monsterId.Entry}.");
+            Creature? existingPet = currentAllies.FirstOrDefault(creature =>
+                !usedAllies.Contains(creature)
+                && !creature.IsPlayer
+                && creature.Monster?.Id == monsterId
+                && creature.Side == owner.Creature.Side
+                && (creature.PetOwner == null || creature.PetOwner == owner)
+                && string.Equals(creature.SlotName, desiredSlot, StringComparison.Ordinal));
+            existingPet ??= currentAllies.FirstOrDefault(creature =>
+                !usedAllies.Contains(creature)
+                && !creature.IsPlayer
+                && creature.Monster?.Id == monsterId
+                && creature.Side == owner.Creature.Side
+                && (creature.PetOwner == null || creature.PetOwner == owner));
+            existingPet ??= CreateSnapshotCreature(combatState, monsterId, owner.Creature.Side, desiredSlot);
+            existingPet.SlotName = desiredSlot;
+            EnsurePetOwnership(owner, existingPet);
+            return existingPet;
+        }
+
+        Creature? existingEnemy = currentEnemies.FirstOrDefault(creature =>
+            !usedEnemies.Contains(creature)
+            && creature.Monster?.Id == monsterId
+            && string.Equals(creature.SlotName, desiredSlot, StringComparison.Ordinal));
+        existingEnemy ??= currentEnemies.FirstOrDefault(creature =>
+            !usedEnemies.Contains(creature)
+            && creature.Monster?.Id == monsterId);
+        existingEnemy ??= CreateSnapshotCreature(combatState, monsterId, CombatSide.Enemy, desiredSlot);
+        existingEnemy.SlotName = desiredSlot;
+        return existingEnemy;
+    }
+
+    private static Creature CreateSnapshotCreature(CombatState combatState, ModelId monsterId, CombatSide side, string? desiredSlot)
+    {
+        MonsterModel monster = ModelDb.GetById<MonsterModel>(monsterId).ToMutable();
+        Creature creature = combatState.CreateCreature(monster, side, desiredSlot);
+        monster.SetUpForCombat();
+        CombatManager.Instance.StateTracker.Subscribe(creature);
+        return creature;
+    }
+
+    private static void EnsurePetOwnership(Player owner, Creature pet)
+    {
+        PlayerCombatState playerCombatState = owner.PlayerCombatState
+            ?? throw new InvalidOperationException($"Player {owner.NetId} had no combat state while restoring pet {pet.Monster?.Id.Entry}.");
+        if (pet.PetOwner != null && pet.PetOwner != owner)
+            throw new InvalidOperationException($"Pet {pet.Monster?.Id.Entry} was already bound to a different owner.");
+
+        if (!playerCombatState.Pets.Contains(pet))
+            playerCombatState.AddPetInternal(pet);
+    }
+
+    private static void SyncPlayerPetCollections(RunState runState, IReadOnlyList<Creature> desiredAllies)
+    {
+        foreach (Player player in runState.Players)
+        {
+            PlayerCombatState? playerCombatState = player.PlayerCombatState;
+            if (playerCombatState == null)
+                continue;
+
+            List<Creature> desiredPets = desiredAllies
+                .Where(creature => creature.PetOwner == player)
+                .ToList();
+            if (FindField(typeof(PlayerCombatState), "_pets")?.GetValue(playerCombatState) is not System.Collections.IList petList)
+                continue;
+
+            for (int i = petList.Count - 1; i >= 0; i--)
+            {
+                if (petList[i] is Creature pet && !desiredPets.Contains(pet))
+                    petList.RemoveAt(i);
+            }
+
+            foreach (Creature pet in desiredPets)
+            {
+                if (!petList.Contains(pet))
+                    playerCombatState.AddPetInternal(pet);
+            }
+        }
+    }
     private static void RestorePowerRuntimeStates(RunState runState, CombatState combatState, IReadOnlyList<UndoPowerRuntimeState> runtimeStates)
     {
         if (runtimeStates.Count == 0)
@@ -5157,6 +5278,8 @@ public sealed class UndoController
 
     private sealed record SyntheticTransformVfxCard(SerializableCard Card, int SourcePileIndex);
 }
+
+
 
 
 

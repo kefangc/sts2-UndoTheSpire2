@@ -1,13 +1,29 @@
+using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Models;
 
 namespace UndoTheSpire2;
 
+// Captures live creature-topology state that NetFullCombatState cannot represent,
+// especially pet ownership and cross-monster topology links.
+internal enum CreatureRole
+{
+    Player,
+    Enemy,
+    Pet
+}
+
 internal sealed class MonsterTopologyState
 {
     public CreatureRef? CreatureRef { get; init; }
 
+    public CreatureRole Role { get; init; } = CreatureRole.Enemy;
+
+    public CombatSide Side { get; init; }
+
     public ModelId? MonsterId { get; init; }
+
+    public ulong? PetOwnerPlayerNetId { get; init; }
 
     public string? SlotName { get; init; }
 

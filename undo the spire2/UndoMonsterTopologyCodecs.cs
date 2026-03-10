@@ -1,4 +1,6 @@
+using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Monsters;
 using MegaCrit.Sts2.Core.Models.Powers;
@@ -6,11 +8,14 @@ using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
 
 namespace UndoTheSpire2;
 
+// Monster topology covers linked-monster runtime and pet ownership that the
+// official full combat snapshot does not preserve.
 internal static class UndoMonsterTopologyCodecRegistry
 {
     public static HashSet<string> GetImplementedCodecIds()
     {
-        return [
+        return
+        [
             "topology:DoorAndDoormaker",
             "topology:Decimillipede",
             "topology:TestSubject",
@@ -68,6 +73,15 @@ internal static class UndoMonsterTopologyCodecRegistry
                 {
                     Result = RestoreCapabilityResult.TopologyMismatch,
                     Detail = $"topology_codec_failed:{state.RuntimeCodecId ?? "none"}"
+                };
+            }
+
+            if (!ValidateCreatureRole(creature, state, context))
+            {
+                return new RestoreCapabilityReport
+                {
+                    Result = RestoreCapabilityResult.TopologyMismatch,
+                    Detail = $"topology_role_mismatch:{state.CreatureRef.Key}:{state.Role}"
                 };
             }
         }
@@ -131,13 +145,18 @@ internal static class UndoMonsterTopologyCodecRegistry
                 break;
         }
 
+        Creature creature = monster.Creature;
+        CreatureRole role = creature.PetOwner != null ? CreatureRole.Pet : CreatureRole.Enemy;
         return new MonsterTopologyState
         {
-            CreatureRef = new CreatureRef { Key = UndoStableRefs.BuildCreatureKey(monster.Creature, index) },
+            CreatureRef = new CreatureRef { Key = UndoStableRefs.BuildCreatureKey(creature, index) },
+            Role = role,
+            Side = creature.Side,
             MonsterId = monster.Id,
-            SlotName = monster.Creature.SlotName,
+            PetOwnerPlayerNetId = creature.PetOwner?.NetId,
+            SlotName = creature.SlotName,
             Exists = true,
-            IsDead = monster.Creature.IsDead,
+            IsDead = creature.IsDead,
             IsHalfDead = isHalfDead,
             CurrentMoveId = currentState?.Id,
             NextMoveId = monster.NextMove?.Id,
@@ -195,4 +214,35 @@ internal static class UndoMonsterTopologyCodecRegistry
                 return true;
         }
     }
+
+    private static bool ValidateCreatureRole(Creature creature, MonsterTopologyState state, UndoMonsterTopologyRestoreContext context)
+    {
+        return state.Role switch
+        {
+            CreatureRole.Pet => ValidatePetTopology(creature, state, context),
+            CreatureRole.Enemy => creature.PetOwner == null && creature.Side == CombatSide.Enemy,
+            _ => true
+        };
+    }
+
+    private static bool ValidatePetTopology(Creature creature, MonsterTopologyState state, UndoMonsterTopologyRestoreContext context)
+    {
+        if (state.PetOwnerPlayerNetId is not ulong ownerNetId)
+            return false;
+
+        Player? owner = TryResolvePlayer(ownerNetId, context.Creatures);
+        if (owner == null)
+            return false;
+
+        return creature.PetOwner == owner
+            && creature.Side == owner.Creature.Side
+            && owner.PlayerCombatState.Pets.Contains(creature);
+    }
+
+    private static Player? TryResolvePlayer(ulong ownerNetId, IReadOnlyList<Creature> creatures)
+    {
+        return creatures.Select(static creature => creature.Player)
+            .FirstOrDefault(player => player?.NetId == ownerNetId);
+    }
 }
+
