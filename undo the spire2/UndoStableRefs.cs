@@ -1,4 +1,4 @@
-using MegaCrit.Sts2.Core.Combat;
+﻿using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
@@ -105,7 +105,45 @@ internal static class UndoStableRefs
         for (int i = 0; i < creatures.Count; i++)
         {
             if (ReferenceEquals(creatures[i], target))
-                return BuildCreatureKey(target, i);
+                return BuildCreatureKey(creatures[i], i);
+        }
+
+        if (target.CombatId.HasValue)
+        {
+            for (int i = 0; i < creatures.Count; i++)
+            {
+                if (creatures[i].CombatId == target.CombatId)
+                    return BuildCreatureKey(creatures[i], i);
+            }
+        }
+
+        if (target.Player != null)
+        {
+            for (int i = 0; i < creatures.Count; i++)
+            {
+                if (creatures[i].Player?.NetId == target.Player.NetId)
+                    return BuildCreatureKey(creatures[i], i);
+            }
+        }
+
+        if (target.Monster != null)
+        {
+            for (int i = 0; i < creatures.Count; i++)
+            {
+                Creature candidate = creatures[i];
+                if (candidate.Monster?.Id != target.Monster.Id)
+                    continue;
+
+                if (!string.IsNullOrWhiteSpace(target.SlotName) && candidate.SlotName == target.SlotName)
+                    return BuildCreatureKey(candidate, i);
+            }
+
+            for (int i = 0; i < creatures.Count; i++)
+            {
+                Creature candidate = creatures[i];
+                if (candidate.Monster?.Id == target.Monster.Id)
+                    return BuildCreatureKey(candidate, i);
+            }
         }
 
         return null;

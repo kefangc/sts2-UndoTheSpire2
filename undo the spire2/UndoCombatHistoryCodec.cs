@@ -1,4 +1,4 @@
-using System.Collections;
+﻿using System.Collections;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Combat.History;
 using MegaCrit.Sts2.Core.Combat.History.Entries;
@@ -22,7 +22,15 @@ internal static class UndoCombatHistoryCodec
         List<UndoCombatHistoryEntryState> entries = [];
         foreach (CombatHistoryEntry entry in CombatManager.Instance.History.Entries)
         {
-            entries.Add(CaptureEntry(runState, creatures, entry));
+            try
+            {
+                entries.Add(CaptureEntry(runState, creatures, entry));
+            }
+            catch (Exception ex)
+            {
+                MainFile.Logger.Warn($"Skipping combat history entry {entry.GetType().Name} during undo capture: {ex.Message}");
+                UndoDebugLog.Write($"history entry skipped type={entry.GetType().Name} reason={ex.GetType().Name}:{ex.Message}");
+            }
         }
 
         return new UndoCombatHistoryState
@@ -48,8 +56,7 @@ internal static class UndoCombatHistoryCodec
 
     private static UndoCombatHistoryEntryState CaptureEntry(RunState runState, IReadOnlyList<Creature> creatures, CombatHistoryEntry entry)
     {
-        CreatureRef actor = UndoStableRefs.CaptureCreatureRef(creatures, entry.Actor)
-            ?? throw new InvalidOperationException($"Could not capture history actor for {entry.GetType().Name}.");
+        CreatureRef actor = CaptureEntryActor(creatures, entry);
 
         return entry switch
         {
@@ -312,6 +319,26 @@ internal static class UndoCombatHistoryCodec
         };
     }
 
+    private static CreatureRef CaptureEntryActor(IReadOnlyList<Creature> creatures, CombatHistoryEntry entry)
+    {
+        CreatureRef? actor = UndoStableRefs.CaptureCreatureRef(creatures, entry.Actor);
+        if (actor != null)
+            return actor;
+
+        if (entry is PowerReceivedEntry powerReceived)
+        {
+            actor = UndoStableRefs.CaptureCreatureRef(creatures, powerReceived.Power?.Owner);
+            if (actor != null)
+                return actor;
+
+            actor = UndoStableRefs.CaptureCreatureRef(creatures, powerReceived.Applier);
+            if (actor != null)
+                return actor;
+        }
+
+        throw new InvalidOperationException($"Could not capture history actor for {entry.GetType().Name}.");
+    }
+
     private static UndoCardPlayState CaptureCardPlay(RunState runState, IReadOnlyList<Creature> creatures, CardPlay cardPlay)
     {
         return new UndoCardPlayState
@@ -498,6 +525,8 @@ internal static class UndoCombatHistoryCodec
         return new MoveState(moveId, _ => Task.CompletedTask);
     }
 }
+
+
 
 
 

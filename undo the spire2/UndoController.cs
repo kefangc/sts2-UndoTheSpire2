@@ -242,7 +242,31 @@ public sealed class UndoController
         ClearTurnTransitionBlock();
         ClearFirstInSeriesPlayCountOverrides();
         MainFile.Logger.Info("Initialized combat replay state for undo.");
+        UndoDebugLog.Write($"combat replay initialized nextAction={RunManager.Instance.ActionQueueSet.NextActionId} nextHook={RunManager.Instance.ActionQueueSynchronizer.NextHookId}");
         NotifyStateChanged();
+    }
+
+
+    private bool EnsureCombatReplayInitialized()
+    {
+        if (_combatReplay != null)
+            return true;
+
+        if (!RunManager.Instance.IsSinglePlayerOrFakeMultiplayer || !CombatManager.Instance.IsInProgress || IsRestoring)
+            return false;
+
+        try
+        {
+            SerializableRun currentRun = RunManager.Instance.ToSave(null);
+            OnCombatReplayInitialized(currentRun);
+            UndoDebugLog.Write("combat replay lazily initialized from current run state");
+            return _combatReplay != null;
+        }
+        catch (Exception ex)
+        {
+            UndoDebugLog.Write($"combat replay lazy init failed: {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
     }
 
     public void RecordReplayGameAction(GameAction gameAction)
@@ -360,20 +384,35 @@ public sealed class UndoController
 
     public void TryCaptureAction(UndoActionKind actionKind, GameAction action)
     {
-        if (!ShouldCapture(action))
+        if (!ShouldCaptureAction(action))
+        {
+            UndoDebugLog.Write($"capture skipped kind={actionKind} type={action.GetType().Name} owner={action.OwnerId} localNetId={LocalContext.NetId?.ToString() ?? "null"}");
             return;
+        }
 
         if (actionKind == UndoActionKind.EndTurn)
             BeginTurnTransitionBlock();
 
         TryCaptureSnapshot(actionKind, GetReplayEventCountBeforeCurrentAction(), DescribeAction(actionKind, action));
     }
+
     public void TryCapturePlayerChoice(GameAction action)
     {
-        if (!ShouldCapture(action))
+        if (!ShouldCapturePlayerChoice(action, out string? skipReason))
+        {
+            UndoDebugLog.Write($"choice_capture_skipped:{skipReason ?? "unknown"} type={action.GetType().Name} owner={action.OwnerId} localNetId={LocalContext.NetId?.ToString() ?? "null"} state={action.State}");
             return;
+        }
 
-        UndoChoiceSpec? choiceSpec = TakePendingChoiceSpec(action);
+        UndoChoiceSpec? choiceSpec = TakePendingChoiceSpec(action, clearWhenNotCaptured: false)
+            ?? TryCaptureCurrentChoiceSpecFromUi()
+            ?? TryCaptureChoiceSpecFromCurrentActionContext(action);
+        if (choiceSpec == null)
+        {
+            UndoDebugLog.Write($"choice_capture_skipped:no_pending_spec type={action.GetType().Name} owner={action.OwnerId} localNetId={LocalContext.NetId?.ToString() ?? "null"} state={action.State}");
+            return;
+        }
+
         _lastResolvedChoiceSpec = choiceSpec;
         _lastResolvedChoiceResultKey = null;
         TryCaptureSnapshot(
@@ -435,10 +474,12 @@ public sealed class UndoController
         if (!CanUndoNow(combatUi))
         {
             MainFile.Logger.Info($"Ignored undo request from {source}. HasUndo={HasUndo}, CanRestore={CanRestoreState()}, UiBlocked={IsUiBlocking(combatUi)}");
+            UndoDebugLog.Write($"undo ignored source={source} hasUndo={HasUndo} canRestore={CanRestoreState()} uiBlocked={IsUiBlocking(combatUi)}");
             return;
         }
 
         MainFile.Logger.Info($"Undo requested from {source}. Latest={UndoLabel}");
+        UndoDebugLog.Write($"undo requested source={source} latest={UndoLabel}");
         Undo();
     }
 
@@ -447,10 +488,12 @@ public sealed class UndoController
         if (!CanRedoNow(combatUi))
         {
             MainFile.Logger.Info($"Ignored redo request from {source}. HasRedo={HasRedo}, CanRestore={CanRestoreState()}, UiBlocked={IsUiBlocking(combatUi)}");
+            UndoDebugLog.Write($"redo ignored source={source} hasRedo={HasRedo} canRestore={CanRestoreState()} uiBlocked={IsUiBlocking(combatUi)}");
             return;
         }
 
         MainFile.Logger.Info($"Redo requested from {source}. Latest={RedoLabel}");
+        UndoDebugLog.Write($"redo requested source={source} latest={RedoLabel}");
         Redo();
     }
 
@@ -503,14 +546,26 @@ public sealed class UndoController
     private LinkedListNode<UndoSnapshot>? FindPreferredRedoSnapshotNode(LinkedList<UndoSnapshot> source)
     {
         LinkedListNode<UndoSnapshot>? node = source.First;
-        if (node == null || node.Value.ActionKind != UndoActionKind.EndTurn)
+        if (node == null)
+            return null;
+
+        if (node.Value.IsChoiceAnchor && node.Value.CombatState.ActionKernelState.PausedChoiceState != null)
+            return node;
+
+        if (node.Value.ActionKind != UndoActionKind.EndTurn)
             return node;
 
         LinkedListNode<UndoSnapshot>? preferredStableNode = node;
-        for (LinkedListNode<UndoSnapshot>? current = node; current != null && current.Value.ActionKind == UndoActionKind.EndTurn; current = current.Next)
+        for (LinkedListNode<UndoSnapshot>? current = node; current != null; current = current.Next)
         {
+            if (current.Value.IsChoiceAnchor && current.Value.CombatState.ActionKernelState.PausedChoiceState != null)
+                return current;
+
+            if (current.Value.ActionKind != UndoActionKind.EndTurn)
+                break;
+
             UndoSelectionSessionState? selectionSession = current.Value.CombatState.SelectionSessionState;
-            if (HasRestorableChoiceSession(selectionSession))
+            if (HasRestorableChoiceSession(selectionSession) || current.Value.CombatState.ActionKernelState.PausedChoiceState != null)
                 return current;
 
             if (current.Value.CombatState.CurrentSide == CombatSide.Player
@@ -721,12 +776,17 @@ public sealed class UndoController
         }
         catch (TaskCanceledException)
         {
+            UndoDebugLog.Write($"primary_choice_restore_selected_key:canceled replayEvents={snapshot.ReplayEventCount} label={snapshot.ActionLabel}");
             return false;
         }
 
         if (selectedKey == null)
+        {
+            UndoDebugLog.Write($"primary_choice_restore_selected_key:null replayEvents={snapshot.ReplayEventCount} label={snapshot.ActionLabel} codec={pausedChoiceState.SourceActionCodecId ?? "unknown"}");
             return false;
+        }
 
+        UndoDebugLog.Write($"primary_choice_restore_selected_key:{selectedKey} replayEvents={snapshot.ReplayEventCount} label={snapshot.ActionLabel} codec={pausedChoiceState.SourceActionCodecId ?? "unknown"}");
         UndoChoiceSpec choiceSpec = pausedChoiceState.ChoiceSpec;
         UndoSyntheticChoiceSession primarySession = new(snapshot, choiceSpec);
         if (branchSnapshot?.ChoiceResultKey != null)
@@ -740,6 +800,7 @@ public sealed class UndoController
             return true;
         }
 
+        UndoDebugLog.Write($"primary_choice_branch_miss:{selectedKey} replayEvents={snapshot.ReplayEventCount} label={snapshot.ActionLabel} cached={primarySession.CachedBranches.Count}");
         if (!TryCreateSyntheticChoiceBranchSnapshot(primarySession, selectedKey, out UndoSnapshot? synthesizedBranch))
         {
             MainFile.Logger.Warn($"Could not synthesize primary branch for restored choice {selectedKey}.");
@@ -2149,6 +2210,7 @@ public sealed class UndoController
         try
         {
             await DismissSupportedChoiceUiIfPresentAsync();
+            ResetActionExecutorForRestore();
             RunManager.Instance.ActionQueueSet.Reset();
             RebuildActionQueues(runState.Players);
             runState.Rng.LoadFromSerializable(snapshot.FullState.Rng);
@@ -2183,7 +2245,17 @@ public sealed class UndoController
                 return false;
             }
 
-            RestoreActionSynchronizationState(snapshot.SynchronizerCombatState);
+            ResetActionExecutorForRestore();
+            if (!RestoreActionSynchronizationState(snapshot.SynchronizerCombatState, snapshot.ActionKernelState.BoundaryKind, out reason))
+            {
+                _lastRestoreFailureReason = reason;
+                _lastRestoreCapabilityReport = new RestoreCapabilityReport
+                {
+                    Result = RestoreCapabilityResult.QueueStateMismatch,
+                    Detail = reason
+                };
+                return false;
+            }
             RebuildTransientCombatCaches(runState);
             NormalizeRelicInventoryUi(runState);
             ApplyFirstInSeriesPlayCountOverrides(snapshot);
@@ -2355,6 +2427,7 @@ public sealed class UndoController
             TrimSnapshots(_pastSnapshots);
             _futureSnapshots.Clear();
             MainFile.Logger.Info($"Captured snapshot #{snapshot.SequenceId}: {snapshot.ActionLabel}. ReplayEvents={snapshot.ReplayEventCount}, UndoCount={_pastSnapshots.Count}");
+            UndoDebugLog.Write($"snapshot captured seq={snapshot.SequenceId} label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount} undoCount={_pastSnapshots.Count}");
             NotifyStateChanged();
         }
         catch (Exception ex)
@@ -2363,19 +2436,19 @@ public sealed class UndoController
         }
     }
 
-    private UndoChoiceSpec? TakePendingChoiceSpec(GameAction action)
+    private UndoChoiceSpec? TakePendingChoiceSpec(GameAction action, bool clearWhenNotCaptured = true)
     {
         UndoChoiceSpec? choiceSpec = _pendingChoiceSpec;
-        _pendingChoiceSpec = null;
-        if (choiceSpec == null || !ShouldCapture(action))
-            return null;
+        bool shouldCapture = ShouldCapturePlayerChoice(action, out _);
+        if (shouldCapture || clearWhenNotCaptured)
+            _pendingChoiceSpec = null;
 
-        return choiceSpec;
+        return shouldCapture ? choiceSpec : null;
     }
 
     private bool CanCaptureSnapshot()
     {
-        return !IsRestoring && IsSinglePlayerCombat() && _combatReplay != null;
+        return !IsRestoring && IsSinglePlayerCombat() && EnsureCombatReplayInitialized();
     }
 
     private static string DescribeAction(UndoActionKind actionKind, GameAction? action)
@@ -2538,17 +2611,35 @@ public sealed class UndoController
         if (restoredSnapshot.ActionKind == UndoActionKind.EndTurn
             && RunManager.Instance.ActionExecutor.CurrentlyRunningAction?.State == GameActionState.GatheringPlayerChoice)
         {
-            WellLaidPlansPower? wellLaidPlans = me.Creature.GetPower<WellLaidPlansPower>();
-            if (wellLaidPlans != null)
-            {
-                LocString prompt = FindProperty(wellLaidPlans.GetType(), "SelectionScreenPrompt")?.GetValue(wellLaidPlans) as LocString
-                    ?? new LocString(string.Empty, string.Empty);
-                CardSelectorPrefs prefs = new(prompt, 0, wellLaidPlans.Amount);
-                return UndoChoiceSpec.CreateHandSelection(me, prefs, static card => !card.ShouldRetainThisTurn);
-            }
+            return TryCreateWellLaidPlansChoiceSpec(me);
         }
 
         return null;
+    }
+
+    private static UndoChoiceSpec? TryCaptureChoiceSpecFromCurrentActionContext(GameAction action)
+    {
+        if (action.State != GameActionState.GatheringPlayerChoice)
+            return null;
+
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        Player? me = combatState == null ? null : LocalContext.GetMe(combatState);
+        if (me == null)
+            return null;
+
+        return TryCreateWellLaidPlansChoiceSpec(me);
+    }
+
+    private static UndoChoiceSpec? TryCreateWellLaidPlansChoiceSpec(Player me)
+    {
+        WellLaidPlansPower? wellLaidPlans = me.Creature.GetPower<WellLaidPlansPower>();
+        if (wellLaidPlans == null)
+            return null;
+
+        LocString prompt = FindProperty(wellLaidPlans.GetType(), "SelectionScreenPrompt")?.GetValue(wellLaidPlans) as LocString
+            ?? new LocString(string.Empty, string.Empty);
+        CardSelectorPrefs prefs = new(prompt, 0, wellLaidPlans.Amount);
+        return UndoChoiceSpec.CreateHandSelection(me, prefs, static card => !card.ShouldRetainThisTurn);
     }
 
     private UndoChoiceSpec? FindChoiceSpecInHistory(int replayEventCount)
@@ -2695,7 +2786,7 @@ public sealed class UndoController
         }
     }
 
-    private static bool ShouldCapture(GameAction action)
+    private static bool ShouldCaptureAction(GameAction action)
     {
         if (!IsSinglePlayerCombat())
             return false;
@@ -2704,7 +2795,40 @@ public sealed class UndoController
             return false;
 
         ulong? localNetId = LocalContext.NetId;
-        return localNetId == null || action.OwnerId == localNetId.Value;
+        if (localNetId == null || action.OwnerId == localNetId.Value)
+            return true;
+
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        return combatState?.Players.Count <= 1;
+    }
+
+    private bool ShouldCapturePlayerChoice(GameAction action, out string? skipReason)
+    {
+        skipReason = null;
+        if (!IsSinglePlayerCombat())
+        {
+            skipReason = "not_single_player";
+            return false;
+        }
+
+        ulong? localNetId = LocalContext.NetId;
+        if (localNetId != null && action.OwnerId != localNetId.Value)
+        {
+            CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+            if (combatState?.Players.Count > 1)
+            {
+                skipReason = "not_local";
+                return false;
+            }
+        }
+
+        if (action.State != GameActionState.GatheringPlayerChoice && _pendingChoiceSpec == null)
+        {
+            skipReason = "not_choice_boundary";
+            return false;
+        }
+
+        return true;
     }
 
     private static void WriteInteractionLog(string stage, string? extra = null)
@@ -2811,7 +2935,7 @@ public sealed class UndoController
     private bool CanRecordReplayEvent()
     {
         return !IsRestoring
-            && _combatReplay != null
+            && EnsureCombatReplayInitialized()
             && RunManager.Instance.IsSinglePlayerOrFakeMultiplayer
             && CombatManager.Instance.IsInProgress;
     }
@@ -3616,8 +3740,25 @@ public sealed class UndoController
         }
     }
 
-    private static void RestoreActionSynchronizationState(ActionSynchronizerCombatState targetState)
+    private static void ResetActionExecutorForRestore()
     {
+        ActionExecutor actionExecutor = RunManager.Instance.ActionExecutor;
+        actionExecutor.Pause();
+        actionExecutor.Cancel();
+        UndoReflectionUtil.TrySetPropertyValue(actionExecutor, "CurrentlyRunningAction", null);
+        UndoReflectionUtil.TrySetFieldValue(actionExecutor, "_actionCancelToken", null);
+        UndoReflectionUtil.TrySetFieldValue(actionExecutor, "_queueTaskCompletionSource", null);
+    }
+
+    private static bool RestoreActionSynchronizationState(
+        ActionSynchronizerCombatState targetState,
+        ActionKernelBoundaryKind boundaryKind,
+        out string? reason)
+    {
+        reason = null;
+        if (!TryValidateActionQueueFrontStates(boundaryKind, out reason))
+            return false;
+
         ActionQueueSynchronizer synchronizer = RunManager.Instance.ActionQueueSynchronizer;
         ActionQueueSet actionQueueSet = RunManager.Instance.ActionQueueSet;
         if (targetState == ActionSynchronizerCombatState.PlayPhase)
@@ -3626,12 +3767,45 @@ public sealed class UndoController
             synchronizer.SetCombatState(ActionSynchronizerCombatState.PlayPhase);
             actionQueueSet.UnpauseAllPlayerQueues();
             RunManager.Instance.ActionExecutor.Unpause();
-            return;
+            return true;
         }
+
         synchronizer.SetCombatState(ActionSynchronizerCombatState.PlayPhase);
         synchronizer.SetCombatState(targetState);
         if (targetState == ActionSynchronizerCombatState.NotPlayPhase || targetState == ActionSynchronizerCombatState.EndTurnPhaseOne)
             actionQueueSet.PauseAllPlayerQueues();
+
+        return true;
+    }
+
+    private static bool TryValidateActionQueueFrontStates(ActionKernelBoundaryKind boundaryKind, out string? reason)
+    {
+        reason = null;
+        bool allowGatheringPlayerChoice = boundaryKind == ActionKernelBoundaryKind.PausedChoice;
+        if (UndoReflectionUtil.FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionQueues")?.GetValue(RunManager.Instance.ActionQueueSet) is not System.Collections.IEnumerable rawQueues)
+            return true;
+
+        foreach (object rawQueue in rawQueues)
+        {
+            if (UndoReflectionUtil.FindField(rawQueue.GetType(), "actions")?.GetValue(rawQueue) is not System.Collections.IList actions
+                || actions.Count == 0
+                || actions[0] is not GameAction frontAction)
+            {
+                continue;
+            }
+
+            bool legalState = frontAction.State == GameActionState.WaitingForExecution
+                || frontAction.State == GameActionState.ReadyToResumeExecuting
+                || (allowGatheringPlayerChoice && frontAction.State == GameActionState.GatheringPlayerChoice);
+            if (legalState)
+                continue;
+
+            ulong ownerId = UndoReflectionUtil.FindField(rawQueue.GetType(), "ownerId")?.GetValue(rawQueue) is ulong owner ? owner : 0UL;
+            reason = $"front_action_invalid_state:{ownerId}:{frontAction.State}:{frontAction.GetType().Name}";
+            return false;
+        }
+
+        return true;
     }
     private void EnsurePlayerChoiceUndoAnchor(UndoSnapshot restoredSnapshot)
     {
@@ -4983,6 +5157,9 @@ public sealed class UndoController
 
     private sealed record SyntheticTransformVfxCard(SerializableCard Card, int SourcePileIndex);
 }
+
+
+
 
 
 

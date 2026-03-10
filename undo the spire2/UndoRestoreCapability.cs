@@ -4,7 +4,9 @@ internal enum RestoreCapabilityResult
 {
     Supported,
     FallbackToSyntheticChoice,
+    UnsupportedLiveAction,
     UnsupportedOfficialPattern,
+    QueueStateMismatch,
     UnsupportedThirdPartyPattern,
     TopologyMismatch,
     SchemaMismatch
@@ -26,8 +28,10 @@ internal sealed class RestoreCapabilityReport
     public string? Detail { get; init; }
 
     public bool IsFailure =>
-        Result is RestoreCapabilityResult.UnsupportedOfficialPattern
+        Result is RestoreCapabilityResult.UnsupportedLiveAction
+            or RestoreCapabilityResult.UnsupportedOfficialPattern
             or RestoreCapabilityResult.UnsupportedThirdPartyPattern
             or RestoreCapabilityResult.TopologyMismatch
+            or RestoreCapabilityResult.QueueStateMismatch
             or RestoreCapabilityResult.SchemaMismatch;
 }

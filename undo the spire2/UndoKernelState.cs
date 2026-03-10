@@ -4,9 +4,16 @@ using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 
 namespace UndoTheSpire2;
 
+internal enum ActionKernelBoundaryKind
+{
+    StableBoundary,
+    PausedChoice,
+    UnsupportedLiveAction
+}
+
 internal sealed class ActionKernelState
 {
-    public const int CurrentSchemaVersion = 3;
+    public const int CurrentSchemaVersion = 4;
 
     public static ActionKernelState Empty { get; } = new()
     {
@@ -14,6 +21,8 @@ internal sealed class ActionKernelState
     };
 
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
+
+    public ActionKernelBoundaryKind BoundaryKind { get; init; } = ActionKernelBoundaryKind.StableBoundary;
 
     public string? CurrentActionTypeName { get; init; }
 

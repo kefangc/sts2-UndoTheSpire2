@@ -47,6 +47,24 @@ internal static class UndoActionCodecRegistry
             };
         }
 
+        if (state.OwnerNetId == null)
+        {
+            return new RestoreCapabilityReport
+            {
+                Result = RestoreCapabilityResult.UnsupportedOfficialPattern,
+                Detail = "paused_choice_missing_owner"
+            };
+        }
+
+        if (state.ChoiceId == null)
+        {
+            return new RestoreCapabilityReport
+            {
+                Result = RestoreCapabilityResult.FallbackToSyntheticChoice,
+                Detail = "paused_choice_missing_choice_id"
+            };
+        }
+
         if (TryGetCodec(state) != null)
             return RestoreCapabilityReport.SupportedReport("paused_choice_primary");
 
