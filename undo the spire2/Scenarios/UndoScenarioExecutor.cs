@@ -7,6 +7,8 @@ using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Monsters;
+using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
@@ -88,6 +90,14 @@ internal static class UndoScenarioExecutor
             ["decimillipede"] = ExecuteRoundtripScenarioAsync,
             ["door-maker"] = ExecuteRoundtripScenarioAsync,
             ["paels-legion"] = ExecuteRoundtripScenarioAsync,
+            ["slumbering-beetle"] = ExecuteRoundtripScenarioAsync,
+            ["lagavulin-matriarch"] = ExecuteRoundtripScenarioAsync,
+            ["bowlbug-rock"] = ExecuteRoundtripScenarioAsync,
+            ["thieving-hopper"] = ExecuteRoundtripScenarioAsync,
+            ["fat-gremlin"] = ExecuteRoundtripScenarioAsync,
+            ["sneaky-gremlin"] = ExecuteRoundtripScenarioAsync,
+            ["ceremonial-beast"] = ExecuteRoundtripScenarioAsync,
+            ["wriggler"] = ExecuteRoundtripScenarioAsync,
             ["throwing-axe"] = ExecuteRoundtripScenarioAsync,
             ["happy-flower"] = ExecuteRoundtripScenarioAsync,
             ["history-course"] = ExecuteRoundtripScenarioAsync,
@@ -397,6 +407,14 @@ internal static class UndoScenarioExecutor
             "decimillipede" => Require(AnyMonsterType(combatState, "DecimillipedeSegment"), "decimillipede_required"),
             "door-maker" => Require(AnyMonsterType(combatState, "Door") || AnyMonsterType(combatState, "Doormaker"), "door_or_doormaker_required"),
             "paels-legion" => Require(me != null && PlayerHasRelic(me, "PaelsLegion") && combatState.Allies.Any(creature => creature.PetOwner == me && HasTypeName(creature.Monster, "PaelsLegion")), "paels_legion_pet_required"),
+            "slumbering-beetle" => Require(AnyMonsterType(combatState, "SlumberingBeetle"), "slumbering_beetle_required"),
+            "lagavulin-matriarch" => Require(AnyMonsterType(combatState, "LagavulinMatriarch"), "lagavulin_matriarch_required"),
+            "bowlbug-rock" => Require(AnyMonsterType(combatState, "BowlbugRock"), "bowlbug_rock_required"),
+            "thieving-hopper" => Require(AnyMonsterType(combatState, "ThievingHopper"), "thieving_hopper_required"),
+            "fat-gremlin" => Require(AnyMonsterType(combatState, "FatGremlin"), "fat_gremlin_required"),
+            "sneaky-gremlin" => Require(AnyMonsterType(combatState, "SneakyGremlin"), "sneaky_gremlin_required"),
+            "ceremonial-beast" => Require(AnyMonsterType(combatState, "CeremonialBeast"), "ceremonial_beast_required"),
+            "wriggler" => Require(AnyMonsterType(combatState, "Wriggler"), "wriggler_required"),
             "throwing-axe" => Require(me != null && PlayerHasRelic(me, "ThrowingAxe"), "throwing_axe_required"),
             "happy-flower" => Require(me != null && PlayerHasRelic(me, "HappyFlower"), "happy_flower_required"),
             "history-course" => Require(me != null && PlayerHasRelic(me, "HistoryCourse"), "history_course_required"),
@@ -524,6 +542,8 @@ internal static class UndoScenarioExecutor
                 "pet_owner_restores" => CompareProjection(assertion, ProjectTopology(targetState.CreatureTopologyStates), ProjectTopology(redoState.CreatureTopologyStates), "creature_topology_roundtrip"),
                 "no_duplicate_pet_after_undo" => CompareProjection(assertion, ProjectTopology(targetState.CreatureTopologyStates), ProjectTopology(redoState.CreatureTopologyStates), "creature_topology_roundtrip"),
                 "pet_visual_state_restores" => AssertPaelsLegionVisualState(assertion),
+                "status_runtime_restores" => CompareProjection(assertion, ProjectCreatureStatusRuntime(targetState.CreatureStatusRuntimeStates), ProjectCreatureStatusRuntime(redoState.CreatureStatusRuntimeStates), "creature_status_runtime_roundtrip"),
+                "creature_visual_state_restores" => AssertCreatureStatusVisualState(assertion, scenario.Id),
                 "turn_counter_restores" => CompareProjection(assertion, targetState.RuntimeGraphState.RelicRuntimeStates, redoState.RuntimeGraphState.RelicRuntimeStates, "relic_runtime_roundtrip"),
                 "activation_flag_restores" => CompareProjection(assertion, targetState.RuntimeGraphState.RelicRuntimeStates, redoState.RuntimeGraphState.RelicRuntimeStates, "relic_runtime_roundtrip"),
                 "last_turn_card_replay_restores" => CompareProjection(assertion, targetState.CombatHistoryState, redoState.CombatHistoryState, "combat_history_roundtrip"),
@@ -582,6 +602,110 @@ internal static class UndoScenarioExecutor
             Passed = false,
             Detail = "paels_legion_pet_missing"
         };
+    }
+
+    private static object ProjectCreatureStatusRuntime(IReadOnlyList<CreatureStatusRuntimeState> states)
+    {
+        return states
+            .OrderBy(static state => state.CreatureKey, StringComparer.Ordinal)
+            .Select(state => new
+            {
+                state.CreatureKey,
+                state.CodecId,
+                Payload = state.Payload switch
+                {
+                    UndoBoolCreatureStatusRuntimePayload boolPayload => (object?)new { boolPayload.CodecId, boolPayload.Value },
+                    UndoCreatureStatusRuntimePayload payload => (object?)new { payload.CodecId },
+                    _ => null
+                }
+            })
+            .ToList();
+    }
+
+    private static UndoScenarioAssertionResult AssertCreatureStatusVisualState(string assertion, string scenarioId)
+    {
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatState == null || combatRoom == null)
+        {
+            return new UndoScenarioAssertionResult
+            {
+                Assertion = assertion,
+                Passed = false,
+                Detail = combatState == null ? "combat_state_missing" : "combat_room_missing"
+            };
+        }
+
+        foreach (Creature creature in combatState.Creatures)
+        {
+            NCreature? creatureNode = combatRoom.GetCreatureNode(creature);
+            if (creatureNode == null || creature.Monster == null)
+                continue;
+
+            string? animation = creatureNode.SpineController.GetAnimationState().GetCurrent(0)?.GetAnimation()?.GetName();
+            bool nodeVisible = creatureNode.Visible && creatureNode.Visuals.Visible && creatureNode.Body.Visible;
+            bool hasSleepingVfx = UndoReflectionUtil.FindProperty(creature.Monster.GetType(), "SleepingVfx")?.GetValue(creature.Monster) != null
+                || UndoReflectionUtil.FindField(creature.Monster.GetType(), "_sleepingVfx")?.GetValue(creature.Monster) != null;
+
+            switch (scenarioId)
+            {
+                case "slumbering-beetle" when creature.Monster is SlumberingBeetle slumberingBeetle:
+                    return BuildAnimationAssertion(assertion, animation, !slumberingBeetle.IsAwake ? ["sleep_loop"] : ["idle_loop"], hasSleepingVfx, !slumberingBeetle.IsAwake, nodeVisible, true);
+                case "lagavulin-matriarch" when creature.Monster is LagavulinMatriarch lagavulinMatriarch:
+                    bool asleep = !lagavulinMatriarch.IsAwake || creature.HasPower<AsleepPower>();
+                    return BuildAnimationAssertion(assertion, animation, asleep ? ["sleep_loop"] : ["idle_loop"], hasSleepingVfx, asleep, nodeVisible, true);
+                case "bowlbug-rock" when creature.Monster is BowlbugRock bowlbugRock:
+                    return BuildAnimationAssertion(assertion, animation, bowlbugRock.IsOffBalance ? ["stunned_loop"] : ["idle_loop"], actualVisible: nodeVisible, expectedVisible: true);
+                case "thieving-hopper" when creature.Monster is ThievingHopper thievingHopper:
+                    return BuildAnimationAssertion(assertion, animation, ReadPrivateBool(thievingHopper, "IsHovering") ? ["hover_loop"] : ["idle_loop"], actualVisible: nodeVisible, expectedVisible: true);
+                case "fat-gremlin" when creature.Monster is FatGremlin fatGremlin:
+                    return BuildAnimationAssertion(assertion, animation, ReadPrivateBool(fatGremlin, "IsAwake") ? ["awake_loop"] : ["stunned_loop"], actualVisible: nodeVisible, expectedVisible: true);
+                case "sneaky-gremlin" when creature.Monster is SneakyGremlin sneakyGremlin:
+                    return BuildAnimationAssertion(assertion, animation, ReadPrivateBool(sneakyGremlin, "IsAwake") ? ["awake_loop"] : ["stunned_loop"], actualVisible: nodeVisible, expectedVisible: true);
+                case "ceremonial-beast" when creature.Monster is CeremonialBeast ceremonialBeast:
+                    return BuildAnimationAssertion(assertion, animation, ReadPrivateBool(ceremonialBeast, "InMidCharge") ? ["plow"] : (ReadPrivateBool(ceremonialBeast, "IsStunnedByPlowRemoval") ? ["stun_loop"] : ["idle_loop"]), actualVisible: nodeVisible, expectedVisible: true);
+            }
+        }
+
+        return new UndoScenarioAssertionResult
+        {
+            Assertion = assertion,
+            Passed = false,
+            Detail = $"scenario_creature_missing:{scenarioId}"
+        };
+    }
+
+    private static UndoScenarioAssertionResult BuildAnimationAssertion(string assertion, string? animation, IReadOnlyList<string> expectedAnimations, bool? actualSleepingVfx = null, bool? expectedSleepingVfx = null, bool? actualVisible = null, bool? expectedVisible = null)
+    {
+        bool passed = animation != null && expectedAnimations.Contains(animation, StringComparer.Ordinal);
+        if (expectedSleepingVfx.HasValue && actualSleepingVfx.HasValue)
+            passed &= actualSleepingVfx.Value == expectedSleepingVfx.Value;
+        if (expectedVisible.HasValue && actualVisible.HasValue)
+            passed &= actualVisible.Value == expectedVisible.Value;
+
+        string detail = passed
+            ? $"animation={animation ?? "null"}"
+            : $"expected={string.Join("/", expectedAnimations)} actual={animation ?? "null"}";
+        if (expectedSleepingVfx.HasValue && actualSleepingVfx.HasValue)
+            detail += $"; sleeping_vfx={actualSleepingVfx.Value}; expected_vfx={expectedSleepingVfx.Value}";
+        if (expectedVisible.HasValue && actualVisible.HasValue)
+            detail += $"; visible={actualVisible.Value}; expected_visible={expectedVisible.Value}";
+
+        return new UndoScenarioAssertionResult
+        {
+            Assertion = assertion,
+            Passed = passed,
+            Detail = detail
+        };
+    }
+
+    private static bool ReadPrivateBool(object target, string propertyName)
+    {
+        if (UndoReflectionUtil.FindProperty(target.GetType(), propertyName)?.GetValue(target) is bool propertyValue)
+            return propertyValue;
+
+        string fieldName = '_' + char.ToLowerInvariant(propertyName[0]) + propertyName[1..];
+        return UndoReflectionUtil.FindField(target.GetType(), fieldName)?.GetValue(target) is bool fieldValue && fieldValue;
     }
     private static object ProjectTopology(IReadOnlyList<CreatureTopologyState> states)
     {
@@ -658,6 +782,7 @@ internal static class UndoScenarioExecutor
     {
         HashSet<string> implemented = UndoRuntimeStateCodecRegistry.GetImplementedCodecIds();
         implemented.UnionWith(UndoCreatureTopologyCodecRegistry.GetImplementedCodecIds());
+        implemented.UnionWith(UndoCreatureStatusCodecRegistry.GetImplementedCodecIds());
         implemented.UnionWith(UndoActionCodecRegistry.GetImplementedCodecIds());
 
         List<string> required = scenario.Id switch
@@ -669,6 +794,14 @@ internal static class UndoScenarioExecutor
             "decimillipede" => ["topology:Decimillipede"],
             "door-maker" => ["topology:DoorAndDoormaker", "power:DoorRevivalPower.isHalfDead"],
             "paels-legion" => ["relic:PaelsLegion.affectedCardPlay"],
+            "slumbering-beetle" => ["status:SlumberingBeetle.IsAwake"],
+            "lagavulin-matriarch" => ["status:LagavulinMatriarch.IsAwake"],
+            "bowlbug-rock" => ["status:BowlbugRock.IsOffBalance"],
+            "thieving-hopper" => ["status:ThievingHopper.IsHovering"],
+            "fat-gremlin" => ["status:FatGremlin.IsAwake"],
+            "sneaky-gremlin" => ["status:SneakyGremlin.IsAwake"],
+            "ceremonial-beast" => ["status:CeremonialBeast.IsStunnedByPlowRemoval", "status:CeremonialBeast.InMidCharge"],
+            "wriggler" => ["status:Wriggler.StartStunned"],
             "throwing-axe" => [],
             "happy-flower" => [],
             "history-course" => ["history:CombatHistory.entries"],
@@ -682,6 +815,9 @@ internal static class UndoScenarioExecutor
         return required.Where(requiredId => !implemented.Contains(requiredId)).ToList();
     }
 }
+
+
+
 
 
 

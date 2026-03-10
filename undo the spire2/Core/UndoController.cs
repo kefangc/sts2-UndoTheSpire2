@@ -2246,6 +2246,14 @@ public sealed class UndoController
                 return false;
             }
 
+
+            RestoreCapabilityReport creatureStatusReport = UndoCreatureStatusCodecRegistry.Restore(snapshot.CreatureStatusRuntimeStates, combatState.Creatures);
+            if (creatureStatusReport.IsFailure)
+            {
+                _lastRestoreFailureReason = creatureStatusReport.Detail ?? creatureStatusReport.Result.ToString();
+                _lastRestoreCapabilityReport = creatureStatusReport;
+                return false;
+            }
             RestoreCapabilityReport actionKernelReport = UndoActionKernelService.Restore(snapshot.ActionKernelState, runState);
             _lastRestoreCapabilityReport = actionKernelReport;
             if (actionKernelReport.IsFailure)
@@ -2999,7 +3007,8 @@ public sealed class UndoController
             CaptureRelicRuntimeStates(runState, combatState),
             selectionSessionState,
             CaptureFirstInSeriesPlayCounts(combatState),
-            creatureTopologyStates: UndoCreatureTopologyCodecRegistry.Capture(combatState.Creatures));
+            creatureTopologyStates: UndoCreatureTopologyCodecRegistry.Capture(combatState.Creatures),
+            creatureStatusRuntimeStates: UndoCreatureStatusCodecRegistry.Capture(combatState.Creatures));
     }
 
     private static IReadOnlyList<UndoMonsterState> CaptureMonsterStates(IReadOnlyList<Creature> creatures)
@@ -3018,7 +3027,6 @@ public sealed class UndoController
             bool performedFirstMove = FindField(moveStateMachine.GetType(), "_performedFirstMove")?.GetValue(moveStateMachine) is true;
             bool nextMovePerformedAtLeastOnce = monster.NextMove != null
                 && FindField(monster.NextMove.GetType(), "_performedAtLeastOnce")?.GetValue(monster.NextMove) is true;
-            bool isHovering = FindProperty(monster.GetType(), "IsHovering")?.GetValue(monster) is bool hovering && hovering;
             string? specialNodeStateKey = creature.Powers.OfType<SwipePower>().Any(static power => power.StolenCard != null)
                 ? "%StolenCardPos"
                 : null;
@@ -3028,7 +3036,7 @@ public sealed class UndoController
                 SlotName = string.IsNullOrWhiteSpace(creature.SlotName) ? null : creature.SlotName,
                 CurrentStateId = currentStateId,
                 NextMoveId = monster.NextMove?.Id,
-                IsHovering = isHovering,
+                IsHovering = false,
                 SpawnedThisTurn = monster.SpawnedThisTurn,
                 PerformedFirstMove = performedFirstMove,
                 NextMovePerformedAtLeastOnce = nextMovePerformedAtLeastOnce,
@@ -4396,9 +4404,6 @@ public sealed class UndoController
             return;
 
         monster.Creature.SlotName = state.SlotName;
-        if (TrySetPrivateAutoPropertyBackingField(monster, "IsHovering", state.IsHovering) == false)
-            SetPrivatePropertyValue(monster, "IsHovering", state.IsHovering);
-
         if (moveStateMachine.StateLog is List<MonsterState> stateLog)
         {
             stateLog.Clear();
@@ -5157,7 +5162,10 @@ public sealed class UndoController
             source.SelectionSessionState,
             source.FirstInSeriesPlayCounts,
             source.RuntimeGraphState,
-            source.PresentationHints);
+            source.PresentationHints,
+            source.CreatureTopologyStates,
+            source.CreatureStatusRuntimeStates,
+            source.SchemaVersion);
     }
 
     private static SerializableRun CloneRun(SerializableRun run)

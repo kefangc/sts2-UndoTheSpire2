@@ -10,7 +10,7 @@ namespace UndoTheSpire2;
 
 internal sealed class UndoCombatFullState
 {
-    public const int CurrentSchemaVersion = 2;
+    public const int CurrentSchemaVersion = 3;
 
     public UndoCombatFullState(
         NetFullCombatState fullState,
@@ -32,6 +32,7 @@ internal sealed class UndoCombatFullState
         RuntimeGraphState? runtimeGraphState = null,
         PresentationHints? presentationHints = null,
         IReadOnlyList<CreatureTopologyState>? creatureTopologyStates = null,
+        IReadOnlyList<CreatureStatusRuntimeState>? creatureStatusRuntimeStates = null,
         int schemaVersion = CurrentSchemaVersion)
     {
         SchemaVersion = schemaVersion;
@@ -46,6 +47,7 @@ internal sealed class UndoCombatFullState
         ActionKernelState = actionKernelState ?? ActionKernelState.Empty;
         MonsterStates = monsterStates;
         CreatureTopologyStates = creatureTopologyStates ?? [];
+        CreatureStatusRuntimeStates = creatureStatusRuntimeStates ?? [];
         CardCostStates = cardCostStates;
         CardRuntimeStates = cardRuntimeStates ?? [];
         PowerRuntimeStates = powerRuntimeStates ?? [];
@@ -87,6 +89,8 @@ internal sealed class UndoCombatFullState
     public IReadOnlyList<UndoMonsterState> MonsterStates { get; }
 
     public IReadOnlyList<CreatureTopologyState> CreatureTopologyStates { get; }
+
+    public IReadOnlyList<CreatureStatusRuntimeState> CreatureStatusRuntimeStates { get; }
 
     public IReadOnlyList<UndoPlayerPileCardCostState> CardCostStates { get; }
 

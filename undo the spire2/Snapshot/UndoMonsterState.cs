@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+// Captures monster move-machine metadata that supplements official full state.`r`n// Sleep/stun/hover runtime booleans now live in CreatureStatusRuntimeState.`r`nusing System.Collections.Generic;
 
 namespace UndoTheSpire2;
 
