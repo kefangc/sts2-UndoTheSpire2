@@ -84,6 +84,8 @@ internal sealed class UndoPowerRuntimeState
 
     public SerializableCard? StolenCard { get; init; }
 
+    public IReadOnlyList<ulong> TriggeredPlayerNetIds { get; init; } = [];
+
     public IReadOnlyList<UndoNamedBoolState> BoolProperties { get; init; } = [];
 
     public IReadOnlyList<UndoNamedIntState> IntProperties { get; init; } = [];
