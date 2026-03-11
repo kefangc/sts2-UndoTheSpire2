@@ -19,18 +19,32 @@ internal sealed class UndoPlayerPileCardRuntimeState
 
 internal sealed class UndoCardRuntimeState
 {
+    public int BaseReplayCount { get; init; }
+
     public bool HasSingleTurnRetain { get; init; }
 
     public bool HasSingleTurnSly { get; init; }
 
     public bool ExhaustOnNextPlay { get; init; }
 
+    public CardRef? DeckVersionRef { get; init; }
+
     public UndoEnchantmentRuntimeState? EnchantmentState { get; init; }
+
+    public IReadOnlyList<UndoComplexRuntimeState> ComplexStates { get; init; } = [];
 }
 
 internal sealed class UndoEnchantmentRuntimeState
 {
+    public SerializableEnchantment? Serializable { get; init; }
+
     public EnchantmentStatus Status { get; init; }
+
+    public IReadOnlyList<UndoNamedBoolState> BoolProperties { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedIntState> IntProperties { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedEnumState> EnumProperties { get; init; } = [];
 }
 
 internal sealed class UndoNamedBoolState
@@ -77,6 +91,8 @@ internal sealed class UndoPowerRuntimeState
     public IReadOnlyList<UndoNamedIntState> IntProperties { get; init; } = [];
 
     public IReadOnlyList<UndoNamedEnumState> EnumProperties { get; init; } = [];
+
+    public IReadOnlyList<UndoComplexRuntimeState> ComplexStates { get; init; } = [];
 }
 
 internal sealed class UndoRelicRuntimeState
@@ -96,6 +112,8 @@ internal sealed class UndoRelicRuntimeState
     public IReadOnlyList<UndoNamedIntState> IntProperties { get; init; } = [];
 
     public IReadOnlyList<UndoNamedEnumState> EnumProperties { get; init; } = [];
+
+    public IReadOnlyList<UndoComplexRuntimeState> ComplexStates { get; init; } = [];
 }
 
 internal sealed class UndoSelectionSessionState

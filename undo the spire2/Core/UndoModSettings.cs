@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 
 namespace UndoTheSpire2;
 
@@ -115,7 +115,7 @@ internal static class UndoModSettings
     {
         return new UndoModSettingsData
         {
-            EnableChoiceUndo = false,
+            EnableChoiceUndo = true,
             EnableUnifiedEffectMode = true
         };
     }
