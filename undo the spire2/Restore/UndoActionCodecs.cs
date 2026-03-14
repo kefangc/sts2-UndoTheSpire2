@@ -121,10 +121,9 @@ internal static class UndoActionCodecRegistry
         return key;
     }
 
-    private static UndoChoiceResultKey? MapAndSyncChooseACard(RunState runState, PausedChoiceState state, Player player, CardModel? selectedCard)
+    private static UndoChoiceResultKey? MapAndSyncChooseACard(RunState runState, PausedChoiceState state, Player player, IReadOnlyList<CardModel> options, CardModel? selectedCard)
     {
-        IReadOnlyList<CardModel> options = state.ChoiceSpec?.BuildOptionCards(player) ?? [];
-        UndoChoiceResultKey? key = state.ChoiceSpec?.TryMapSyntheticSelection(player, selectedCard == null ? [] : [selectedCard]);
+        UndoChoiceResultKey? key = state.ChoiceSpec?.TryMapDisplayedOptionSelection(options, selectedCard == null ? [] : [selectedCard]);
         int selectedIndex = selectedCard == null ? -1 : IndexOfReference(options, selectedCard);
         uint? choiceId = GetChoiceId(runState, state, player);
         if (choiceId != null)
@@ -133,17 +132,94 @@ internal static class UndoActionCodecRegistry
         return key;
     }
 
-    private static UndoChoiceResultKey? MapAndSyncSimpleGrid(RunState runState, PausedChoiceState state, Player player, IEnumerable<CardModel> selectedCards)
+    private static UndoChoiceResultKey? MapAndSyncSimpleGrid(RunState runState, PausedChoiceState state, Player player, IReadOnlyList<CardModel> options, IEnumerable<CardModel> selectedCards)
     {
         List<CardModel> selected = [.. selectedCards];
-        IReadOnlyList<CardModel> options = state.ChoiceSpec?.BuildOptionCards(player) ?? [];
         List<int> indexes = selected.Select(card => IndexOfReference(options, card)).Where(static index => index >= 0).ToList();
-        UndoChoiceResultKey? key = state.ChoiceSpec?.TryMapSyntheticSelection(player, selected);
+        UndoChoiceResultKey? key = state.ChoiceSpec?.TryMapDisplayedOptionSelection(options, selected);
         uint? choiceId = GetChoiceId(runState, state, player);
         if (choiceId != null)
             RunManager.Instance.PlayerChoiceSynchronizer.SyncLocalChoice(player, choiceId.Value, PlayerChoiceResult.FromIndexes(indexes));
 
         return key;
+    }
+    private static IReadOnlyList<CardModel> ResolveChooseACardOptions(Player player, PausedChoiceState state)
+    {
+        if (NOverlayStack.Instance?.Peek() is NChooseACardSelectionScreen screen
+            && UndoReflectionUtil.FindField(screen.GetType(), "_cards")?.GetValue(screen) is IReadOnlyList<CardModel> displayedOptions
+            && displayedOptions.Count > 0)
+        {
+            return displayedOptions;
+        }
+
+        return state.ChoiceSpec?.BuildOptionCards(player) ?? [];
+    }
+
+    private static IReadOnlyList<CardModel> ResolveSimpleGridOptions(Player player, PausedChoiceState state)
+    {
+        if (NOverlayStack.Instance?.Peek() is NCardGridSelectionScreen screen
+            && UndoReflectionUtil.FindField(screen.GetType(), "_cards")?.GetValue(screen) is IReadOnlyList<CardModel> displayedOptions
+            && displayedOptions.Count > 0)
+        {
+            return displayedOptions;
+        }
+
+        return state.ChoiceSpec?.BuildOptionCards(player) ?? [];
+    }
+
+    private static Task<IEnumerable<CardModel>>? TryAwaitExistingHandSelection()
+    {
+        NPlayerHand? hand = NPlayerHand.Instance;
+        if (hand?.IsInCardSelection != true)
+            return null;
+
+        if (UndoReflectionUtil.FindField(hand.GetType(), "_selectionCompletionSource")?.GetValue(hand) is not TaskCompletionSource<IEnumerable<CardModel>> completionSource)
+            return null;
+
+        Task<IEnumerable<CardModel>> task = completionSource.Task;
+        if (task.IsCompleted)
+        {
+            UndoReflectionUtil.FindMethod(hand.GetType(), "AfterCardsSelected")?.Invoke(hand, [null]);
+            return null;
+        }
+
+        return task;
+    }
+
+    private static Task<IEnumerable<CardModel>>? TryAwaitExistingChooseACardSelection()
+    {
+        if (NOverlayStack.Instance?.Peek() is not NChooseACardSelectionScreen screen)
+            return null;
+
+        if (UndoReflectionUtil.FindField(screen.GetType(), "_completionSource")?.GetValue(screen) is not TaskCompletionSource<IEnumerable<CardModel>> completionSource)
+            return null;
+
+        Task<IEnumerable<CardModel>> task = completionSource.Task;
+        if (task.IsCompleted)
+        {
+            NOverlayStack.Instance?.Remove(screen);
+            return null;
+        }
+
+        return task;
+    }
+
+    private static Task<IEnumerable<CardModel>>? TryAwaitExistingSimpleGridSelection()
+    {
+        if (NOverlayStack.Instance?.Peek() is not NCardGridSelectionScreen screen)
+            return null;
+
+        if (UndoReflectionUtil.FindField(screen.GetType(), "_completionSource")?.GetValue(screen) is not TaskCompletionSource<IEnumerable<CardModel>> completionSource)
+            return null;
+
+        Task<IEnumerable<CardModel>> task = completionSource.Task;
+        if (task.IsCompleted)
+        {
+            NOverlayStack.Instance?.Remove(screen);
+            return null;
+        }
+
+        return task;
     }
 
     private static int IndexOfReference(IReadOnlyList<CardModel> cards, CardModel target)
@@ -173,7 +249,9 @@ internal static class UndoActionCodecRegistry
             if (player == null || hand == null || state.ChoiceSpec == null)
                 return null;
 
-            IEnumerable<CardModel> selected = await hand.SelectCards(state.ChoiceSpec.SelectionPrefs, state.ChoiceSpec.BuildHandFilter(player), null);
+            Task<IEnumerable<CardModel>> selectionTask = TryAwaitExistingHandSelection()
+                ?? hand.SelectCards(state.ChoiceSpec.SelectionPrefs, state.ChoiceSpec.BuildHandFilter(player), null);
+            IEnumerable<CardModel> selected = await selectionTask;
             return MapAndSyncHandSelection(runState, state, player, selected);
         }
     }
@@ -193,9 +271,12 @@ internal static class UndoActionCodecRegistry
             if (player == null || state.ChoiceSpec == null)
                 return null;
 
-            NChooseACardSelectionScreen screen = NChooseACardSelectionScreen.ShowScreen(state.ChoiceSpec.BuildOptionCards(player), state.ChoiceSpec.CanSkip);
-            CardModel? selected = (await screen.CardsSelected()).FirstOrDefault();
-            return MapAndSyncChooseACard(runState, state, player, selected);
+            IReadOnlyList<CardModel> options = ResolveChooseACardOptions(player, state);
+            Task<IEnumerable<CardModel>> selectionTask = TryAwaitExistingChooseACardSelection()
+                ?? NChooseACardSelectionScreen.ShowScreen(options, state.ChoiceSpec.CanSkip)?.CardsSelected()
+                ?? Task.FromResult(Enumerable.Empty<CardModel>());
+            CardModel? selected = (await selectionTask).FirstOrDefault();
+            return MapAndSyncChooseACard(runState, state, player, options, selected);
         }
     }
 
@@ -214,11 +295,20 @@ internal static class UndoActionCodecRegistry
             if (player == null || state.ChoiceSpec == null)
                 return null;
 
-            NSimpleCardSelectScreen screen = NSimpleCardSelectScreen.Create(state.ChoiceSpec.BuildOptionCards(player), state.ChoiceSpec.SelectionPrefs);
-            NOverlayStack.Instance.Push(screen);
-            IEnumerable<CardModel> selected = await screen.CardsSelected();
-            return MapAndSyncSimpleGrid(runState, state, player, selected);
+            IReadOnlyList<CardModel> options = ResolveSimpleGridOptions(player, state);
+            Task<IEnumerable<CardModel>> selectionTask = TryAwaitExistingSimpleGridSelection();
+            if (selectionTask == null)
+            {
+                NSimpleCardSelectScreen screen = NSimpleCardSelectScreen.Create(options, state.ChoiceSpec.SelectionPrefs);
+                NOverlayStack.Instance.Push(screen);
+                selectionTask = screen.CardsSelected();
+            }
+
+            IEnumerable<CardModel> selected = await selectionTask;
+            return MapAndSyncSimpleGrid(runState, state, player, options, selected);
         }
     }
 }
+
+
 

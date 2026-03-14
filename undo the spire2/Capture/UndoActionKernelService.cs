@@ -1,5 +1,6 @@
-﻿using System.Reflection;
+using System.Reflection;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Actions;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
@@ -16,7 +17,10 @@ internal static class UndoActionKernelService
     {
         ActionQueueSet actionQueueSet = RunManager.Instance.ActionQueueSet;
         GameAction? currentAction = RunManager.Instance.ActionExecutor.CurrentlyRunningAction;
-        ActionKernelBoundaryKind boundaryKind = DetermineBoundaryKind(currentAction, activeChoiceSpec);
+        GameAction? effectiveAction = currentAction?.State == GameActionState.GatheringPlayerChoice
+            ? currentAction
+            : FindPausedChoiceAction(actionQueueSet, activeChoiceSpec);
+        ActionKernelBoundaryKind boundaryKind = DetermineBoundaryKind(effectiveAction, activeChoiceSpec);
         IReadOnlyList<ActionResumeState> waitingForResume = boundaryKind == ActionKernelBoundaryKind.PausedChoice
             ? CaptureWaitingForResumeStates(actionQueueSet)
             : [];
@@ -25,23 +29,23 @@ internal static class UndoActionKernelService
         if (UndoReflectionUtil.FindField(actionQueueSet.GetType(), "_actionQueues")?.GetValue(actionQueueSet) is System.Collections.IEnumerable rawQueues)
         {
             foreach (object rawQueue in rawQueues)
-                queueStates.Add(CaptureQueueState(rawQueue, boundaryKind, currentAction));
+                queueStates.Add(CaptureQueueState(rawQueue, boundaryKind, effectiveAction));
         }
 
         bool persistCurrentAction = boundaryKind == ActionKernelBoundaryKind.PausedChoice;
         return new ActionKernelState
         {
             BoundaryKind = boundaryKind,
-            CurrentActionTypeName = persistCurrentAction ? currentAction?.GetType().FullName : null,
-            CurrentActionState = persistCurrentAction ? currentAction?.State : null,
-            CurrentActionRef = persistCurrentAction ? CaptureActionRef(currentAction) : null,
-            CurrentActionCodecId = persistCurrentAction ? TryGetActionCodecId(currentAction) : null,
-            CurrentActionPayload = persistCurrentAction ? TryCaptureActionPayload(currentAction) : null,
-            CurrentHookActionRef = persistCurrentAction && currentAction is GenericHookGameAction hookAction
+            CurrentActionTypeName = persistCurrentAction ? effectiveAction?.GetType().FullName : null,
+            CurrentActionState = persistCurrentAction ? effectiveAction?.State : null,
+            CurrentActionRef = persistCurrentAction ? CaptureActionRef(effectiveAction) : null,
+            CurrentActionCodecId = persistCurrentAction ? TryGetActionCodecId(effectiveAction) : null,
+            CurrentActionPayload = persistCurrentAction ? TryCaptureActionPayload(effectiveAction) : null,
+            CurrentHookActionRef = persistCurrentAction && effectiveAction is GenericHookGameAction hookAction
                 ? new ActionRef { HookId = hookAction.HookId, TypeName = hookAction.GetType().FullName }
                 : null,
             PausedChoiceState = boundaryKind == ActionKernelBoundaryKind.PausedChoice
-                ? CapturePausedChoiceState(runState, currentAction, activeChoiceSpec, waitingForResume)
+                ? CapturePausedChoiceState(runState, effectiveAction, activeChoiceSpec, waitingForResume)
                 : null,
             Queues = queueStates,
             WaitingForResumptionCount = waitingForResume.Count,
@@ -157,6 +161,35 @@ internal static class UndoActionKernelService
         return currentAction.State == GameActionState.Executing
             ? ActionKernelBoundaryKind.StableBoundary
             : ActionKernelBoundaryKind.UnsupportedLiveAction;
+    }
+
+    private static GameAction? FindPausedChoiceAction(ActionQueueSet actionQueueSet, UndoChoiceSpec? activeChoiceSpec)
+    {
+        if (activeChoiceSpec == null)
+            return null;
+
+        if (UndoReflectionUtil.FindField(actionQueueSet.GetType(), "_actionQueues")?.GetValue(actionQueueSet) is not System.Collections.IEnumerable rawQueues)
+            return null;
+
+        GameAction? firstPausedChoice = null;
+        ulong? localNetId = LocalContext.NetId;
+        foreach (object rawQueue in rawQueues)
+        {
+            if (UndoReflectionUtil.FindField(rawQueue.GetType(), "actions")?.GetValue(rawQueue) is not System.Collections.IList actions
+                || actions.Count == 0
+                || actions[0] is not GameAction frontAction
+                || frontAction.State != GameActionState.GatheringPlayerChoice)
+            {
+                continue;
+            }
+
+            if (localNetId != null && frontAction.OwnerId == localNetId.Value)
+                return frontAction;
+
+            firstPausedChoice ??= frontAction;
+        }
+
+        return firstPausedChoice;
     }
 
     private static ActionQueueState CaptureQueueState(object rawQueue, ActionKernelBoundaryKind boundaryKind, GameAction? currentAction)
@@ -510,3 +543,4 @@ internal static class UndoActionKernelService
         return true;
     }
 }
+

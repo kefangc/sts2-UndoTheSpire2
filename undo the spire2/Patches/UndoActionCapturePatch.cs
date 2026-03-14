@@ -35,9 +35,10 @@ public static class UndoActionCapturePatch
     }
 
     [HarmonyPatch(typeof(GameAction), nameof(GameAction.PauseForPlayerChoice))]
-    [HarmonyPrefix]
-    public static void PauseForPlayerChoicePrefix(GameAction __instance)
+    [HarmonyPostfix]
+    public static void PauseForPlayerChoicePostfix(GameAction __instance)
     {
         MainFile.Controller.TryCapturePlayerChoice(__instance);
     }
 }
+

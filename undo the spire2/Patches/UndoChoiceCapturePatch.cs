@@ -17,14 +17,14 @@ public static class UndoChoiceCapturePatch
     [HarmonyPrefix]
     public static void ChooseACardPrefix(PlayerChoiceContext context, IReadOnlyList<CardModel> cards, Player player, bool canSkip = false)
     {
-        MainFile.Controller.RegisterPendingChooseACardChoice(player, cards, canSkip);
+        MainFile.Controller.RegisterPendingChooseACardChoice(player, cards, canSkip, context.LastInvolvedModel);
     }
 
     [HarmonyPatch(typeof(CardSelectCmd), nameof(CardSelectCmd.FromHand))]
     [HarmonyPrefix]
     public static void HandChoicePrefix(PlayerChoiceContext context, Player player, CardSelectorPrefs prefs, Func<CardModel, bool>? filter, AbstractModel source)
     {
-        MainFile.Controller.RegisterPendingHandChoice(player, prefs, filter, source);
+        MainFile.Controller.RegisterPendingHandChoice(player, prefs, filter, source ?? context.LastInvolvedModel);
     }
 
     [HarmonyPatch(typeof(CardSelectCmd), nameof(CardSelectCmd.FromHandForUpgrade))]
@@ -57,6 +57,6 @@ public static class UndoChoiceCapturePatch
     [HarmonyPrefix]
     public static void SimpleGridPrefix(PlayerChoiceContext context, IReadOnlyList<CardModel> cards, Player player, CardSelectorPrefs prefs)
     {
-        MainFile.Controller.RegisterPendingSimpleGridChoice(player, cards, prefs);
+        MainFile.Controller.RegisterPendingSimpleGridChoice(player, cards, prefs, context.LastInvolvedModel);
     }
 }

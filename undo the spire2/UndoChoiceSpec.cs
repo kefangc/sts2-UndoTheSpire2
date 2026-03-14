@@ -1,4 +1,4 @@
-﻿using MegaCrit.Sts2.Core.CardSelection;
+using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
@@ -18,7 +18,9 @@ internal sealed class UndoChoiceSpec
         PileType? sourcePileType,
         IReadOnlyList<int> sourcePileOptionIndexes,
         IReadOnlyList<NetCombatCard> sourcePileCombatCards,
-        bool canSkip)
+        bool canSkip,
+        string? sourceModelTypeName,
+        string? sourceModelId)
     {
         Kind = kind;
         SelectionPrefs = selectionPrefs;
@@ -27,6 +29,8 @@ internal sealed class UndoChoiceSpec
         SourcePileOptionIndexes = sourcePileOptionIndexes;
         SourcePileCombatCards = sourcePileCombatCards;
         CanSkip = canSkip;
+        SourceModelTypeName = sourceModelTypeName;
+        SourceModelId = sourceModelId;
     }
 
     public UndoChoiceKind Kind { get; }
@@ -43,7 +47,11 @@ internal sealed class UndoChoiceSpec
 
     public bool CanSkip { get; }
 
-    public static UndoChoiceSpec CreateChooseACard(IReadOnlyList<CardModel> cards, bool canSkip)
+    public string? SourceModelTypeName { get; }
+
+    public string? SourceModelId { get; }
+
+    public static UndoChoiceSpec CreateChooseACard(IReadOnlyList<CardModel> cards, bool canSkip, AbstractModel? source = null)
     {
         return new UndoChoiceSpec(
             UndoChoiceKind.ChooseACard,
@@ -52,10 +60,12 @@ internal sealed class UndoChoiceSpec
             null,
             [],
             [],
-            canSkip);
+            canSkip,
+            source?.GetType().FullName,
+            source?.Id.Entry);
     }
 
-    public static UndoChoiceSpec CreateHandSelection(Player player, CardSelectorPrefs prefs, Func<CardModel, bool>? filter)
+    public static UndoChoiceSpec CreateHandSelection(Player player, CardSelectorPrefs prefs, Func<CardModel, bool>? filter, AbstractModel? source = null)
     {
         IReadOnlyList<CardModel> handCards = PileType.Hand.GetPile(player).Cards;
         List<int> eligibleIndexes = [];
@@ -77,10 +87,12 @@ internal sealed class UndoChoiceSpec
             PileType.Hand,
             eligibleIndexes,
             eligibleCombatCards,
-            false);
+            false,
+            source?.GetType().FullName,
+            source?.Id.Entry);
     }
 
-    public static UndoChoiceSpec CreateSimpleGridSelection(Player player, IReadOnlyList<CardModel> cards, CardSelectorPrefs prefs)
+    public static UndoChoiceSpec CreateSimpleGridSelection(Player player, IReadOnlyList<CardModel> cards, CardSelectorPrefs prefs, AbstractModel? source = null)
     {
         PileType? sourcePileType = TryGetCommonCombatPileType(cards);
         List<int> sourcePileIndexes = [];
@@ -111,13 +123,21 @@ internal sealed class UndoChoiceSpec
             sourcePileType,
             sourcePileIndexes,
             sourcePileCombatCards,
-            prefs.MinSelect == 0);
+            prefs.MinSelect == 0,
+            source?.GetType().FullName,
+            source?.Id.Entry);
     }
 
     public bool SupportsSyntheticRestore => Kind is UndoChoiceKind.ChooseACard or UndoChoiceKind.HandSelection or UndoChoiceKind.SimpleGridSelection;
 
     public Func<CardModel, bool> BuildHandFilter(Player player)
     {
+        HashSet<NetCombatCard> eligibleCombatCards = [.. SourcePileCombatCards];
+        if (eligibleCombatCards.Count > 0)
+        {
+            return card => eligibleCombatCards.Contains(NetCombatCard.FromModel(card));
+        }
+
         HashSet<int> eligibleIndexes = [.. SourcePileOptionIndexes];
         return card =>
         {
@@ -162,6 +182,31 @@ internal sealed class UndoChoiceSpec
             UndoChoiceKind.HandSelection => TryMapHandSelection(player, selectedCards),
             _ => null
         };
+    }
+
+    public UndoChoiceResultKey? TryMapDisplayedOptionSelection(IReadOnlyList<CardModel> displayedOptions, IEnumerable<CardModel> selectedCards)
+    {
+        List<CardModel> cards = [.. selectedCards];
+        if (cards.Count == 0)
+        {
+            if (!CanSkip)
+                return null;
+
+            return Kind == UndoChoiceKind.ChooseACard ? new UndoChoiceResultKey([-1]) : new UndoChoiceResultKey([]);
+        }
+
+        List<int> mappedIndexes = [];
+        foreach (CardModel card in cards)
+        {
+            int mappedIndex = IndexOfReference(displayedOptions, card);
+            if (mappedIndex < 0)
+                return null;
+
+            mappedIndexes.Add(mappedIndex);
+        }
+
+        mappedIndexes.Sort();
+        return new UndoChoiceResultKey(mappedIndexes);
     }
 
     private UndoChoiceResultKey? TryMapIndexResult(List<int>? indexes)
@@ -230,9 +275,28 @@ internal sealed class UndoChoiceSpec
 
     private UndoChoiceResultKey? TryMapHandSelection(Player player, IEnumerable<CardModel> selectedCards)
     {
-        IReadOnlyList<CardModel> handCards = PileType.Hand.GetPile(player).Cards;
+        List<CardModel> cards = [.. selectedCards];
+        if (cards.Count == 0)
+            return CanSkip ? new UndoChoiceResultKey([]) : null;
+
         List<int> mappedIndexes = [];
-        foreach (CardModel card in selectedCards)
+        if (SourcePileCombatCards.Count > 0)
+        {
+            foreach (CardModel card in cards)
+            {
+                int optionIndex = IndexOfValue(SourcePileCombatCards, NetCombatCard.FromModel(card));
+                if (optionIndex < 0)
+                    return null;
+
+                mappedIndexes.Add(optionIndex);
+            }
+
+            mappedIndexes.Sort();
+            return new UndoChoiceResultKey(mappedIndexes);
+        }
+
+        IReadOnlyList<CardModel> handCards = PileType.Hand.GetPile(player).Cards;
+        foreach (CardModel card in cards)
         {
             int handIndex = IndexOfReference(handCards, card);
             if (handIndex < 0)
@@ -309,3 +373,4 @@ internal sealed class UndoChoiceSpec
         return buffer;
     }
 }
+

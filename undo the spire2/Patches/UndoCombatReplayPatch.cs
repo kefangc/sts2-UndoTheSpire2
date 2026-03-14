@@ -39,4 +39,11 @@ public static class UndoCombatReplayPatch
         MainFile.Controller.RecordReplayPlayerChoice(player, choiceId, result);
         MainFile.Controller.OnPlayerChoiceResolved(player, result);
     }
+
+    [HarmonyPatch(typeof(CombatReplayWriter), "RecordChecksum")]
+    [HarmonyPostfix]
+    public static void RecordChecksumPostfix(NetChecksumData checksum, string context, NetFullCombatState fullCombatState)
+    {
+        MainFile.Controller.RecordReplayChecksum(checksum, context, fullCombatState);
+    }
 }

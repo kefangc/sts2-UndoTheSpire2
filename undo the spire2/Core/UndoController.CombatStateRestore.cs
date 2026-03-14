@@ -558,6 +558,16 @@ public sealed partial class UndoController
         UndoReflectionUtil.TrySetFieldValue(actionExecutor, "_queueTaskCompletionSource", null);
     }
 
+    private static void ResetActionSynchronizerForRestore()
+    {
+        ActionQueueSynchronizer synchronizer = RunManager.Instance.ActionQueueSynchronizer;
+        if (UndoReflectionUtil.FindField(synchronizer.GetType(), "_hookActions")?.GetValue(synchronizer) is System.Collections.IList hookActions)
+            hookActions.Clear();
+
+        if (UndoReflectionUtil.FindField(synchronizer.GetType(), "_requestedActionsWaitingForPlayerTurn")?.GetValue(synchronizer) is System.Collections.IList deferredActions)
+            deferredActions.Clear();
+    }
+
     private static ActionSynchronizerCombatState GetEffectiveSynchronizerState(UndoCombatFullState snapshot)
     {
         if (snapshot.ActionKernelState.BoundaryKind == ActionKernelBoundaryKind.StableBoundary

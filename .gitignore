@@ -1,0 +1,27 @@
+# Visual Studio / Rider
+.vs/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.rsuser
+*.sln.docstates
+
+# .NET build outputs
+bin/
+obj/
+TestResults/
+
+# Godot generated state
+.godot/
+.mono/
+*.import
+
+# Debug / profiling artifacts
+*.log
+*.pidb
+*.mdb
+
+# OS junk
+Thumbs.db
+Desktop.ini
