@@ -1,0 +1,639 @@
+// 文件说明：承载 primary choice 恢复、live/custom 分支提交和相关辅助逻辑。
+using System.Reflection;
+using Godot;
+using MegaCrit.Sts2.Core.CardSelection;
+using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Combat.History.Entries;
+using MegaCrit.Sts2.Core.Commands;
+using MegaCrit.Sts2.Core.Context;
+using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Enchantments;
+using MegaCrit.Sts2.Core.Entities.Multiplayer;
+using MegaCrit.Sts2.Core.Entities.Models;
+using MegaCrit.Sts2.Core.Entities.Orbs;
+using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Entities.Potions;
+using MegaCrit.Sts2.Core.Entities.Relics;
+using MegaCrit.Sts2.Core.Entities.UI;
+using MegaCrit.Sts2.Core.GameActions;
+using MegaCrit.Sts2.Core.GameActions.Multiplayer;
+using MegaCrit.Sts2.Core.Helpers;
+using MegaCrit.Sts2.Core.Localization;
+using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Powers;
+using MegaCrit.Sts2.Core.Models.Orbs;
+using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
+using MegaCrit.Sts2.Core.Multiplayer.Game;
+using MegaCrit.Sts2.Core.Multiplayer.Replay;
+using MegaCrit.Sts2.Core.Multiplayer.Serialization;
+using MegaCrit.Sts2.Core.Nodes;
+using MegaCrit.Sts2.Core.Nodes.Audio;
+using MegaCrit.Sts2.Core.Nodes.Cards;
+using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
+using MegaCrit.Sts2.Core.Nodes.Combat;
+using MegaCrit.Sts2.Core.Nodes.CommonUi;
+using MegaCrit.Sts2.Core.Nodes.Orbs;
+using MegaCrit.Sts2.Core.Nodes.Rooms;
+using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
+using MegaCrit.Sts2.Core.Nodes.Screens.Capstones;
+using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
+using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
+using MegaCrit.Sts2.Core.Nodes.Vfx;
+using MegaCrit.Sts2.Core.Nodes.Vfx.Cards;
+using MegaCrit.Sts2.Core.Nodes.Potions;
+using MegaCrit.Sts2.Core.Nodes.Relics;
+using MegaCrit.Sts2.Core.Rooms;
+using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Saves;
+using MegaCrit.Sts2.Core.Settings;
+using MegaCrit.Sts2.Core.Assets;
+using MegaCrit.Sts2.Core.Entities.Actions;
+using MegaCrit.Sts2.Core.Multiplayer;
+using MegaCrit.Sts2.Core.Saves.Runs;
+
+namespace UndoTheSpire2;
+
+public sealed partial class UndoController
+{
+    private async Task<bool> TryRestorePrimaryChoiceAsync(UndoSnapshot snapshot, UndoSnapshot? branchSnapshot, bool stateAlreadyApplied = false)
+    {
+        PausedChoiceState? pausedChoiceState = snapshot.CombatState.ActionKernelState.PausedChoiceState;
+        UndoChoiceSpec? choiceSpec = pausedChoiceState?.ChoiceSpec
+            ?? (snapshot.IsChoiceAnchor ? snapshot.ChoiceSpec : null);
+        if (choiceSpec == null)
+            return false;
+
+        if (pausedChoiceState != null)
+        {
+            RestoreCapabilityReport capability = UndoActionCodecRegistry.EvaluateCapability(pausedChoiceState);
+            if (capability.Result != RestoreCapabilityResult.Supported)
+            {
+                UndoDebugLog.Write($"primary_choice_restore_capability:{capability.Result} replayEvents={snapshot.ReplayEventCount} label={snapshot.ActionLabel} detail={capability.Detail ?? "none"}");
+                return false;
+            }
+        }
+        else if (choiceSpec.Kind is not (UndoChoiceKind.ChooseACard or UndoChoiceKind.SimpleGridSelection))
+        {
+            return false;
+        }
+
+        if (!stateAlreadyApplied && !await TryApplyFullStateInPlaceAsync(snapshot.CombatState))
+            return false;
+
+        RunState? runState = RunManager.Instance.DebugOnlyGetState();
+        if (runState == null)
+            return false;
+
+        await WaitOneFrameAsync();
+
+        UndoSyntheticChoiceSession primarySession = new(snapshot, choiceSpec, branchSnapshot);
+        _syntheticChoiceSession = primarySession;
+        _lastResolvedChoiceSpec = choiceSpec;
+        _lastResolvedChoiceResultKey = null;
+        RememberSavedChoiceBranches(primarySession, snapshot.CombatState.ChoiceBranchStates);
+        if (branchSnapshot?.ChoiceResultKey != null)
+            primarySession.RememberBranch(branchSnapshot.ChoiceResultKey, branchSnapshot);
+        if (choiceSpec.Kind is UndoChoiceKind.ChooseACard or UndoChoiceKind.SimpleGridSelection)
+        {
+            Task<UndoChoiceResultKey?> selectionTask = pausedChoiceState != null
+                ? UndoActionCodecRegistry.RestoreAsync(pausedChoiceState, runState)
+                : RestorePrimaryChoiceAnchorAsync(choiceSpec, runState);
+            NCombatUi? combatUi = null;
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                await WaitOneFrameAsync();
+                combatUi = NCombatRoom.Instance?.Ui;
+                if (combatUi != null && IsSupportedChoiceUiActive(combatUi))
+                    break;
+            }
+
+            if (combatUi == null || !IsSupportedChoiceUiActive(combatUi))
+            {
+                _syntheticChoiceSession = null;
+                UndoDebugLog.Write($"primary_choice_restore_selected_key:null replayEvents={snapshot.ReplayEventCount} label={snapshot.ActionLabel} codec={pausedChoiceState?.SourceActionCodecId ?? "action:choose-a-card"} stage=anchor_reopen_failed");
+                return false;
+            }
+
+            WriteInteractionLog("primary_restore_anchor_reopened", $"label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount} codec={pausedChoiceState?.SourceActionCodecId ?? "action:choose-a-card"}");
+            NotifyStateChanged();
+            TaskHelper.RunSafely(HandlePrimaryChoiceSelectionAsync(primarySession, selectionTask, pausedChoiceState != null && stateAlreadyApplied));
+            return true;
+        }
+
+        UndoChoiceResultKey? selectedKey;
+
+        try
+        {
+            selectedKey = ShouldUseSyntheticEntropyChoice(pausedChoiceState, choiceSpec)
+                ? await ShowSyntheticChoiceSelectionAsync(primarySession)
+                : await UndoActionCodecRegistry.RestoreAsync(pausedChoiceState!, runState);
+        }
+        catch (TaskCanceledException)
+        {
+            UndoDebugLog.Write($"primary_choice_restore_selected_key:canceled replayEvents={snapshot.ReplayEventCount} label={snapshot.ActionLabel}");
+            return false;
+        }
+
+        if (selectedKey == null)
+        {
+            _syntheticChoiceSession = null;
+            UndoDebugLog.Write($"primary_choice_restore_selected_key:null replayEvents={snapshot.ReplayEventCount} label={snapshot.ActionLabel} codec={pausedChoiceState?.SourceActionCodecId ?? "action:choose-a-card"}");
+            return false;
+        }
+
+        UndoDebugLog.Write($"primary_choice_restore_selected_key:{selectedKey} replayEvents={snapshot.ReplayEventCount} label={snapshot.ActionLabel} codec={pausedChoiceState?.SourceActionCodecId ?? "action:choose-a-card"}");
+        // 只有真正恢复了官方 paused action，才能直接接 live branch。
+        if (stateAlreadyApplied && await TryCommitLiveChoiceBranchAsync(primarySession, selectedKey))
+            return true;
+
+        if (primarySession.CachedBranches.TryGetValue(selectedKey, out UndoSnapshot? cachedBranchSnapshot))
+        {
+            if (!await TryApplySynthesizedChoiceBranchAsync(primarySession, cachedBranchSnapshot, selectedKey, vfxRequest: null))
+                return false;
+
+            return true;
+        }
+
+        if (await TryCommitCustomChoiceBranchAsync(primarySession, selectedKey))
+            return true;
+
+        UndoDebugLog.Write($"primary_choice_branch_miss:{selectedKey} replayEvents={snapshot.ReplayEventCount} label={snapshot.ActionLabel} cached={primarySession.CachedBranches.Count}");
+        if (!TryCreateSyntheticChoiceBranchSnapshot(primarySession, selectedKey, out UndoSnapshot? synthesizedBranch))
+        {
+            MainFile.Logger.Warn($"Could not synthesize primary branch for restored choice {selectedKey}.");
+            return false;
+        }
+
+        return await TryApplySynthesizedChoiceBranchAsync(primarySession, synthesizedBranch!, selectedKey, vfxRequest: null);
+    }
+
+    private static async Task<UndoChoiceResultKey?> RestorePrimaryChoiceAnchorAsync(UndoChoiceSpec choiceSpec, RunState runState)
+    {
+        Player? player = LocalContext.NetId is ulong localNetId
+            ? runState.GetPlayer(localNetId)
+            : runState.Players.FirstOrDefault();
+        if (player == null)
+            return null;
+
+        switch (choiceSpec.Kind)
+        {
+            case UndoChoiceKind.ChooseACard:
+            {
+                IReadOnlyList<CardModel> options = choiceSpec.BuildOptionCards(player);
+                NChooseACardSelectionScreen screen = NChooseACardSelectionScreen.ShowScreen(options, choiceSpec.CanSkip);
+                CardModel? selected = (await screen.CardsSelected()).FirstOrDefault();
+                return choiceSpec.TryMapDisplayedOptionSelection(options, selected == null ? [] : [selected]);
+            }
+            case UndoChoiceKind.SimpleGridSelection:
+            {
+                // 这里只负责把 choice UI 重新打开，后续分支提交仍由外层统一分流。
+                IReadOnlyList<CardModel> options = choiceSpec.BuildOptionCards(player);
+                NSimpleCardSelectScreen screen = NSimpleCardSelectScreen.Create(options, choiceSpec.SelectionPrefs);
+                NOverlayStack.Instance.Push(screen);
+                IEnumerable<CardModel> selected = await screen.CardsSelected();
+                return choiceSpec.TryMapDisplayedOptionSelection(options, selected);
+            }
+            default:
+                return null;
+        }
+    }
+
+    private static bool ShouldUseChoiceAnchorReplay(PausedChoiceState pausedChoiceState)
+    {
+        if (string.Equals(pausedChoiceState.ChoiceSpec?.SourceModelTypeName, typeof(EntropyPower).FullName, StringComparison.Ordinal))
+            return false;
+
+        if (string.Equals(pausedChoiceState.ChoiceSpec?.SourceModelTypeName, typeof(StratagemPower).FullName, StringComparison.Ordinal))
+            return false;
+
+        if (string.Equals(pausedChoiceState.SourceActionCodecId, "action:hook-choice", StringComparison.Ordinal))
+            return false;
+
+        return true;
+    }
+
+    private static bool ShouldUseSyntheticEntropyChoice(PausedChoiceState? pausedChoiceState, UndoChoiceSpec choiceSpec)
+    {
+        return string.Equals(pausedChoiceState?.SourceActionCodecId, "action:hook-choice", StringComparison.Ordinal)
+            && choiceSpec.Kind == UndoChoiceKind.HandSelection
+            && IsSourceChoice(choiceSpec, typeof(EntropyPower));
+    }
+
+    private async Task HandlePrimaryChoiceSelectionAsync(UndoSyntheticChoiceSession session, Task<UndoChoiceResultKey?> selectionTask, bool preferLiveBranchCommit)
+    {
+        try
+        {
+            UndoChoiceResultKey? selectedKey = await selectionTask;
+            if (_syntheticChoiceSession != null && _syntheticChoiceSession != session)
+                return;
+
+            if (selectedKey == null)
+            {
+                UndoDebugLog.Write($"primary_choice_restore_selected_key:null replayEvents={session.AnchorSnapshot.ReplayEventCount} label={session.AnchorSnapshot.ActionLabel} codec={session.ChoiceSpec.Kind}");
+                if (ReferenceEquals(_syntheticChoiceSession, session))
+                    _syntheticChoiceSession = null;
+                NotifyStateChanged();
+                return;
+            }
+
+            UndoDebugLog.Write($"primary_choice_restore_selected_key:{selectedKey} replayEvents={session.AnchorSnapshot.ReplayEventCount} label={session.AnchorSnapshot.ActionLabel} codec={session.ChoiceSpec.Kind}");
+            if (preferLiveBranchCommit && await TryCommitLiveChoiceBranchAsync(session, selectedKey))
+            {
+                WriteInteractionLog("branch_commit_after_reselect", $"choice={selectedKey} label={session.AnchorSnapshot.ActionLabel} replayEvents={session.AnchorSnapshot.ReplayEventCount} source=live");
+                return;
+            }
+
+            if (session.CachedBranches.TryGetValue(selectedKey, out UndoSnapshot? cachedBranchSnapshot))
+            {
+                if (await TryApplySynthesizedChoiceBranchAsync(session, cachedBranchSnapshot, selectedKey, vfxRequest: null))
+                    WriteInteractionLog("branch_commit_after_reselect", $"choice={selectedKey} label={session.AnchorSnapshot.ActionLabel} replayEvents={session.AnchorSnapshot.ReplayEventCount} source=cached");
+                return;
+            }
+
+            if (await TryCommitCustomChoiceBranchAsync(session, selectedKey))
+            {
+                WriteInteractionLog("branch_commit_after_reselect", $"choice={selectedKey} label={session.AnchorSnapshot.ActionLabel} replayEvents={session.AnchorSnapshot.ReplayEventCount} source=custom");
+                return;
+            }
+
+            UndoDebugLog.Write($"primary_choice_branch_miss:{selectedKey} replayEvents={session.AnchorSnapshot.ReplayEventCount} label={session.AnchorSnapshot.ActionLabel} cached={session.CachedBranches.Count}");
+            if (!TryCreateSyntheticChoiceBranchSnapshot(session, selectedKey, out UndoSnapshot? synthesizedBranch))
+            {
+                MainFile.Logger.Warn($"Could not synthesize primary branch for restored choice {selectedKey}.");
+                if (ReferenceEquals(_syntheticChoiceSession, session))
+                    _syntheticChoiceSession = null;
+                NotifyStateChanged();
+                return;
+            }
+
+            if (await TryApplySynthesizedChoiceBranchAsync(session, synthesizedBranch!, selectedKey, vfxRequest: null))
+                WriteInteractionLog("branch_commit_after_reselect", $"choice={selectedKey} label={session.AnchorSnapshot.ActionLabel} replayEvents={session.AnchorSnapshot.ReplayEventCount} source=synthesized");
+        }
+        catch (TaskCanceledException)
+        {
+            if (_syntheticChoiceSession == null || _syntheticChoiceSession == session)
+            {
+                if (ReferenceEquals(_syntheticChoiceSession, session))
+                    _syntheticChoiceSession = null;
+                UndoDebugLog.Write($"primary_choice_restore_selected_key:canceled replayEvents={session.AnchorSnapshot.ReplayEventCount} label={session.AnchorSnapshot.ActionLabel}");
+                NotifyStateChanged();
+            }
+        }
+    }
+
+    private async Task<bool> TryCommitLiveChoiceBranchAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey)
+    {
+        if (_combatReplay == null || !CombatManager.Instance.IsInProgress)
+            return false;
+
+        await WaitForReplayBranchAdvanceAsync(session.AnchorSnapshot.ReplayEventCount);
+        await WaitForReplayToSettleAsync();
+        if (RunManager.Instance.ActionExecutor.IsPaused
+            && RunManager.Instance.ActionExecutor.CurrentlyRunningAction == null
+            && RunManager.Instance.ActionQueueSet.IsEmpty
+            && !IsChoiceUiReady())
+        {
+            RunManager.Instance.ActionExecutor.Unpause();
+            await WaitOneFrameAsync();
+        }
+
+        int replayEventCount = GetCurrentReplayEventCount();
+        if (replayEventCount <= session.AnchorSnapshot.ReplayEventCount)
+            return false;
+
+        UndoSnapshot branchSnapshot = new(
+            CaptureCurrentCombatFullState(),
+            replayEventCount,
+            session.TemplateSnapshot?.ActionKind ?? session.AnchorSnapshot.ActionKind,
+            _nextSequenceId++,
+            session.TemplateSnapshot?.ActionLabel ?? session.AnchorSnapshot.ActionLabel,
+            choiceResultKey: selectedKey);
+
+        if (ReferenceEquals(_syntheticChoiceSession, session))
+            _syntheticChoiceSession = null;
+        _lastResolvedChoiceSpec = session.ChoiceSpec;
+        _lastResolvedChoiceResultKey = selectedKey;
+        session.RememberBranch(selectedKey, branchSnapshot);
+        _futureSnapshots.Clear();
+        _combatReplay.ActiveEventCount = branchSnapshot.ReplayEventCount;
+
+        if (_pastSnapshots.First?.Value is UndoSnapshot existing
+            && existing.IsChoiceAnchor
+            && existing.ReplayEventCount == session.AnchorSnapshot.ReplayEventCount)
+        {
+            _pastSnapshots.RemoveFirst();
+        }
+
+        UndoSnapshot rearmedAnchor = new(
+            WithChoiceBranchStates(session.AnchorSnapshot.CombatState, CaptureSavedChoiceBranchStates(session)),
+            session.AnchorSnapshot.ReplayEventCount,
+            UndoActionKind.PlayerChoice,
+            _nextSequenceId++,
+            session.AnchorSnapshot.ActionLabel,
+            isChoiceAnchor: true,
+            choiceSpec: session.ChoiceSpec);
+
+        _pastSnapshots.AddFirst(rearmedAnchor);
+        TrimSnapshots(_pastSnapshots);
+        MainFile.Logger.Info($"Re-armed player choice undo anchor. ReplayEvents={rearmedAnchor.ReplayEventCount}, UndoCount={_pastSnapshots.Count}, ChoiceKind={session.ChoiceSpec.Kind} forceRefresh=True");
+        NotifyStateChanged();
+        return true;
+    }
+
+    private async Task<bool> TryCommitCustomChoiceBranchAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey)
+    {
+        if (!CombatManager.Instance.IsInProgress)
+            return false;
+
+        if (await TryExecuteEntropyChoiceAsync(session, selectedKey))
+        {
+            await FinalizeCustomChoiceBranchAsync(session, selectedKey);
+            return true;
+        }
+
+        return false;
+    }
+
+    private async Task FinalizeCustomChoiceBranchAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey)
+    {
+        await StabilizeAfterCustomChoiceExecutionAsync(session);
+
+        UndoSnapshot branchSnapshot = new(
+            CaptureCurrentCombatFullState(),
+            session.TemplateSnapshot?.ReplayEventCount ?? session.AnchorSnapshot.ReplayEventCount,
+            session.TemplateSnapshot?.ActionKind ?? session.AnchorSnapshot.ActionKind,
+            _nextSequenceId++,
+            session.TemplateSnapshot?.ActionLabel ?? session.AnchorSnapshot.ActionLabel,
+            choiceResultKey: selectedKey);
+
+        _syntheticChoiceSession = null;
+        _lastResolvedChoiceSpec = session.ChoiceSpec;
+        _lastResolvedChoiceResultKey = selectedKey;
+        session.RememberBranch(selectedKey, branchSnapshot);
+        _futureSnapshots.Clear();
+        RewriteReplayChoiceBranch(session.AnchorSnapshot, branchSnapshot);
+        _combatReplay!.ActiveEventCount = branchSnapshot.ReplayEventCount;
+        DisableReplayChecksumComparison(branchSnapshot.CombatState.NextChecksumId);
+
+        EnsurePlayerChoiceUndoAnchor(
+            session.AnchorSnapshot,
+            session.ChoiceSpec,
+            forceRefresh: true,
+            anchorCombatStateOverride: WithChoiceBranchStates(session.AnchorSnapshot.CombatState, CaptureSavedChoiceBranchStates(session)));
+        NotifyStateChanged();
+        await WaitOneFrameAsync();
+    }
+
+    private async Task StabilizeAfterCustomChoiceExecutionAsync(UndoSyntheticChoiceSession session)
+    {
+        await WaitOneFrameAsync();
+
+        RunState? runState = RunManager.Instance.DebugOnlyGetState();
+        if (runState == null || !CombatManager.Instance.IsInProgress)
+            return;
+
+        await DismissSupportedChoiceUiIfPresentAsync();
+        ResetActionExecutorForRestore();
+        RunManager.Instance.ActionQueueSet.Reset();
+        ResetActionSynchronizerForRestore();
+        RebuildActionQueues(runState.Players);
+
+        UndoCombatFullState targetSnapshotState = session.TemplateSnapshot?.CombatState ?? session.AnchorSnapshot.CombatState;
+        ActionSynchronizerCombatState targetSynchronizerState = GetEffectiveSynchronizerState(targetSnapshotState);
+        RestoreActionSynchronizationState(targetSynchronizerState, ActionKernelBoundaryKind.StableBoundary, out _);
+        await WaitOneFrameAsync();
+    }
+
+    private static bool IsSourceChoice(UndoChoiceSpec choiceSpec, Type sourceType)
+    {
+        return string.Equals(choiceSpec.SourceModelTypeName, sourceType.FullName, StringComparison.Ordinal);
+    }
+
+    private static void DisableReplayChecksumComparison(uint nextChecksumId)
+    {
+        ChecksumTracker checksumTracker = RunManager.Instance.ChecksumTracker;
+        checksumTracker.LoadReplayChecksums([], nextChecksumId);
+        SetPrivateFieldValue(checksumTracker, "_replayChecksums", null);
+    }
+
+    private List<ReplayChecksumData> GetReplayChecksumsFrom(uint nextChecksumId)
+    {
+        if (_combatReplay == null)
+            return [];
+
+        return [.. _combatReplay.ChecksumData
+            .Where(checksum => checksum.checksumData.id >= nextChecksumId)];
+    }
+
+    private async Task<bool> TryExecuteEntropyChoiceAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey)
+    {
+        UndoChoiceSpec choiceSpec = session.ChoiceSpec;
+        if (!IsSourceChoice(choiceSpec, typeof(EntropyPower))
+            || choiceSpec.Kind != UndoChoiceKind.HandSelection
+            || choiceSpec.SourcePileType != PileType.Hand
+            || selectedKey.OptionIndexes.Count == 0)
+        {
+            return false;
+        }
+
+        DisableReplayChecksumComparison(session.AnchorSnapshot.CombatState.NextChecksumId);
+
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        Player? player = combatState == null ? null : LocalContext.GetMe(combatState);
+        if (player == null)
+            return false;
+
+        IReadOnlyList<CardModel> handCards = PileType.Hand.GetPile(player).Cards;
+        List<CardModel> selectedCards = [];
+        foreach (int optionIndex in selectedKey.OptionIndexes)
+        {
+            if (optionIndex < 0 || optionIndex >= choiceSpec.SourcePileOptionIndexes.Count)
+                return false;
+
+            int handIndex = choiceSpec.SourcePileOptionIndexes[optionIndex];
+            if (handIndex < 0 || handIndex >= handCards.Count)
+                return false;
+
+            selectedCards.Add(handCards[handIndex]);
+        }
+
+        foreach (CardModel selectedCard in selectedCards)
+            await CardCmd.TransformToRandom(selectedCard, player.RunState.Rng.CombatCardSelection, CardPreviewStyle.HorizontalLayout);
+
+        return true;
+    }
+
+    private async Task<bool> TryExecuteStratagemChoiceAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey)
+    {
+        UndoChoiceSpec choiceSpec = session.ChoiceSpec;
+        if (!IsSourceChoice(choiceSpec, typeof(StratagemPower))
+            || choiceSpec.Kind != UndoChoiceKind.SimpleGridSelection
+            || choiceSpec.SourcePileType != PileType.Draw
+            || selectedKey.OptionIndexes.Count == 0)
+        {
+            return false;
+        }
+
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        Player? player = combatState == null ? null : LocalContext.GetMe(combatState);
+        if (player == null)
+            return false;
+
+        IReadOnlyList<CardModel> drawCards = PileType.Draw.GetPile(player).Cards;
+        List<CardModel> selectedCards = [];
+        foreach (int optionIndex in selectedKey.OptionIndexes)
+        {
+            if (optionIndex < 0 || optionIndex >= choiceSpec.SourcePileOptionIndexes.Count)
+                return false;
+
+            int drawIndex = choiceSpec.SourcePileOptionIndexes[optionIndex];
+            if (drawIndex < 0 || drawIndex >= drawCards.Count)
+                return false;
+
+            selectedCards.Add(drawCards[drawIndex]);
+        }
+
+        foreach (CardModel selectedCard in selectedCards)
+            await CardPileCmd.Add(selectedCard, PileType.Hand, CardPilePosition.Bottom, null, false);
+
+        return true;
+    }
+
+    private void RememberSavedChoiceBranches(UndoSyntheticChoiceSession session, IReadOnlyList<UndoChoiceBranchState> branchStates)
+    {
+        foreach (UndoChoiceBranchState branchState in branchStates)
+            session.RememberBranch(branchState.ChoiceResultKey, MaterializeChoiceBranchSnapshot(branchState), preferAsTemplate: false);
+    }
+
+    private IReadOnlyList<UndoChoiceBranchState> CaptureSavedChoiceBranchStates(UndoSyntheticChoiceSession session)
+    {
+        Dictionary<UndoChoiceResultKey, UndoChoiceBranchState> savedBranches = new();
+        foreach (UndoChoiceBranchState branchState in session.AnchorSnapshot.CombatState.ChoiceBranchStates)
+            savedBranches[branchState.ChoiceResultKey] = branchState;
+        foreach (KeyValuePair<UndoChoiceResultKey, UndoSnapshot> entry in session.CachedBranches)
+            savedBranches[entry.Key] = CaptureChoiceBranchState(entry.Value);
+
+        return [.. savedBranches.Values.OrderBy(static branch => branch.ReplayEventCount)];
+    }
+
+    private static UndoChoiceBranchState CaptureChoiceBranchState(UndoSnapshot snapshot)
+    {
+        if (snapshot.ChoiceResultKey == null)
+            throw new InvalidOperationException("Choice branch snapshot must have a choice result key.");
+
+        return new UndoChoiceBranchState
+        {
+            ChoiceResultKey = snapshot.ChoiceResultKey,
+            CombatState = snapshot.CombatState,
+            ReplayEventCount = snapshot.ReplayEventCount,
+            ActionKind = snapshot.ActionKind,
+            ActionLabel = snapshot.ActionLabel
+        };
+    }
+
+    private UndoSnapshot MaterializeChoiceBranchSnapshot(UndoChoiceBranchState branchState)
+    {
+        return new UndoSnapshot(
+            branchState.CombatState,
+            branchState.ReplayEventCount,
+            branchState.ActionKind,
+            _nextSequenceId++,
+            branchState.ActionLabel,
+            choiceResultKey: branchState.ChoiceResultKey);
+    }
+
+    private static UndoCombatFullState WithChoiceBranchStates(UndoCombatFullState source, IReadOnlyList<UndoChoiceBranchState> choiceBranchStates)
+    {
+        return new UndoCombatFullState(
+            source.FullState,
+            source.RoundNumber,
+            source.CurrentSide,
+            source.SynchronizerCombatState,
+            source.NextActionId,
+            source.NextHookId,
+            source.NextChecksumId,
+            source.CombatHistoryState,
+            source.ActionKernelState,
+            source.MonsterStates,
+            source.CardCostStates,
+            source.CardRuntimeStates,
+            source.PowerRuntimeStates,
+            source.RelicRuntimeStates,
+            source.SelectionSessionState,
+            source.FirstInSeriesPlayCounts,
+            source.RuntimeGraphState,
+            source.PresentationHints,
+            source.CreatureTopologyStates,
+            source.CreatureStatusRuntimeStates,
+            source.CombatCardDbState,
+            source.PlayerOrbStates,
+            source.PlayerDeckStates,
+            source.SchemaVersion,
+            choiceBranchStates);
+    }
+
+    private void RewriteReplayChoiceBranch(UndoSnapshot anchorSnapshot, UndoSnapshot branchSnapshot)
+    {
+        if (_combatReplay == null || branchSnapshot.ChoiceResultKey == null)
+            return;
+
+        NetPlayerChoiceResult? choiceResult = TryBuildReplayChoiceResult(anchorSnapshot.ChoiceSpec, branchSnapshot.ChoiceResultKey);
+        if (choiceResult == null)
+            return;
+
+        int startIndex = Math.Max(0, anchorSnapshot.ReplayEventCount);
+        int endIndex = Math.Min(branchSnapshot.ReplayEventCount, _combatReplay.Events.Count);
+        for (int i = startIndex; i < endIndex; i++)
+        {
+            CombatReplayEvent replayEvent = _combatReplay.Events[i];
+            if (replayEvent.eventType != CombatReplayEventType.PlayerChoice)
+                continue;
+
+            replayEvent.playerChoiceResult = choiceResult.Value;
+            _combatReplay.Events[i] = replayEvent;
+            return;
+        }
+    }
+
+    private static NetPlayerChoiceResult? TryBuildReplayChoiceResult(UndoChoiceSpec? choiceSpec, UndoChoiceResultKey selectedKey)
+    {
+        if (choiceSpec == null)
+            return null;
+
+        if (choiceSpec.Kind == UndoChoiceKind.ChooseACard)
+        {
+            if (selectedKey.OptionIndexes.Count != 1)
+                return null;
+
+            return PlayerChoiceResult.FromIndex(selectedKey.OptionIndexes[0]).ToNetData();
+        }
+
+        if (choiceSpec.Kind == UndoChoiceKind.SimpleGridSelection)
+        {
+            return new NetPlayerChoiceResult
+            {
+                type = PlayerChoiceType.Index,
+                indexes = [.. selectedKey.OptionIndexes]
+            };
+        }
+
+        if (choiceSpec.Kind != UndoChoiceKind.HandSelection)
+            return null;
+
+        List<NetCombatCard> combatCards = [];
+        foreach (int optionIndex in selectedKey.OptionIndexes)
+        {
+            if (optionIndex < 0 || optionIndex >= choiceSpec.SourcePileCombatCards.Count)
+                return null;
+
+            combatCards.Add(choiceSpec.SourcePileCombatCards[optionIndex]);
+        }
+
+        return new NetPlayerChoiceResult
+        {
+            type = PlayerChoiceType.CombatCard,
+            combatCards = combatCards
+        };
+    }
+}
