@@ -1,3 +1,4 @@
+// 文件说明：提供反射辅助工具，统一访问官方私有成员。
 using System.Reflection;
 
 namespace UndoTheSpire2;

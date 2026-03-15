@@ -1,3 +1,4 @@
+// 文件说明：修正特殊 creature 在恢复后的视觉表现。
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -380,8 +381,11 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
     private static void ClearNodeChildren(Node parent)
     {
-        foreach (Node child in parent.GetChildren())
+        foreach (Node child in parent.GetChildren().OfType<Node>().ToList())
+        {
+            child.GetParent()?.RemoveChild(child);
             child.QueueFree();
+        }
     }
 
     private static void NormalizeGremlinAwakeState(NCreature creatureNode, bool isAwake)

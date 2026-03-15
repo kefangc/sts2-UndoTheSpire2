@@ -1,4 +1,5 @@
-﻿using System.Text;
+// 文件说明：输出额外调试日志，便于复现和定位 undo 问题。
+using System.Text;
 
 namespace UndoTheSpire2;
 

@@ -1,3 +1,4 @@
+// 文件说明：描述某条恢复路径是否受支持及原因。
 namespace UndoTheSpire2;
 
 internal enum RestoreCapabilityResult

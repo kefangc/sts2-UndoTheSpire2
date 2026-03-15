@@ -1,3 +1,4 @@
+// 文件说明：实现战斗内 undo/redo HUD。
 using Godot;
 using MegaCrit.Sts2.Core.HoverTips;
 using MegaCrit.Sts2.Core.Nodes.Combat;

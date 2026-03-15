@@ -1,3 +1,4 @@
+// 文件说明：保存通用运行时图状态与选择会话状态。
 using System.Collections.Generic;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
@@ -83,6 +84,8 @@ internal sealed class UndoPowerRuntimeState
     public string? ApplierCreatureKey { get; init; }
 
     public SerializableCard? StolenCard { get; init; }
+
+    public SerializableCard? StolenCardDeckVersion { get; init; }
 
     public IReadOnlyList<ulong> TriggeredPlayerNetIds { get; init; } = [];
 

@@ -1,3 +1,4 @@
+// 文件说明：在战斗 UI 生命周期中挂接 undo HUD。
 using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;

@@ -1,4 +1,5 @@
-﻿namespace UndoTheSpire2;
+// 文件说明：表示一条可回退的历史快照。
+namespace UndoTheSpire2;
 
 internal sealed class UndoSnapshot
 {

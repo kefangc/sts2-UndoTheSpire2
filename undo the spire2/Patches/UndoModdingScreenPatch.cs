@@ -1,3 +1,4 @@
+// 文件说明：处理 modding 界面相关的 undo 生命周期。
 using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.addons.mega_text;

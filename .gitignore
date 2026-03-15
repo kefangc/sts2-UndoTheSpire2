@@ -1,24 +1,39 @@
-# IDE settings
+# Visual Studio / Rider
 .vs/
+.idea/
 .vscode/
-*.user
 *.suo
+*.user
+*.userosscache
+*.rsuser
+*.sln.docstates
 
-# Build artifacts
-[Bb]in/
-[Oo]bj/
-
-# Godot 4 specific (处理你之前的冲突)
-.godot/
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Godot
-.godot/
-*.uid
-
-# C# Build
+# .NET build outputs
 bin/
 obj/
+Debug/
+Release/
+TestResults/
+
+# Godot generated state
+.godot/
+.mono/
+*.import
+*.uid
+mono_crash.*.json
+export_credentials.cfg
+
+# Debug / profiling artifacts
+*.log
+*.pidb
+*.mdb
+*.tmp
+*.temp
+*.cache
+*.bak
+*.orig
+
+# OS junk
+Thumbs.db
+Desktop.ini
+.DS_Store

@@ -1,3 +1,4 @@
+// 文件说明：校验场景与恢复覆盖率，找出尚未纳入的动作类型。
 using System.Text.Json;
 
 namespace UndoTheSpire2;

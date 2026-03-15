@@ -1,3 +1,4 @@
+// 文件说明：统一表示一次 choice 分支结果的键。
 using System.Text;
 
 namespace UndoTheSpire2;

@@ -1,3 +1,4 @@
+// 文件说明：保存 creature 的运行时状态快照。
 using System.Collections.Generic;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 
@@ -22,6 +23,11 @@ internal abstract class UndoCreatureStatusRuntimePayload
 internal sealed class UndoBoolCreatureStatusRuntimePayload : UndoCreatureStatusRuntimePayload
 {
     public bool Value { get; init; }
+}
+
+internal sealed class UndoIntCreatureStatusRuntimePayload : UndoCreatureStatusRuntimePayload
+{
+    public int Value { get; init; }
 }
 
 internal sealed class UndoCreatureStatusRestoreContext

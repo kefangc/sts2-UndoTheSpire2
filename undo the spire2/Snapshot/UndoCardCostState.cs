@@ -1,3 +1,4 @@
+// 文件说明：保存单张牌的费用相关快照。
 using System.Collections.Generic;
 using MegaCrit.Sts2.Core.Entities.Cards;
 

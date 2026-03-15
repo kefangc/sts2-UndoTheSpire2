@@ -1,4 +1,5 @@
-﻿using MegaCrit.Sts2.Core.Multiplayer.Replay;
+// 文件说明：保存 replay 事件、choice 分支与 checksum 数据。
+using MegaCrit.Sts2.Core.Multiplayer.Replay;
 using MegaCrit.Sts2.Core.Saves;
 
 namespace UndoTheSpire2;
@@ -10,13 +11,15 @@ public sealed class UndoCombatReplayState
         uint initialNextActionId,
         uint initialNextHookId,
         uint initialNextChecksumId,
-        List<uint> initialChoiceIds)
+        List<uint> initialChoiceIds,
+        List<ReplayChecksumData>? checksumData = null)
     {
         InitialRun = initialRun;
         InitialNextActionId = initialNextActionId;
         InitialNextHookId = initialNextHookId;
         InitialNextChecksumId = initialNextChecksumId;
         InitialChoiceIds = initialChoiceIds;
+        ChecksumData = checksumData ?? [];
         Events = [];
     }
 
@@ -29,6 +32,8 @@ public sealed class UndoCombatReplayState
     public uint InitialNextChecksumId { get; }
 
     public List<uint> InitialChoiceIds { get; }
+
+    public List<ReplayChecksumData> ChecksumData { get; }
 
     public List<CombatReplayEvent> Events { get; }
 

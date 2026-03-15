@@ -1,4 +1,5 @@
-﻿using HarmonyLib;
+// 文件说明：在战斗开始和结束时初始化或清理 undo 状态。
+using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Runs;
 

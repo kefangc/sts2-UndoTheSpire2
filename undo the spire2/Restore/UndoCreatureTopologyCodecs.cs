@@ -1,3 +1,4 @@
+// 文件说明：捕获和恢复 creature 拓扑、挂载与特殊位置关系。
 using System.Reflection;
 using Godot;
 using MegaCrit.Sts2.Core.Combat;

@@ -1,3 +1,4 @@
+// 文件说明：Mod 入口，负责注册补丁并初始化撤销控制器。
 using System.Reflection;
 using Godot;
 using HarmonyLib;
@@ -13,9 +14,12 @@ public partial class MainFile : Node
     public static void Initialize()
     {
         UndoDebugLog.Initialize();
+        UndoModSettings.Initialize();
         Harmony harmony = new(ModId);
         harmony.PatchAll(Assembly.GetExecutingAssembly());
         Logger.Info("UndoTheSpire2 patches applied.");
         UndoDebugLog.Write($"MainFile initialized. Debug log path={UndoDebugLog.CurrentPath}");
     }
 }
+
+

@@ -1,3 +1,4 @@
+// 文件说明：提供通用序列化与深拷贝辅助。
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Multiplayer.Serialization;

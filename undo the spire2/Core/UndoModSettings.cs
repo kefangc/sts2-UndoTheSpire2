@@ -1,3 +1,4 @@
+// 文件说明：定义 mod 设置项及其读取逻辑。
 using System.Text.Json;
 
 namespace UndoTheSpire2;
@@ -6,7 +7,7 @@ internal static class UndoModSettings
 {
     private sealed class UndoModSettingsData
     {
-        public bool EnableChoiceUndo { get; set; }
+        public bool EnableChoiceUndo { get; set; } = true;
         public bool EnableUnifiedEffectMode { get; set; } = true;
     }
 
@@ -148,3 +149,4 @@ internal static class UndoModSettings
         return Path.Combine("C:\\undo-the-spire2", "settings.json");
     }
 }
+

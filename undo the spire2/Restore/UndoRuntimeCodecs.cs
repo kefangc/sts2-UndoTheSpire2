@@ -1,3 +1,4 @@
+// 文件说明：恢复卡牌、能力、遗物等通用运行时属性。
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
@@ -62,6 +63,15 @@ internal sealed class UndoPairIntRuntimeComplexState : UndoComplexRuntimeState
     public int FirstValue { get; init; }
 
     public int SecondValue { get; init; }
+}
+
+internal sealed class UndoSovereignBladeRuntimeComplexState : UndoComplexRuntimeState
+{
+    public decimal CurrentDamage { get; init; }
+
+    public decimal CurrentRepeats { get; init; }
+
+    public bool CreatedThroughForge { get; init; }
 }
 
 internal sealed class UndoCardRefRuntimeComplexState : UndoComplexRuntimeState
@@ -209,12 +219,15 @@ internal static class UndoRuntimeStateCodecRegistry
 {
     private static readonly IReadOnlyList<IUndoCardRuntimeCodec> CardCodecs =
     [
-        new UpMySleeveCardCodec()
+        new UpMySleeveCardCodec(),
+        new ClawCardCodec(),
+        new SovereignBladeCardCodec()
     ];
 
     private static readonly IReadOnlyList<IUndoPowerRuntimeCodec> PowerCodecs =
     [
         new AutomationCardsLeftPowerCodec(),
+        new JugglingAttacksPlayedPowerCodec(),
         new VitalSparkTriggeredPlayersPowerCodec(),
         new AfterimagePlayedCardsPowerCodec(),
         new NightmareSelectedCardPowerCodec(),
@@ -356,6 +369,79 @@ internal static class UndoRuntimeStateCodecRegistry
             UndoReflectionUtil.TrySetFieldValue(card, "_timesPlayedThisCombat", state.Value);
         }
     }
+    private sealed class ClawCardCodec : UndoCardRuntimeCodec<UndoPairIntRuntimeComplexState>
+    {
+        public override string CodecId => "card:Claw.damageGrowth";
+
+        public override bool CanHandle(CardModel card)
+        {
+            return card is Claw;
+        }
+
+        public override UndoPairIntRuntimeComplexState? Capture(CardModel card, UndoRuntimeCaptureContext context)
+        {
+            if (card is not Claw claw)
+                return null;
+
+            decimal currentDamage = claw.DynamicVars.Damage.BaseValue;
+            decimal extraDamage = UndoReflectionUtil.FindField(claw.GetType(), "_extraDamageFromClawPlays")?.GetValue(claw) is decimal value ? value : 0m;
+            return new UndoPairIntRuntimeComplexState
+            {
+                CodecId = CodecId,
+                FirstValue = (int)extraDamage,
+                SecondValue = (int)currentDamage
+            };
+        }
+
+        public override void Restore(CardModel card, UndoPairIntRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            if (card is not Claw claw)
+                return;
+
+            UndoReflectionUtil.TrySetFieldValue(claw, "_extraDamageFromClawPlays", (decimal)state.FirstValue);
+            claw.DynamicVars.Damage.BaseValue = state.SecondValue;
+        }
+    }
+
+    private sealed class SovereignBladeCardCodec : UndoCardRuntimeCodec<UndoSovereignBladeRuntimeComplexState>
+    {
+        public override string CodecId => "card:SovereignBlade.damageAndRepeats";
+
+        public override bool CanHandle(CardModel card)
+        {
+            return card is SovereignBlade;
+        }
+
+        public override UndoSovereignBladeRuntimeComplexState? Capture(CardModel card, UndoRuntimeCaptureContext context)
+        {
+            if (card is not SovereignBlade sovereignBlade)
+                return null;
+
+            decimal currentDamage = UndoReflectionUtil.FindField(sovereignBlade.GetType(), "_currentDamage")?.GetValue(sovereignBlade) is decimal damage ? damage : sovereignBlade.DynamicVars.Damage.BaseValue;
+            decimal currentRepeats = UndoReflectionUtil.FindField(sovereignBlade.GetType(), "_currentRepeats")?.GetValue(sovereignBlade) is decimal repeats ? repeats : sovereignBlade.DynamicVars.Repeat.BaseValue;
+            bool createdThroughForge = UndoReflectionUtil.FindField(sovereignBlade.GetType(), "_createdThroughForge")?.GetValue(sovereignBlade) is bool created && created;
+
+            return new UndoSovereignBladeRuntimeComplexState
+            {
+                CodecId = CodecId,
+                CurrentDamage = currentDamage,
+                CurrentRepeats = currentRepeats,
+                CreatedThroughForge = createdThroughForge
+            };
+        }
+
+        public override void Restore(CardModel card, UndoSovereignBladeRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            if (card is not SovereignBlade sovereignBlade)
+                return;
+
+            UndoReflectionUtil.TrySetFieldValue(sovereignBlade, "_currentDamage", state.CurrentDamage);
+            UndoReflectionUtil.TrySetFieldValue(sovereignBlade, "_currentRepeats", state.CurrentRepeats);
+            UndoReflectionUtil.TrySetFieldValue(sovereignBlade, "_createdThroughForge", state.CreatedThroughForge);
+            sovereignBlade.DynamicVars.Damage.BaseValue = state.CurrentDamage;
+            sovereignBlade.DynamicVars.Repeat.BaseValue = state.CurrentRepeats;
+        }
+    }
 
     private sealed class AutomationCardsLeftPowerCodec : UndoPowerRuntimeCodec<UndoIntRuntimeComplexState>
     {
@@ -386,6 +472,39 @@ internal static class UndoRuntimeStateCodecRegistry
                 return;
 
             UndoReflectionUtil.TrySetFieldValue(internalData, "cardsLeft", state.Value);
+            InvokeDisplayAmountChanged(power);
+        }
+    }
+
+    private sealed class JugglingAttacksPlayedPowerCodec : UndoPowerRuntimeCodec<UndoIntRuntimeComplexState>
+    {
+        public override string CodecId => "power:JugglingPower.attacksPlayedThisTurn";
+
+        public override bool CanHandle(PowerModel power)
+        {
+            return power is JugglingPower;
+        }
+
+        public override UndoIntRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
+        {
+            object? internalData = GetPowerInternalData(power);
+            if (internalData == null || UndoReflectionUtil.FindField(internalData.GetType(), "attacksPlayedThisTurn")?.GetValue(internalData) is not int attacksPlayedThisTurn)
+                return null;
+
+            return new UndoIntRuntimeComplexState
+            {
+                CodecId = CodecId,
+                Value = attacksPlayedThisTurn
+            };
+        }
+
+        public override void Restore(PowerModel power, UndoIntRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            object? internalData = GetPowerInternalData(power);
+            if (internalData == null)
+                return;
+
+            UndoReflectionUtil.TrySetFieldValue(internalData, "attacksPlayedThisTurn", state.Value);
             InvokeDisplayAmountChanged(power);
         }
     }

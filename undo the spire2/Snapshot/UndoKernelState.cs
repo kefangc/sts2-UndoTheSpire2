@@ -1,3 +1,4 @@
+// 文件说明：保存 action kernel、同步器与 paused choice 的状态。
 using MegaCrit.Sts2.Core.Entities.Actions;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;

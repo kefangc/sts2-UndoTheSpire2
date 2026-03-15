@@ -1,3 +1,4 @@
+// 文件说明：实现 HUD 按钮的交互与展示。
 using System.Reflection;
 using Godot;
 using MegaCrit.Sts2.Core.HoverTips;

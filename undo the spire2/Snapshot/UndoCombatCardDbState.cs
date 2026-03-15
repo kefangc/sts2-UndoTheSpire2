@@ -1,3 +1,4 @@
+// 文件说明：保存战斗内卡牌数据库及其派生状态。
 namespace UndoTheSpire2;
 
 // Captures the transient NetCombatCardDb mapping so restore can preserve

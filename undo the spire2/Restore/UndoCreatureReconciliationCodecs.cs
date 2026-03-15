@@ -1,3 +1,4 @@
+// 文件说明：恢复战斗实体后对 creature 引用做对齐修正。
 using System;
 using System.Collections.Generic;
 using System.Linq;

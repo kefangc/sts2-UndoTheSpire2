@@ -1,3 +1,4 @@
+// 文件说明：把官方战斗历史编码为可保存的 undo 快照片段。
 using System.Collections;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Combat.History;

@@ -78,6 +78,8 @@ UI 没有直接改原版场景，而是通过 patch 在战斗 UI 激活时动态
 
 ## 项目结构
 
+目录边界的详细说明见 ARCHITECTURE.md
+
 核心文件：
 - `MainFile.cs`：Mod 入口，Harmony patch 注册
 - `UndoController.cs`：撤销/重做核心状态机
@@ -96,6 +98,10 @@ UI 没有直接改原版场景，而是通过 patch 在战斗 UI 激活时动态
 - `project.godot`
 - `export_presets.cfg`
 - `UndoTheSpire2/localization/*.json`
+
+当前目录约定：
+- 项目根目录只保留入口、构建配置和文档
+- 核心业务源码统一放在 `Capture/`、`Core/`、`Restore/`、`Snapshot/`、`Patches/`、`UI/`、`Scenarios/`
 
 ## 构建与发布
 

@@ -1,4 +1,5 @@
-﻿using HarmonyLib;
+// 文件说明：挂接官方 replay 与 checksum 记录。
+using HarmonyLib;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions;
@@ -38,5 +39,12 @@ public static class UndoCombatReplayPatch
     {
         MainFile.Controller.RecordReplayPlayerChoice(player, choiceId, result);
         MainFile.Controller.OnPlayerChoiceResolved(player, result);
+    }
+
+    [HarmonyPatch(typeof(CombatReplayWriter), "RecordChecksum")]
+    [HarmonyPostfix]
+    public static void RecordChecksumPostfix(NetChecksumData checksum, string context, NetFullCombatState fullCombatState)
+    {
+        MainFile.Controller.RecordReplayChecksum(checksum, context, fullCombatState);
     }
 }

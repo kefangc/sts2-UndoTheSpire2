@@ -1,3 +1,4 @@
+// 文件说明：定义 undo 内部 codec 与场景执行接口约定。
 using MegaCrit.Sts2.Core.Runs;
 
 namespace UndoTheSpire2;

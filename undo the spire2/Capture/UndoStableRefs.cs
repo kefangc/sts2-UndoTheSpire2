@@ -1,3 +1,4 @@
+// 文件说明：捕获和重建恢复流程需要的稳定引用。
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;

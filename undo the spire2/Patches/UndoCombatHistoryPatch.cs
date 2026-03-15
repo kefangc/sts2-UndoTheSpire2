@@ -1,4 +1,5 @@
-﻿using HarmonyLib;
+// 文件说明：挂接官方战斗历史，补充 undo 所需事件。
+using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Combat.History;
 using MegaCrit.Sts2.Core.Entities.Cards;

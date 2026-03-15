@@ -1,3 +1,4 @@
+// 文件说明：注册并组织可执行的 undo 测试场景。
 using System.Text;
 using System.Text.Json;
 

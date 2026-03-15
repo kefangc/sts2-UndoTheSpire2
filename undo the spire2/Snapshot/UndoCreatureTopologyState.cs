@@ -1,3 +1,4 @@
+// 文件说明：保存 creature 拓扑与挂载关系快照。
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;

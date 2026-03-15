@@ -1,4 +1,5 @@
-﻿using System.Reflection;
+// 文件说明：本地化文本加载与查询入口。
+using System.Reflection;
 using System.Text.Json;
 using Godot;
 using MegaCrit.Sts2.Core.Localization;

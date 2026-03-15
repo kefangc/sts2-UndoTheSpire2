@@ -1,3 +1,4 @@
+// 文件说明：跟踪一次 synthetic choice 恢复过程的锚点、模板与缓存分支。
 namespace UndoTheSpire2;
 
 internal sealed class UndoSyntheticChoiceSession

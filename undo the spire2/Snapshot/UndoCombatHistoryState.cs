@@ -1,3 +1,4 @@
+// 文件说明：保存官方战斗历史的可恢复表示。
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Models;
