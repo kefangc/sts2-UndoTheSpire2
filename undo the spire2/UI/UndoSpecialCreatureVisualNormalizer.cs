@@ -362,7 +362,7 @@ internal static class UndoSpecialCreatureVisualNormalizer
         if (spineBoneNode != null)
             spineBoneNode.Position = Vector2.Zero;
 
-        Marker2D? stolenCardPos = creatureNode.GetNodeOrNull<Marker2D>("%StolenCardPos");
+        Marker2D? stolenCardPos = creatureNode.Visuals?.GetNodeOrNull<Marker2D>("%StolenCardPos");
         bool isHoldingCard = monster.Creature.Powers.OfType<SwipePower>().Any(static power => power.StolenCard != null);
         if (!isHoldingCard && stolenCardPos != null)
             ClearNodeChildren(stolenCardPos);

@@ -237,10 +237,7 @@ public sealed partial class UndoController
             if (creatureNode == null)
                 continue;
 
-            if (!creatureNode.HasNode("%StolenCardPos"))
-                continue;
-
-            Marker2D? stolenCardPos = creatureNode.GetNodeOrNull<Marker2D>("%StolenCardPos");
+            Marker2D? stolenCardPos = creatureNode.Visuals?.GetNodeOrNull<Marker2D>("%StolenCardPos");
             if (stolenCardPos == null)
                 continue;
 

@@ -987,7 +987,28 @@ internal static class UndoScenarioExecutor
                 case "bowlbug-rock" when creature.Monster is BowlbugRock bowlbugRock:
                     return BuildAnimationAssertion(assertion, animation, bowlbugRock.IsOffBalance ? ["stunned_loop"] : ["idle_loop"], actualVisible: nodeVisible, expectedVisible: true);
                 case "thieving-hopper" when creature.Monster is ThievingHopper thievingHopper:
-                    return BuildAnimationAssertion(assertion, animation, ReadPrivateBool(thievingHopper, "IsHovering") ? ["hover_loop"] : ["idle_loop"], actualVisible: nodeVisible, expectedVisible: true);
+                {
+                    bool expectsStolenCard = creature.Powers.OfType<SwipePower>().Any(static power => power.StolenCard != null);
+                    int stolenCardNodeCount = creatureNode.Visuals?.GetNodeOrNull<Marker2D>("%StolenCardPos")?.GetChildCount() ?? 0;
+                    UndoScenarioAssertionResult result = BuildAnimationAssertion(assertion, animation, ReadPrivateBool(thievingHopper, "IsHovering") ? ["hover_loop"] : ["idle_loop"], actualVisible: nodeVisible, expectedVisible: true);
+                    bool stolenCardUiMatches = expectsStolenCard ? stolenCardNodeCount > 0 : stolenCardNodeCount == 0;
+                    if (!result.Passed || !stolenCardUiMatches)
+                    {
+                        return new UndoScenarioAssertionResult
+                        {
+                            Assertion = assertion,
+                            Passed = result.Passed && stolenCardUiMatches,
+                            Detail = $"animation_check={result.Detail}; expects_stolen_card={expectsStolenCard}; stolen_card_nodes={stolenCardNodeCount}"
+                        };
+                    }
+
+                    return new UndoScenarioAssertionResult
+                    {
+                        Assertion = assertion,
+                        Passed = true,
+                        Detail = $"animation_check={result.Detail}; expects_stolen_card={expectsStolenCard}; stolen_card_nodes={stolenCardNodeCount}"
+                    };
+                }
                 case "fat-gremlin" when creature.Monster is FatGremlin fatGremlin:
                     return BuildAnimationAssertion(assertion, animation, ReadPrivateBool(fatGremlin, "IsAwake") ? ["awake_loop"] : ["stunned_loop"], actualVisible: nodeVisible, expectedVisible: true);
                 case "sneaky-gremlin" when creature.Monster is SneakyGremlin sneakyGremlin:
