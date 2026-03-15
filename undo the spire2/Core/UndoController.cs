@@ -1095,7 +1095,7 @@ public sealed partial class UndoController
                     player.DeactivateHooks();
             }
 
-            await RefreshCombatUiAsync(combatState);
+            await RefreshCombatUiAsync(combatState, snapshot);
             if (!TryValidateRestoredState(snapshot, hideCurrentRun, out reason))
             {
                 _lastRestoreFailureReason = reason;

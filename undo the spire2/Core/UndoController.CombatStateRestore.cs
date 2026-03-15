@@ -1097,7 +1097,6 @@ public sealed partial class UndoController
 
         ReplaceCombatCreatureList(combatState, "_allies", desiredAllies);
         ReplaceCombatCreatureList(combatState, "_enemies", desiredEnemies);
-        combatState.SortEnemiesBySlotName();
         NotifyCombatCreaturesChanged(combatState);
     }
 

@@ -149,10 +149,18 @@ public sealed partial class UndoController
             string? specialNodeStateKey = creature.Powers.OfType<SwipePower>().Any(static power => power.StolenCard != null)
                 ? "%StolenCardPos"
                 : null;
+            NCreatureVisuals? creatureVisuals = NCombatRoom.Instance?.GetCreatureNode(creature)?.Visuals;
+            float? visualHue = creatureVisuals == null
+                ? null
+                : FindField(creatureVisuals.GetType(), "_hue")?.GetValue(creatureVisuals) is float hue
+                    ? hue
+                    : null;
             states.Add(new UndoMonsterState
             {
                 CreatureKey = creatureKey,
                 SlotName = string.IsNullOrWhiteSpace(creature.SlotName) ? null : creature.SlotName,
+                VisualDefaultScale = creatureVisuals?.DefaultScale,
+                VisualHue = visualHue,
                 CurrentStateId = currentStateId,
                 NextMoveId = monster.NextMove?.Id,
                 IsHovering = monster is ThievingHopper thievingHopper && thievingHopper.IsHovering,

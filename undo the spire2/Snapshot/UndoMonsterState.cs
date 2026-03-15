@@ -11,6 +11,10 @@ internal sealed class UndoMonsterState
 
     public string? SlotName { get; init; }
 
+    public float? VisualDefaultScale { get; init; }
+
+    public float? VisualHue { get; init; }
+
     public string? NextMoveId { get; init; }
 
     public string? CurrentStateId { get; init; }

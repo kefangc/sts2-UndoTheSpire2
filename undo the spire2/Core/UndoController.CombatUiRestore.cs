@@ -22,6 +22,7 @@ using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Cards;
 using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Models.Orbs;
 using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
@@ -57,7 +58,7 @@ namespace UndoTheSpire2;
 // Combat UI rebuild and presentation normalization after restore.
 public sealed partial class UndoController
 {
-    private static async Task RefreshCombatUiAsync(CombatState combatState)
+    private static async Task RefreshCombatUiAsync(CombatState combatState, UndoCombatFullState? snapshotState = null)
     {
         RunState? runState = RunManager.Instance.DebugOnlyGetState();
         foreach (Player player in combatState.Players)
@@ -68,12 +69,14 @@ public sealed partial class UndoController
         ClearTransientCardVisuals();
         NormalizeCombatInteractionState(combatState);
         RebuildCombatCreatureNodesIfNeeded(combatState);
+        ApplySnapshotCreatureNodeVisuals(combatState, snapshotState);
         RefreshPlayerOrbManagers(combatState);
         RestoreThievingHopperDisplayCards(combatState);
         RebuildCombatUiCards(combatState);
         NCombatRoom? combatRoom = NCombatRoom.Instance;
         if (combatRoom != null)
         {
+            ReconcileSovereignBladeVfx(combatState, combatRoom);
             Player? me = LocalContext.GetMe(combatState);
             ForceCombatUiInteractiveState(combatRoom.Ui, combatState, me);
             if (me != null)
@@ -100,9 +103,11 @@ public sealed partial class UndoController
         await WaitOneFrameAsync();
         if (NCombatRoom.Instance != null)
         {
+            ApplySnapshotCreatureNodeVisuals(combatState, snapshotState);
+            ReconcileSovereignBladeVfx(combatState, NCombatRoom.Instance);
             ForceCombatUiInteractiveState(NCombatRoom.Instance.Ui, combatState, LocalContext.GetMe(combatState));
             SnapEnemyCreatureNodesToSlots(combatState);
-            UndoSpecialCreatureVisualNormalizer.Refresh(combatState, combatRoom);
+            UndoSpecialCreatureVisualNormalizer.Refresh(combatState, NCombatRoom.Instance);
         }
 
         if (runState != null)
@@ -408,6 +413,185 @@ public sealed partial class UndoController
             InvokePrivateMethod(combatRoom, "CreateEnemyNodes");
         InvokePrivateMethod(combatRoom, "AdjustCreatureScaleForAspectRatio");
         InvokePrivateMethod(combatRoom, "UpdateCreatureNavigation");
+    }
+
+    private static void ApplySnapshotCreatureNodeVisuals(CombatState combatState, UndoCombatFullState? snapshotState)
+    {
+        if (snapshotState == null)
+            return;
+
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatRoom == null)
+            return;
+
+        Dictionary<string, UndoMonsterState> monsterStatesByKey = snapshotState.MonsterStates
+            .Where(static state => state.VisualDefaultScale.HasValue || state.VisualHue.HasValue)
+            .ToDictionary(static state => state.CreatureKey, static state => state);
+        if (monsterStatesByKey.Count == 0)
+            return;
+
+        for (int creatureIndex = 0; creatureIndex < combatState.Creatures.Count; creatureIndex++)
+        {
+            Creature creature = combatState.Creatures[creatureIndex];
+            if (!monsterStatesByKey.TryGetValue(BuildCreatureKey(creature, creatureIndex), out UndoMonsterState? monsterState))
+                continue;
+
+            NCreature? creatureNode = combatRoom.GetCreatureNode(creature);
+            NCreatureVisuals? creatureVisuals = creatureNode?.Visuals;
+            if (creatureNode == null || creatureVisuals == null)
+                continue;
+
+            float scale = monsterState.VisualDefaultScale ?? creatureVisuals.DefaultScale;
+            float hue = monsterState.VisualHue
+                ?? (FindField(creatureVisuals.GetType(), "_hue")?.GetValue(creatureVisuals) is float currentHue ? currentHue : 0f);
+            creatureNode.SetScaleAndHue(scale, hue);
+        }
+
+        RelayoutEnemyCreatureNodes(combatRoom, combatState);
+    }
+
+    private static void RelayoutEnemyCreatureNodes(NCombatRoom combatRoom, CombatState combatState)
+    {
+        Control? encounterSlots = GetPrivateFieldValue<Control>(combatRoom, "<EncounterSlots>k__BackingField")
+            ?? GetPrivateFieldValue<Control>(combatRoom, "EncounterSlots");
+        if (encounterSlots != null)
+        {
+            SnapEnemyCreatureNodesToSlots(combatState);
+            return;
+        }
+
+        List<NCreature> enemyNodes = combatState.Enemies
+            .Select(combatRoom.GetCreatureNode)
+            .Where(static node => node != null)
+            .Cast<NCreature>()
+            .ToList();
+        if (enemyNodes.Count == 0)
+            return;
+
+        InvokePrivateMethod(combatRoom, "PositionEnemies", enemyNodes, GetCombatRoomEncounterScaling(combatRoom));
+    }
+
+    private static void ReconcileSovereignBladeVfx(CombatState combatState, NCombatRoom combatRoom)
+    {
+        foreach (Player player in combatState.Players)
+        {
+            NCreature? playerNode = combatRoom.GetCreatureNode(player.Creature);
+            if (playerNode == null)
+                continue;
+
+            List<SovereignBlade> activeBlades = player.PlayerCombatState?.AllCards
+                .OfType<SovereignBlade>()
+                .Where(static blade => !blade.IsDupe && blade.Pile?.Type != PileType.Exhaust)
+                .ToList()
+                ?? [];
+            List<CardModel> validCards = activeBlades
+                .Select(static blade => (CardModel)(blade.DupeOf ?? blade))
+                .ToList();
+
+            foreach (NSovereignBladeVfx bladeVfx in playerNode.GetChildren().OfType<NSovereignBladeVfx>().ToList())
+            {
+                CardModel? trackedCard = bladeVfx.Card?.DupeOf ?? bladeVfx.Card;
+                if (trackedCard != null && validCards.Any(validCard => ReferenceEquals(validCard, trackedCard)))
+                    continue;
+
+                bladeVfx.GetParent()?.RemoveChild(bladeVfx);
+                QueueFreeNodeSafelyOnce(bladeVfx);
+            }
+
+            List<NSovereignBladeVfx> bladeNodes = [];
+            foreach (SovereignBlade blade in activeBlades)
+            {
+                CardModel trackedCard = blade.DupeOf ?? blade;
+                NSovereignBladeVfx? bladeVfx = playerNode.GetChildren()
+                    .OfType<NSovereignBladeVfx>()
+                    .FirstOrDefault(existing => ReferenceEquals(existing.Card?.DupeOf ?? existing.Card, trackedCard));
+                if (bladeVfx == null)
+                {
+                    bladeVfx = NSovereignBladeVfx.Create(blade);
+                    if (bladeVfx == null)
+                        continue;
+
+                    playerNode.AddChildSafely(bladeVfx);
+                    bladeVfx.Position = Vector2.Zero;
+                }
+
+                NormalizeSovereignBladeVfx(bladeVfx, blade);
+                bladeNodes.Add(bladeVfx);
+            }
+
+            for (int i = 0; i < bladeNodes.Count; i++)
+                bladeNodes[i].OrbitProgress = bladeNodes.Count == 0 ? 0d : (double)i / bladeNodes.Count;
+        }
+    }
+
+    private static void NormalizeSovereignBladeVfx(NSovereignBladeVfx bladeVfx, SovereignBlade blade)
+    {
+        bladeVfx.Position = Vector2.Zero;
+
+        Node2D? spineNode = GetPrivateFieldValue<Node2D>(bladeVfx, "_spineNode");
+        if (spineNode == null || !GodotObject.IsInstanceValid(spineNode))
+            return;
+
+        float bladeDamage = (float)blade.DynamicVars.Damage.IntValue;
+        float bladeSize = Mathf.Clamp(Mathf.Lerp(0f, 1f, bladeDamage / 200f), 0f, 1f);
+        Vector2 targetScale = Vector2.One * Mathf.Lerp(0.9f, 2f, bladeSize);
+        spineNode.Visible = true;
+        spineNode.Scale = targetScale;
+        spineNode.Rotation = 0f;
+
+        GetPrivateFieldValue<Tween>(bladeVfx, "_attackTween")?.Kill();
+        GetPrivateFieldValue<Tween>(bladeVfx, "_scaleTween")?.Kill();
+        GetPrivateFieldValue<Tween>(bladeVfx, "_sparkDelay")?.Kill();
+        GetPrivateFieldValue<Tween>(bladeVfx, "_glowTween")?.Kill();
+        SetPrivateFieldValue(bladeVfx, "_attackTween", null);
+        SetPrivateFieldValue(bladeVfx, "_scaleTween", null);
+        SetPrivateFieldValue(bladeVfx, "_sparkDelay", null);
+        SetPrivateFieldValue(bladeVfx, "_glowTween", null);
+        SetPrivateFieldValue(bladeVfx, "_bladeSize", bladeSize);
+        SetPrivateFieldValue(bladeVfx, "_isForging", false);
+        SetPrivateFieldValue(bladeVfx, "_isAttacking", false);
+
+        if (GetPrivateFieldValue<Line2D>(bladeVfx, "_trail") is { } trail && GodotObject.IsInstanceValid(trail))
+        {
+            trail.Visible = false;
+            trail.ClearPoints();
+            trail.Modulate = Colors.White;
+        }
+
+        if (GetPrivateFieldValue<Node2D>(bladeVfx, "_bladeGlow") is { } bladeGlow && GodotObject.IsInstanceValid(bladeGlow))
+        {
+            bladeGlow.Visible = false;
+            bladeGlow.Modulate = Colors.Transparent;
+        }
+
+        bool usePrimaryHilt = bladeSize < 0.3f;
+        if (GetPrivateFieldValue<TextureRect>(bladeVfx, "_hilt") is { } hilt && GodotObject.IsInstanceValid(hilt))
+            hilt.Visible = usePrimaryHilt;
+        if (GetPrivateFieldValue<TextureRect>(bladeVfx, "_hilt2") is { } hilt2 && GodotObject.IsInstanceValid(hilt2))
+            hilt2.Visible = !usePrimaryHilt;
+        if (GetPrivateFieldValue<TextureRect>(bladeVfx, "_detail") is { } detail && GodotObject.IsInstanceValid(detail))
+            detail.Visible = bladeDamage >= 0.66f;
+
+        int chargeAmount = (int)(bladeSize * 30f);
+        if (GetPrivateFieldValue<GpuParticles2D>(bladeVfx, "_chargeParticles") is { } chargeParticles && GodotObject.IsInstanceValid(chargeParticles))
+        {
+            chargeParticles.Amount = chargeAmount;
+            chargeParticles.Emitting = chargeAmount > 0;
+        }
+
+        SyncSovereignBladeParticles(bladeVfx, "_spikeParticles", usePrimaryHilt);
+        SyncSovereignBladeParticles(bladeVfx, "_spikeCircle", usePrimaryHilt);
+        SyncSovereignBladeParticles(bladeVfx, "_spikeParticles2", !usePrimaryHilt);
+        SyncSovereignBladeParticles(bladeVfx, "_spikeCircle2", !usePrimaryHilt);
+    }
+
+    private static void SyncSovereignBladeParticles(NSovereignBladeVfx bladeVfx, string fieldName, bool visible)
+    {
+        if (GetPrivateFieldValue<GpuParticles2D>(bladeVfx, fieldName) is not { } particles || !GodotObject.IsInstanceValid(particles))
+            return;
+
+        particles.Visible = visible;
+        particles.Emitting = visible;
     }
 
     private static void RebuildEnemyNodesWithFallbackLayout(NCombatRoom combatRoom, CombatState combatState)
