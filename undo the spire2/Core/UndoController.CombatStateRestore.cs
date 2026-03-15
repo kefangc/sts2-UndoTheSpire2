@@ -22,6 +22,7 @@ using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Monsters;
 using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Models.Orbs;
 using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
@@ -1255,9 +1256,8 @@ public sealed partial class UndoController
                 if (runtimeState.StolenCardDeckVersion != null)
                 {
                     CardModel deckVersion = CardModel.FromSerializable(ClonePacketSerializable(runtimeState.StolenCardDeckVersion));
-                    if (power.Target?.Player != null)
-                        deckVersion.Owner = power.Target.Player;
-
+                    if (deckVersion.Owner != null)
+                        deckVersion.Owner = null;
                     stolenCard.DeckVersion = deckVersion;
                 }
                 swipe.StolenCard = stolenCard;
@@ -1315,6 +1315,20 @@ public sealed partial class UndoController
             return;
 
         monster.Creature.SlotName = state.SlotName;
+        if (monster is ThievingHopper thievingHopper)
+            thievingHopper.IsHovering = state.IsHovering;
+        if (monster is TwoTailedRat twoTailedRat)
+        {
+            if (state.StarterMoveIndex is int starterMoveIndex)
+                twoTailedRat.StarterMoveIndex = starterMoveIndex;
+
+            if (state.TurnsUntilSummonable is int turnsUntilSummonable)
+                UndoReflectionUtil.TrySetFieldValue(twoTailedRat, "_turnsUntilSummonable", turnsUntilSummonable);
+
+            if (state.CallForBackupCount is int callForBackupCount)
+                twoTailedRat.CallForBackupCount = callForBackupCount;
+        }
+
         UndoReflectionUtil.TrySetPropertyValue(monster, "SpawnedThisTurn", state.SpawnedThisTurn);
         UndoReflectionUtil.TrySetFieldValue(moveStateMachine, "_performedFirstMove", state.PerformedFirstMove);
         if (moveStateMachine.StateLog is List<MonsterState> stateLog)

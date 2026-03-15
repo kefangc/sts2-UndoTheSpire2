@@ -65,6 +65,15 @@ internal sealed class UndoPairIntRuntimeComplexState : UndoComplexRuntimeState
     public int SecondValue { get; init; }
 }
 
+internal sealed class UndoSovereignBladeRuntimeComplexState : UndoComplexRuntimeState
+{
+    public decimal CurrentDamage { get; init; }
+
+    public decimal CurrentRepeats { get; init; }
+
+    public bool CreatedThroughForge { get; init; }
+}
+
 internal sealed class UndoCardRefRuntimeComplexState : UndoComplexRuntimeState
 {
     public CardRef? Card { get; init; }
@@ -211,7 +220,8 @@ internal static class UndoRuntimeStateCodecRegistry
     private static readonly IReadOnlyList<IUndoCardRuntimeCodec> CardCodecs =
     [
         new UpMySleeveCardCodec(),
-        new ClawCardCodec()
+        new ClawCardCodec(),
+        new SovereignBladeCardCodec()
     ];
 
     private static readonly IReadOnlyList<IUndoPowerRuntimeCodec> PowerCodecs =
@@ -390,6 +400,46 @@ internal static class UndoRuntimeStateCodecRegistry
 
             UndoReflectionUtil.TrySetFieldValue(claw, "_extraDamageFromClawPlays", (decimal)state.FirstValue);
             claw.DynamicVars.Damage.BaseValue = state.SecondValue;
+        }
+    }
+
+    private sealed class SovereignBladeCardCodec : UndoCardRuntimeCodec<UndoSovereignBladeRuntimeComplexState>
+    {
+        public override string CodecId => "card:SovereignBlade.damageAndRepeats";
+
+        public override bool CanHandle(CardModel card)
+        {
+            return card is SovereignBlade;
+        }
+
+        public override UndoSovereignBladeRuntimeComplexState? Capture(CardModel card, UndoRuntimeCaptureContext context)
+        {
+            if (card is not SovereignBlade sovereignBlade)
+                return null;
+
+            decimal currentDamage = UndoReflectionUtil.FindField(sovereignBlade.GetType(), "_currentDamage")?.GetValue(sovereignBlade) is decimal damage ? damage : sovereignBlade.DynamicVars.Damage.BaseValue;
+            decimal currentRepeats = UndoReflectionUtil.FindField(sovereignBlade.GetType(), "_currentRepeats")?.GetValue(sovereignBlade) is decimal repeats ? repeats : sovereignBlade.DynamicVars.Repeat.BaseValue;
+            bool createdThroughForge = UndoReflectionUtil.FindField(sovereignBlade.GetType(), "_createdThroughForge")?.GetValue(sovereignBlade) is bool created && created;
+
+            return new UndoSovereignBladeRuntimeComplexState
+            {
+                CodecId = CodecId,
+                CurrentDamage = currentDamage,
+                CurrentRepeats = currentRepeats,
+                CreatedThroughForge = createdThroughForge
+            };
+        }
+
+        public override void Restore(CardModel card, UndoSovereignBladeRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            if (card is not SovereignBlade sovereignBlade)
+                return;
+
+            UndoReflectionUtil.TrySetFieldValue(sovereignBlade, "_currentDamage", state.CurrentDamage);
+            UndoReflectionUtil.TrySetFieldValue(sovereignBlade, "_currentRepeats", state.CurrentRepeats);
+            UndoReflectionUtil.TrySetFieldValue(sovereignBlade, "_createdThroughForge", state.CreatedThroughForge);
+            sovereignBlade.DynamicVars.Damage.BaseValue = state.CurrentDamage;
+            sovereignBlade.DynamicVars.Repeat.BaseValue = state.CurrentRepeats;
         }
     }
 

@@ -74,7 +74,12 @@ public sealed partial class UndoController
 
         _combatReplay!.ActiveEventCount = synthesizedBranch.ReplayEventCount;
         DisableReplayChecksumComparison(synthesizedBranch.CombatState.NextChecksumId);
-        bool preservePrimaryChoiceAnchor = session.ChoiceSpec.Kind is UndoChoiceKind.ChooseACard or UndoChoiceKind.SimpleGridSelection;
+        // 重新挂 choice anchor 时，手牌选择也必须保留原始锚点。
+        // 像生存者这类 from-hand -> discard 的流程，如果把锚点挂到已提交的 synthesized branch 上，
+        // 第二次 undo 回来的就会是“已经弃过牌”的状态，导致被弃的牌回不来，后续再选也会卡住。
+        bool preservePrimaryChoiceAnchor = session.ChoiceSpec.Kind is UndoChoiceKind.ChooseACard
+            or UndoChoiceKind.SimpleGridSelection
+            or UndoChoiceKind.HandSelection;
         UndoSnapshot anchorSnapshot = preservePrimaryChoiceAnchor ? session.AnchorSnapshot : synthesizedBranch;
         UndoCombatFullState? anchorCombatStateOverride = preservePrimaryChoiceAnchor
             ? WithChoiceBranchStates(session.AnchorSnapshot.CombatState, CaptureSavedChoiceBranchStates(session))

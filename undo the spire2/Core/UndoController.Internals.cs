@@ -57,6 +57,8 @@ namespace UndoTheSpire2;
 // Shared reflection, cloning, and restore helper utilities.
 public sealed partial class UndoController
 {
+    private const string UndoQueuedForFreeMetaKey = "__undo_queued_for_free";
+
     private static T GetStaticFieldValue<T>(Type type, string fieldName)
     {
         object? value = FindField(type, fieldName)?.GetValue(null);
@@ -79,11 +81,35 @@ public sealed partial class UndoController
 
     private static void ClearNodeChildren(Node node)
     {
-        foreach (Node child in node.GetChildren())
+        foreach (Node child in node.GetChildren().Cast<Node>().ToList())
         {
-            node.RemoveChild(child);
-            child.QueueFree();
+            child.GetParent()?.RemoveChildSafely(child);
+            QueueFreeNodeSafelyOnce(child);
         }
+    }
+
+    private static void QueueFreeNodeSafelyOnce(Node? node)
+    {
+        if (node == null || !GodotObject.IsInstanceValid(node))
+            return;
+
+        if (node.HasMeta(UndoQueuedForFreeMetaKey))
+            return;
+
+        node.SetMeta(UndoQueuedForFreeMetaKey, true);
+        node.QueueFreeSafely();
+    }
+
+    private static void QueueFreeNodeSafelyNoPoolOnce(Node? node)
+    {
+        if (node == null || !GodotObject.IsInstanceValid(node))
+            return;
+
+        if (node.HasMeta(UndoQueuedForFreeMetaKey))
+            return;
+
+        node.SetMeta(UndoQueuedForFreeMetaKey, true);
+        node.QueueFreeSafelyNoPool();
     }
 
     private static void ClearOptionalNodeChildren(Node node, string path)

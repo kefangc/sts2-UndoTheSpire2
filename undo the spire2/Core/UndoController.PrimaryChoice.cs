@@ -94,11 +94,18 @@ public sealed partial class UndoController
         RememberSavedChoiceBranches(primarySession, snapshot.CombatState.ChoiceBranchStates);
         if (branchSnapshot?.ChoiceResultKey != null)
             primarySession.RememberBranch(branchSnapshot.ChoiceResultKey, branchSnapshot);
-        if (choiceSpec.Kind is UndoChoiceKind.ChooseACard or UndoChoiceKind.SimpleGridSelection)
+        bool shouldHandleSelectionAsync =
+            choiceSpec.Kind is UndoChoiceKind.ChooseACard or UndoChoiceKind.SimpleGridSelection
+            || (choiceSpec.Kind == UndoChoiceKind.HandSelection
+                && pausedChoiceState != null
+                && !ShouldUseSyntheticEntropyChoice(pausedChoiceState, choiceSpec));
+        if (shouldHandleSelectionAsync)
         {
-            Task<UndoChoiceResultKey?> selectionTask = pausedChoiceState != null
-                ? UndoActionCodecRegistry.RestoreAsync(pausedChoiceState, runState)
-                : RestorePrimaryChoiceAnchorAsync(choiceSpec, runState);
+            Task<UndoChoiceResultKey?> selectionTask;
+            if (pausedChoiceState != null)
+                selectionTask = UndoActionCodecRegistry.RestoreAsync(pausedChoiceState, runState);
+            else
+                selectionTask = RestorePrimaryChoiceAnchorAsync(choiceSpec, runState);
             NCombatUi? combatUi = null;
             for (int attempt = 0; attempt < 5; attempt++)
             {
@@ -117,6 +124,8 @@ public sealed partial class UndoController
 
             WriteInteractionLog("primary_restore_anchor_reopened", $"label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount} codec={pausedChoiceState?.SourceActionCodecId ?? "action:choose-a-card"}");
             NotifyStateChanged();
+            // 对 from-hand 这类手牌选择，不要在 restore 事务里等待玩家选完。
+            // 只要 choice UI 已经真正回到场上，就立刻结束 restore，让 HUD 和二次 undo 恢复可用。
             TaskHelper.RunSafely(HandlePrimaryChoiceSelectionAsync(primarySession, selectionTask, pausedChoiceState != null && stateAlreadyApplied));
             return true;
         }
@@ -147,9 +156,14 @@ public sealed partial class UndoController
         if (stateAlreadyApplied && await TryCommitLiveChoiceBranchAsync(primarySession, selectedKey))
             return true;
 
+        if (ShouldPreferCustomChoiceBeforeCached(primarySession)
+            && await TryCommitCustomChoiceBranchAsync(primarySession, selectedKey))
+            return true;
+
         if (primarySession.CachedBranches.TryGetValue(selectedKey, out UndoSnapshot? cachedBranchSnapshot))
         {
-            if (!await TryApplySynthesizedChoiceBranchAsync(primarySession, cachedBranchSnapshot, selectedKey, vfxRequest: null))
+            SyntheticChoiceVfxRequest? cachedVfxRequest = CaptureSyntheticChoiceVfxRequest(primarySession, cachedBranchSnapshot, selectedKey);
+            if (!await TryApplySynthesizedChoiceBranchAsync(primarySession, cachedBranchSnapshot, selectedKey, cachedVfxRequest))
                 return false;
 
             return true;
@@ -165,7 +179,8 @@ public sealed partial class UndoController
             return false;
         }
 
-        return await TryApplySynthesizedChoiceBranchAsync(primarySession, synthesizedBranch!, selectedKey, vfxRequest: null);
+        SyntheticChoiceVfxRequest? synthesizedVfxRequest = CaptureSyntheticChoiceVfxRequest(primarySession, synthesizedBranch!, selectedKey);
+        return await TryApplySynthesizedChoiceBranchAsync(primarySession, synthesizedBranch!, selectedKey, synthesizedVfxRequest);
     }
 
     private static async Task<UndoChoiceResultKey?> RestorePrimaryChoiceAnchorAsync(UndoChoiceSpec choiceSpec, RunState runState)
@@ -206,6 +221,22 @@ public sealed partial class UndoController
         // 后续 undo 时就可能出现 pop 不到队列、选择界面叠层和选项重掷。
         if (string.Equals(pausedChoiceState.SourceActionCodecId, "action:choose-a-card", StringComparison.Ordinal))
             return false;
+
+        // from-hand 的弃牌类选择，优先回到官方 play snapshot 再 replay 到 choice 点。
+        // 这样可以复用 Survivor 这类 still-live 的官方收尾路径，避免直接对 choice snapshot
+        // 做 full-state restore 时命中手牌 holder/PlayCardAction 中间态。
+        if (string.Equals(pausedChoiceState.SourceActionCodecId, "action:from-hand", StringComparison.Ordinal))
+        {
+            UndoChoiceSpec? choiceSpec = pausedChoiceState.ChoiceSpec;
+            if (choiceSpec != null
+                && choiceSpec.SourcePileType == PileType.Hand
+                && IsDiscardSelection(choiceSpec.SelectionPrefs))
+            {
+                return false;
+            }
+
+            return false;
+        }
 
         // simple-grid 类选牌即使能 replay 回到 choice 点，也会先经历一轮 full-state
         // 还原，体感上会闪黑。对这类选择优先走直接 reopen + 分支提交。
@@ -264,9 +295,17 @@ public sealed partial class UndoController
                 return;
             }
 
+            if (ShouldPreferCustomChoiceBeforeCached(session)
+                && await TryCommitCustomChoiceBranchAsync(session, selectedKey))
+            {
+                WriteInteractionLog("branch_commit_after_reselect", $"choice={selectedKey} label={session.AnchorSnapshot.ActionLabel} replayEvents={session.AnchorSnapshot.ReplayEventCount} source=custom");
+                return;
+            }
+
             if (session.CachedBranches.TryGetValue(selectedKey, out UndoSnapshot? cachedBranchSnapshot))
             {
-                if (await TryApplySynthesizedChoiceBranchAsync(session, cachedBranchSnapshot, selectedKey, vfxRequest: null))
+                SyntheticChoiceVfxRequest? cachedVfxRequest = CaptureSyntheticChoiceVfxRequest(session, cachedBranchSnapshot, selectedKey);
+                if (await TryApplySynthesizedChoiceBranchAsync(session, cachedBranchSnapshot, selectedKey, cachedVfxRequest))
                     WriteInteractionLog("branch_commit_after_reselect", $"choice={selectedKey} label={session.AnchorSnapshot.ActionLabel} replayEvents={session.AnchorSnapshot.ReplayEventCount} source=cached");
                 return;
             }
@@ -287,7 +326,8 @@ public sealed partial class UndoController
                 return;
             }
 
-            if (await TryApplySynthesizedChoiceBranchAsync(session, synthesizedBranch!, selectedKey, vfxRequest: null))
+            SyntheticChoiceVfxRequest? synthesizedVfxRequest = CaptureSyntheticChoiceVfxRequest(session, synthesizedBranch!, selectedKey);
+            if (await TryApplySynthesizedChoiceBranchAsync(session, synthesizedBranch!, selectedKey, synthesizedVfxRequest))
                 WriteInteractionLog("branch_commit_after_reselect", $"choice={selectedKey} label={session.AnchorSnapshot.ActionLabel} replayEvents={session.AnchorSnapshot.ReplayEventCount} source=synthesized");
         }
         catch (TaskCanceledException)
@@ -366,6 +406,18 @@ public sealed partial class UndoController
         if (!CombatManager.Instance.IsInProgress)
             return false;
 
+        if (await TryExecuteHandDiscardChoiceAsync(session, selectedKey))
+        {
+            await FinalizeCustomChoiceBranchAsync(session, selectedKey, stabilizeQueues: false);
+            return true;
+        }
+
+        if (await TryExecuteDecisionsDecisionsChoiceAsync(session, selectedKey))
+        {
+            await FinalizeCustomChoiceBranchAsync(session, selectedKey);
+            return true;
+        }
+
         if (await TryExecuteEntropyChoiceAsync(session, selectedKey))
         {
             await FinalizeCustomChoiceBranchAsync(session, selectedKey);
@@ -375,9 +427,31 @@ public sealed partial class UndoController
         return false;
     }
 
-    private async Task FinalizeCustomChoiceBranchAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey)
+    // 手牌弃牌类选择在重选时必须优先回到官方案例路径，
+    // 否则 cached/synthesized branch 会跳过真实 discard side effect，
+    // 导致 Sly、AfterCardDiscarded 等效果在切换目标后漂移。
+    private static bool ShouldPreferCustomChoiceBeforeCached(UndoSyntheticChoiceSession session)
     {
-        await StabilizeAfterCustomChoiceExecutionAsync(session);
+        UndoChoiceSpec choiceSpec = session.ChoiceSpec;
+        return (choiceSpec.Kind == UndoChoiceKind.HandSelection
+                && choiceSpec.SourcePileType == PileType.Hand
+                && IsDiscardSelection(choiceSpec.SelectionPrefs))
+            || IsSourceChoice(choiceSpec, "MegaCrit.Sts2.Core.Models.Cards.DecisionsDecisions");
+    }
+
+    private async Task FinalizeCustomChoiceBranchAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey, bool stabilizeQueues = true)
+    {
+        if (stabilizeQueues)
+        {
+            await StabilizeAfterCustomChoiceExecutionAsync(session);
+        }
+        else
+        {
+            // 生存者这类“官方 discard + Sly 自动打出”已经在 live 状态里完整执行，
+            // 这里只等飞牌/打出动画收尾，避免过早 reset 队列把官方 VFX 截断。
+            await WaitForTransientCardFlyVfxToSettleAsync();
+            await WaitOneFrameAsync();
+        }
 
         UndoSnapshot branchSnapshot = new(
             CaptureCurrentCombatFullState(),
@@ -394,7 +468,18 @@ public sealed partial class UndoController
         _futureSnapshots.Clear();
         RewriteReplayChoiceBranch(session.AnchorSnapshot, branchSnapshot);
         _combatReplay!.ActiveEventCount = branchSnapshot.ReplayEventCount;
+        TruncateReplayChecksumsFrom(branchSnapshot.CombatState.NextChecksumId);
         DisableReplayChecksumComparison(branchSnapshot.CombatState.NextChecksumId);
+
+        // 手牌弃牌类 custom choice 会直接复用当前 live 模型状态，而不会经过一次完整的 full-state UI 重建。
+        // 如果这里不主动把 UI 对齐到最新模型，屏幕中央的当前打牌节点、左侧预览和旧 selected-holder
+        // 可能继续残留到下一次 undo，随后在清理时把已经回收到池里的 NCard 再 free 一次。
+        if (ShouldRefreshCombatUiAfterCustomChoice(session))
+        {
+            CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+            if (combatState != null)
+                await RefreshCombatUiAsync(combatState);
+        }
 
         EnsurePlayerChoiceUndoAnchor(
             session.AnchorSnapshot,
@@ -403,6 +488,46 @@ public sealed partial class UndoController
             anchorCombatStateOverride: WithChoiceBranchStates(session.AnchorSnapshot.CombatState, CaptureSavedChoiceBranchStates(session)));
         NotifyStateChanged();
         await WaitOneFrameAsync();
+    }
+
+    private static bool ShouldRefreshCombatUiAfterCustomChoice(UndoSyntheticChoiceSession session)
+    {
+        UndoChoiceSpec choiceSpec = session.ChoiceSpec;
+        return (choiceSpec.Kind == UndoChoiceKind.HandSelection
+                && choiceSpec.SourcePileType == PileType.Hand
+                && IsDiscardSelection(choiceSpec.SelectionPrefs))
+            || IsSourceChoice(choiceSpec, "MegaCrit.Sts2.Core.Models.Cards.DecisionsDecisions");
+    }
+
+    private async Task WaitForTransientCardFlyVfxToSettleAsync(int maxFrames = 60)
+    {
+        for (int frame = 0; frame < maxFrames; frame++)
+        {
+            if (!HasTransientCardFlyVfx(NCombatRoom.Instance?.CombatVfxContainer)
+                && !HasTransientCardFlyVfx(NRun.Instance?.GlobalUi?.TopBar?.TrailContainer))
+            {
+                break;
+            }
+
+            await WaitOneFrameAsync();
+        }
+    }
+
+    private static bool HasTransientCardFlyVfx(Node? root)
+    {
+        if (root == null || !GodotObject.IsInstanceValid(root))
+            return false;
+
+        foreach (Node child in root.GetChildren().Cast<Node>())
+        {
+            if (child is NCardFlyVfx or NCard or NCardTrailVfx)
+                return true;
+
+            if (HasTransientCardFlyVfx(child))
+                return true;
+        }
+
+        return false;
     }
 
     private async Task StabilizeAfterCustomChoiceExecutionAsync(UndoSyntheticChoiceSession session)
@@ -430,11 +555,24 @@ public sealed partial class UndoController
         return string.Equals(choiceSpec.SourceModelTypeName, sourceType.FullName, StringComparison.Ordinal);
     }
 
+    private static bool IsSourceChoice(UndoChoiceSpec choiceSpec, string sourceTypeName)
+    {
+        return string.Equals(choiceSpec.SourceModelTypeName, sourceTypeName, StringComparison.Ordinal);
+    }
+
     private static void DisableReplayChecksumComparison(uint nextChecksumId)
     {
         ChecksumTracker checksumTracker = RunManager.Instance.ChecksumTracker;
         checksumTracker.LoadReplayChecksums([], nextChecksumId);
         SetPrivateFieldValue(checksumTracker, "_replayChecksums", null);
+    }
+
+    private void TruncateReplayChecksumsFrom(uint nextChecksumId)
+    {
+        if (_combatReplay == null)
+            return;
+
+        _combatReplay.ChecksumData.RemoveAll(checksum => checksum.checksumData.id >= nextChecksumId);
     }
 
     private List<ReplayChecksumData> GetReplayChecksumsFrom(uint nextChecksumId)
@@ -444,6 +582,97 @@ public sealed partial class UndoController
 
         return [.. _combatReplay.ChecksumData
             .Where(checksum => checksum.checksumData.id >= nextChecksumId)];
+    }
+
+    private async Task<bool> TryExecuteHandDiscardChoiceAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey)
+    {
+        UndoChoiceSpec choiceSpec = session.ChoiceSpec;
+        if (choiceSpec.Kind != UndoChoiceKind.HandSelection
+            || choiceSpec.SourcePileType != PileType.Hand
+            || selectedKey.OptionIndexes.Count == 0
+            || !IsDiscardSelection(choiceSpec.SelectionPrefs))
+        {
+            return false;
+        }
+
+        DisableReplayChecksumComparison(session.AnchorSnapshot.CombatState.NextChecksumId);
+
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        Player? player = combatState == null ? null : LocalContext.GetMe(combatState);
+        if (player == null)
+            return false;
+
+        IReadOnlyList<CardModel> handCards = PileType.Hand.GetPile(player).Cards;
+        List<CardModel> selectedCards = [];
+        foreach (int optionIndex in selectedKey.OptionIndexes)
+        {
+            if (optionIndex < 0 || optionIndex >= choiceSpec.SourcePileOptionIndexes.Count)
+                return false;
+
+            int handIndex = choiceSpec.SourcePileOptionIndexes[optionIndex];
+            if (handIndex < 0 || handIndex >= handCards.Count)
+                return false;
+
+            selectedCards.Add(handCards[handIndex]);
+        }
+
+        // 这类锚点已经处在“前置效果执行完，只差官方 discard 收尾”的位置；
+        // 直接走 CardCmd.Discard 可以补回 AfterCardDiscarded、Sly 自动打出等副作用。
+        BlockingPlayerChoiceContext choiceContext = new();
+        await CardCmd.Discard(choiceContext, selectedCards);
+        if (string.Equals(choiceSpec.SourceModelTypeName, "MegaCrit.Sts2.Core.Models.Cards.Survivor", StringComparison.Ordinal))
+            await FinalizeDetachedPlayedCardAsync(player, choiceContext);
+        return true;
+    }
+
+    private static async Task FinalizeDetachedPlayedCardAsync(Player player, PlayerChoiceContext choiceContext)
+    {
+        CardModel? playedCard = PileType.Play.GetPile(player).Cards.LastOrDefault();
+        if (playedCard == null)
+            return;
+
+        playedCard.InvokeExecutionFinished();
+        await playedCard.MoveToResultPileWithoutPlaying(choiceContext);
+        await CombatManager.Instance.CheckForEmptyHand(choiceContext, player);
+    }
+
+    private async Task<bool> TryExecuteDecisionsDecisionsChoiceAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey)
+    {
+        UndoChoiceSpec choiceSpec = session.ChoiceSpec;
+        if (!IsSourceChoice(choiceSpec, "MegaCrit.Sts2.Core.Models.Cards.DecisionsDecisions")
+            || choiceSpec.Kind != UndoChoiceKind.HandSelection
+            || choiceSpec.SourcePileType != PileType.Hand
+            || selectedKey.OptionIndexes.Count != 1)
+        {
+            return false;
+        }
+
+        DisableReplayChecksumComparison(session.AnchorSnapshot.CombatState.NextChecksumId);
+
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        Player? player = combatState == null ? null : LocalContext.GetMe(combatState);
+        if (player == null)
+            return false;
+
+        int optionIndex = selectedKey.OptionIndexes[0];
+        if (optionIndex < 0 || optionIndex >= choiceSpec.SourcePileOptionIndexes.Count)
+            return false;
+
+        IReadOnlyList<CardModel> handCards = PileType.Hand.GetPile(player).Cards;
+        int handIndex = choiceSpec.SourcePileOptionIndexes[optionIndex];
+        if (handIndex < 0 || handIndex >= handCards.Count)
+            return false;
+
+        CardModel selectedCard = handCards[handIndex];
+        BlockingPlayerChoiceContext choiceContext = new();
+
+        // 这张牌的选择结果不会写进独立的 runtime 字段，而是直接把选中的技能连续自动打出 3 次。
+        // 因此 undo 重选时不能再走 hand-selection 的合成分支，而要把官方 AutoPlay 链真正执行一遍。
+        for (int i = 0; i < 3; i++)
+            await CardCmd.AutoPlay(choiceContext, selectedCard, null, AutoPlayType.Default, false, false);
+
+        await FinalizeDetachedPlayedCardAsync(player, choiceContext);
+        return true;
     }
 
     private async Task<bool> TryExecuteEntropyChoiceAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey)
@@ -518,6 +747,12 @@ public sealed partial class UndoController
             await CardPileCmd.Add(selectedCard, PileType.Hand, CardPilePosition.Bottom, null, false);
 
         return true;
+    }
+
+    private static bool IsDiscardSelection(CardSelectorPrefs prefs)
+    {
+        return string.Equals(prefs.Prompt.LocTable, "card_selection", StringComparison.Ordinal)
+            && string.Equals(prefs.Prompt.LocEntryKey, "TO_DISCARD", StringComparison.Ordinal);
     }
 
     private void RememberSavedChoiceBranches(UndoSyntheticChoiceSession session, IReadOnlyList<UndoChoiceBranchState> branchStates)

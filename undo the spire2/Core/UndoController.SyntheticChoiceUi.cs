@@ -62,9 +62,81 @@ public sealed partial class UndoController
         UndoChoiceResultKey selectedKey)
     {
         SyntheticChoiceVfxRequest request = new();
+        TryCaptureDiscardChoiceVfx(session, synthesizedBranch, selectedKey, request);
         TryCaptureExhaustChoiceVfx(session, synthesizedBranch, selectedKey, request);
         TryCaptureTransformChoiceVfx(session, synthesizedBranch, selectedKey, request);
         return request.HasEffects ? request : null;
+    }
+
+    private bool TryCaptureDiscardChoiceVfx(
+        UndoSyntheticChoiceSession session,
+        UndoSnapshot synthesizedBranch,
+        UndoChoiceResultKey selectedKey,
+        SyntheticChoiceVfxRequest request)
+    {
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        Player? me = combatState == null ? null : LocalContext.GetMe(combatState);
+        NPlayerHand? hand = NCombatRoom.Instance?.Ui?.Hand;
+        UndoChoiceSpec choiceSpec = session.ChoiceSpec;
+        if (me == null
+            || hand == null
+            || choiceSpec.Kind != UndoChoiceKind.HandSelection
+            || choiceSpec.SourcePileType != PileType.Hand
+            || selectedKey.OptionIndexes.Count == 0)
+        {
+            return false;
+        }
+
+        if (!TryGetComparablePlayerStates(
+                session.AnchorSnapshot.CombatState.FullState,
+                synthesizedBranch.CombatState.FullState,
+                out _,
+                out NetFullCombatState.PlayerState anchorPlayerState,
+                out NetFullCombatState.PlayerState branchPlayerState))
+        {
+            return false;
+        }
+
+        int anchorHandPileIndex = FindPileIndex(anchorPlayerState.piles, PileType.Hand);
+        int branchHandPileIndex = FindPileIndex(branchPlayerState.piles, PileType.Hand);
+        int anchorDiscardPileIndex = FindPileIndex(anchorPlayerState.piles, PileType.Discard);
+        int branchDiscardPileIndex = FindPileIndex(branchPlayerState.piles, PileType.Discard);
+        if (anchorHandPileIndex < 0
+            || branchHandPileIndex < 0
+            || anchorDiscardPileIndex < 0
+            || branchDiscardPileIndex < 0)
+        {
+            return false;
+        }
+
+        int selectedCount = selectedKey.OptionIndexes.Count;
+        NetFullCombatState.CombatPileState anchorHandPileState = anchorPlayerState.piles[anchorHandPileIndex];
+        NetFullCombatState.CombatPileState branchHandPileState = branchPlayerState.piles[branchHandPileIndex];
+        NetFullCombatState.CombatPileState anchorDiscardPileState = anchorPlayerState.piles[anchorDiscardPileIndex];
+        NetFullCombatState.CombatPileState branchDiscardPileState = branchPlayerState.piles[branchDiscardPileIndex];
+        if (anchorHandPileState.cards.Count - branchHandPileState.cards.Count != selectedCount
+            || branchDiscardPileState.cards.Count - anchorDiscardPileState.cards.Count < selectedCount)
+        {
+            return false;
+        }
+
+        IReadOnlyList<CardModel> liveHandCards = PileType.Hand.GetPile(me).Cards;
+        foreach (int optionIndex in selectedKey.OptionIndexes)
+        {
+            if (optionIndex < 0 || optionIndex >= choiceSpec.SourcePileOptionIndexes.Count)
+                return false;
+
+            int handIndex = choiceSpec.SourcePileOptionIndexes[optionIndex];
+            if (handIndex < 0 || handIndex >= liveHandCards.Count)
+                return false;
+
+            CardModel liveCard = liveHandCards[handIndex];
+            NCardHolder? holder = hand.GetCardHolder(liveCard);
+            Vector2 globalPosition = holder?.CardNode?.GlobalPosition ?? holder?.GlobalPosition ?? hand.GlobalPosition;
+            request.DiscardCards.Add(new SyntheticDiscardVfxCard(liveCard.ToSerializable(), globalPosition));
+        }
+
+        return request.DiscardCards.Count > 0;
     }
 
     private bool TryCaptureExhaustChoiceVfx(
@@ -214,6 +286,27 @@ public sealed partial class UndoController
             NCombatRoom? combatRoom = NCombatRoom.Instance;
             if (me == null || combatRoom == null)
                 return null;
+
+            for (int i = 0; i < request.DiscardCards.Count; i++)
+            {
+                SyntheticDiscardVfxCard discardCard = request.DiscardCards[i];
+                CardModel card = CardModel.FromSerializable(ClonePacketSerializable(discardCard.Card));
+                if (card.Owner == null)
+                    card.Owner = me;
+
+                NCard cardNode = CreateCardNode(card, PileType.Hand);
+                combatRoom.Ui.AddChildSafely(cardNode);
+                cardNode.GlobalPosition = discardCard.GlobalPosition;
+                cardNode.ZIndex = 100;
+                cardNode.RotationDegrees = (i % 2 == 0 ? -3f : 3f);
+
+                Node vfxContainer = combatRoom.CombatVfxContainer;
+                cardNode.Reparent(vfxContainer, true);
+                Vector2 targetPosition = PileType.Discard.GetTargetPosition(cardNode);
+                NCardFlyVfx? flyVfx = NCardFlyVfx.Create(cardNode, targetPosition, true, me.Character.TrailPath);
+                if (flyVfx != null)
+                    vfxContainer.AddChildSafely(flyVfx);
+            }
 
             for (int i = 0; i < request.ExhaustCards.Count; i++)
             {

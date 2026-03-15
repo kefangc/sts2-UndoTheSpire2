@@ -22,6 +22,7 @@ using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Monsters;
 using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Models.Orbs;
 using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
@@ -154,12 +155,18 @@ public sealed partial class UndoController
                 SlotName = string.IsNullOrWhiteSpace(creature.SlotName) ? null : creature.SlotName,
                 CurrentStateId = currentStateId,
                 NextMoveId = monster.NextMove?.Id,
-                IsHovering = false,
+                IsHovering = monster is ThievingHopper thievingHopper && thievingHopper.IsHovering,
                 SpawnedThisTurn = monster.SpawnedThisTurn,
                 PerformedFirstMove = performedFirstMove,
                 NextMovePerformedAtLeastOnce = nextMovePerformedAtLeastOnce,
                 TransientNextMoveFollowUpId = transientNextMoveFollowUpId,
                 SpecialNodeStateKey = specialNodeStateKey,
+                StarterMoveIndex = monster is TwoTailedRat twoTailedRat ? twoTailedRat.StarterMoveIndex : null,
+                TurnsUntilSummonable = monster is TwoTailedRat
+                    && FindField(monster.GetType(), "_turnsUntilSummonable")?.GetValue(monster) is int turnsUntilSummonable
+                    ? turnsUntilSummonable
+                    : null,
+                CallForBackupCount = monster is TwoTailedRat twoTailedRatWithBackup ? twoTailedRatWithBackup.CallForBackupCount : null,
                 StateLogIds = [.. moveStateMachine.StateLog.Select(static state => state.Id)]
             });
         }

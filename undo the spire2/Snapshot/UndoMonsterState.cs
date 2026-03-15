@@ -27,5 +27,11 @@ internal sealed class UndoMonsterState
 
     public string? SpecialNodeStateKey { get; init; }
 
+    public int? StarterMoveIndex { get; init; }
+
+    public int? TurnsUntilSummonable { get; init; }
+
+    public int? CallForBackupCount { get; init; }
+
     public IReadOnlyList<string> StateLogIds { get; init; } = [];
 }

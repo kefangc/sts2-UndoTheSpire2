@@ -1621,15 +1621,42 @@ public sealed partial class UndoController
                 InvokePrivateMethod(hand, "AfterCardsSelected", [null]);
                 await WaitOneFrameAsync();
                 await WaitOneFrameAsync();
-                RestoreSelectedHandCardsToHand(hand);
-                ResetSelectedHandCardContainerState(hand);
                 ResetPlayerHandUi(hand);
                 _pendingHandChoiceSource = null;
+            }
+
+            if (ShouldForceResetHandUiForRestore(hand))
+            {
+                ResetPlayerHandUi(hand);
+                await WaitOneFrameAsync();
+                await WaitOneFrameAsync();
             }
         }
 
         if (removedOverlay)
             await WaitOneFrameAsync();
+    }
+
+    private static bool ShouldForceResetHandUiForRestore(NPlayerHand hand)
+    {
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        Player? me = combatState == null ? null : LocalContext.GetMe(combatState);
+        int expectedHandCount = me == null ? -1 : PileType.Hand.GetPile(me).Cards.Count;
+        int holderCount = hand.CardHolderContainer.GetChildCount();
+        int selectedHolderCount = (GetPrivateFieldValue<NSelectedHandCardContainer>(hand, "_selectedHandCardContainer")
+            ?? hand.GetNodeOrNull<NSelectedHandCardContainer>("%SelectedHandCardContainer"))
+            ?.Holders.Count
+            ?? 0;
+        bool hasCurrentCardPlay = GetPrivateFieldValue<Node>(hand, "_currentCardPlay") is Node currentCardPlay
+            && GodotObject.IsInstanceValid(currentCardPlay);
+
+        if (holderCount > 10)
+            return true;
+
+        if (expectedHandCount >= 0 && holderCount > expectedHandCount + 1)
+            return true;
+
+        return selectedHolderCount > 0 || hasCurrentCardPlay;
     }
 
     private static void RemoveChoiceOverlaySafely(IOverlayScreen choiceScreen)
@@ -1638,7 +1665,7 @@ public sealed partial class UndoController
         Node? choiceNode = choiceScreen as Node;
         if (overlayStack == null)
         {
-            choiceNode?.QueueFreeSafelyNoPool();
+            QueueFreeNodeSafelyNoPoolOnce(choiceNode);
             return;
         }
 
@@ -1654,7 +1681,7 @@ public sealed partial class UndoController
 
             Node? parent = choiceNode?.GetParent();
             parent?.RemoveChildSafely(choiceNode);
-            choiceNode?.QueueFreeSafelyNoPool();
+            QueueFreeNodeSafelyNoPoolOnce(choiceNode);
             InvokePrivateMethod(overlayStack, "HideBackstop");
             ActiveScreenContext.Instance.Update();
             overlayStack.EmitSignal(NOverlayStack.SignalName.Changed);
@@ -1858,14 +1885,18 @@ public sealed partial class UndoController
 
     private sealed class SyntheticChoiceVfxRequest
     {
+        public List<SyntheticDiscardVfxCard> DiscardCards { get; } = [];
+
         public List<SyntheticExhaustVfxCard> ExhaustCards { get; } = [];
 
         public PileType? TransformPileType { get; set; }
 
         public List<SyntheticTransformVfxCard> TransformCards { get; } = [];
 
-        public bool HasEffects => ExhaustCards.Count > 0 || TransformCards.Count > 0;
+        public bool HasEffects => DiscardCards.Count > 0 || ExhaustCards.Count > 0 || TransformCards.Count > 0;
     }
+
+    private sealed record SyntheticDiscardVfxCard(SerializableCard Card, Vector2 GlobalPosition);
 
     private sealed record SyntheticExhaustVfxCard(SerializableCard Card, Vector2 GlobalPosition);
 

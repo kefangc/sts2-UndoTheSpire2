@@ -59,6 +59,7 @@ public sealed partial class UndoController
 {
     private static async Task RefreshCombatUiAsync(CombatState combatState)
     {
+        RunState? runState = RunManager.Instance.DebugOnlyGetState();
         foreach (Player player in combatState.Players)
             player.PlayerCombatState?.RecalculateCardValues();
         UndoRuntimeStateCodecRegistry.RefreshPowerDisplays(combatState);
@@ -103,6 +104,9 @@ public sealed partial class UndoController
             SnapEnemyCreatureNodesToSlots(combatState);
             UndoSpecialCreatureVisualNormalizer.Refresh(combatState, combatRoom);
         }
+
+        if (runState != null)
+            RebuildPotionContainer(runState);
 
         NotifyCombatStateChangedMethod?.Invoke(CombatManager.Instance.StateTracker, ["UndoRefreshCombatUiAsync"]);
     }
@@ -285,8 +289,55 @@ public sealed partial class UndoController
         foreach (CardModel card in PileType.Hand.GetPile(me).Cards)
             ui.Hand.Add(CreateCardNode(card, PileType.Hand), -1);
         SnapHandHolders(ui.Hand);
-        foreach (CardModel card in PileType.Play.GetPile(me).Cards)
-            ui.AddToPlayContainer(CreateCardNode(card, PileType.Play));
+        SyncPlayContainerCards(ui, me);
+    }
+
+    // choice undo 时，屏幕中央“本次打出的牌”和左侧眼睛预览都依赖 PlayContainer。
+    // 如果每次 restore 都直接清掉再用普通 NCard 重建，很容易丢掉官方的显示状态，
+    // 并把卡留在左上角默认位置。这里优先复用已在场上的节点，只有不匹配时才重建。
+    private static void SyncPlayContainerCards(NCombatUi ui, Player player)
+    {
+        List<CardModel> playCards = PileType.Play.GetPile(player).Cards.ToList();
+        List<NCard> existingCards = ui.PlayContainer.GetChildren().OfType<NCard>().ToList();
+        bool canReuseExistingNodes = existingCards.Count == playCards.Count;
+        if (canReuseExistingNodes)
+        {
+            for (int i = 0; i < playCards.Count; i++)
+            {
+                if (!ReferenceEquals(existingCards[i].Model, playCards[i]))
+                {
+                    canReuseExistingNodes = false;
+                    break;
+                }
+            }
+        }
+
+        if (!canReuseExistingNodes)
+        {
+            ClearNodeChildren(ui.PlayContainer);
+            foreach (CardModel card in playCards)
+            {
+                NCard cardNode = CreateCardNode(card, PileType.Play);
+                ui.AddToPlayContainer(cardNode);
+                NormalizePlayContainerCard(cardNode);
+            }
+            return;
+        }
+
+        foreach (NCard cardNode in existingCards)
+            NormalizePlayContainerCard(cardNode);
+    }
+
+    private static void NormalizePlayContainerCard(NCard cardNode)
+    {
+        InvokePrivateMethod(cardNode, "Reload");
+        cardNode.UpdateVisuals(PileType.Play, CardPreviewMode.Normal);
+        cardNode.PlayPileTween?.Kill();
+        cardNode.PlayPileTween = null;
+        cardNode.Position = PileType.Play.GetTargetPosition(cardNode);
+        cardNode.Scale = Vector2.One * 0.8f;
+        cardNode.Visible = true;
+        cardNode.Modulate = Colors.White;
     }
 
     private static void RebuildCombatCreatureNodesIfNeeded(CombatState combatState)
@@ -337,7 +388,7 @@ public sealed partial class UndoController
         foreach (NCreature node in creatureNodes.Concat(removingNodes).Distinct())
         {
             node.GetParent()?.RemoveChild(node);
-            node.QueueFreeSafely();
+            QueueFreeNodeSafelyOnce(node);
         }
 
         GetPrivateFieldValue<System.Collections.IList>(combatRoom, "_creatureNodes")?.Clear();
@@ -397,12 +448,12 @@ public sealed partial class UndoController
         ClearTween(hand, "_animOutTween");
         ClearTween(hand, "_animEnableTween");
         ClearTween(hand, "_selectedCardScaleTween");
-        RestoreSelectedHandCardsToHand(hand);
+        ClearSelectedHandCardsUi(hand);
         Node? currentCardPlay = GetPrivateFieldValue<Node>(hand, "_currentCardPlay");
         if (currentCardPlay != null && GodotObject.IsInstanceValid(currentCardPlay))
         {
             currentCardPlay.GetParent()?.RemoveChild(currentCardPlay);
-            currentCardPlay.QueueFree();
+            QueueFreeNodeSafelyOnce(currentCardPlay);
         }
 
         GetPrivateFieldValue<System.Collections.IDictionary>(hand, "_holdersAwaitingQueue")?.Clear();
@@ -652,23 +703,37 @@ public sealed partial class UndoController
         foreach (Node child in root.GetChildren().Cast<Node>().ToList())
         {
             RemoveCardFlyVfxNodes(child);
+            if (child is NCardTrailVfx orphanTrailVfx)
+            {
+                orphanTrailVfx.GetParent()?.RemoveChild(orphanTrailVfx);
+                QueueFreeNodeSafelyOnce(orphanTrailVfx);
+                continue;
+            }
+
+            if (child is NCard orphanCardNode)
+            {
+                orphanCardNode.GetParent()?.RemoveChild(orphanCardNode);
+                QueueFreeNodeSafelyOnce(orphanCardNode);
+                continue;
+            }
+
             if (child is not NCardFlyVfx flyVfx)
                 continue;
 
             if (GetPrivateFieldValue<Node>(flyVfx, "_vfx") is { } trailVfx && GodotObject.IsInstanceValid(trailVfx))
             {
                 trailVfx.GetParent()?.RemoveChild(trailVfx);
-                trailVfx.QueueFreeSafely();
+                QueueFreeNodeSafelyOnce(trailVfx);
             }
 
             if (GetPrivateFieldValue<NCard>(flyVfx, "_card") is { } cardNode && GodotObject.IsInstanceValid(cardNode))
             {
                 cardNode.GetParent()?.RemoveChild(cardNode);
-                cardNode.QueueFreeSafely();
+                QueueFreeNodeSafelyOnce(cardNode);
             }
 
             flyVfx.GetParent()?.RemoveChild(flyVfx);
-            flyVfx.QueueFreeSafely();
+            QueueFreeNodeSafelyOnce(flyVfx);
         }
     }
 
@@ -695,7 +760,10 @@ public sealed partial class UndoController
 
         _pendingHandChoiceSource = null;
     }
-    private static void RestoreSelectedHandCardsToHand(NPlayerHand hand)
+    // restore/撤销清理旧选牌 UI 时，不要把已选牌临时加回手牌。
+    // hand.Add(...) 会立刻触发官方 RefreshLayout，若此时手牌 holder 还没清空，
+    // 就会出现日志里的 "Hand size 12 is greater than 11"。
+    private static void ClearSelectedHandCardsUi(NPlayerHand hand)
     {
         NSelectedHandCardContainer? selectedContainer = GetPrivateFieldValue<NSelectedHandCardContainer>(hand, "_selectedHandCardContainer")
             ?? hand.GetNodeOrNull<NSelectedHandCardContainer>("%SelectedHandCardContainer");
@@ -704,21 +772,8 @@ public sealed partial class UndoController
 
         foreach (NSelectedHandCardHolder selectedHolder in selectedContainer.Holders.ToList())
         {
-            NCard? cardNode = selectedHolder.CardNode;
             selectedHolder.GetParent()?.RemoveChild(selectedHolder);
-            selectedHolder.QueueFreeSafely();
-            if (cardNode == null || !GodotObject.IsInstanceValid(cardNode))
-                continue;
-
-            try
-            {
-                hand.Add(cardNode, -1);
-            }
-            catch
-            {
-                cardNode.GetParent()?.RemoveChild(cardNode);
-                cardNode.QueueFreeSafely();
-            }
+            QueueFreeNodeSafelyOnce(selectedHolder);
         }
     }
 

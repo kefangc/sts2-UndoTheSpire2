@@ -250,11 +250,29 @@ internal static class UndoActionCodecRegistry
             if (player == null || hand == null || state.ChoiceSpec == null)
                 return null;
 
-            Task<IEnumerable<CardModel>> selectionTask = TryAwaitExistingHandSelection()
-                ?? hand.SelectCards(state.ChoiceSpec.SelectionPrefs, state.ChoiceSpec.BuildHandFilter(player), null);
+            Task<IEnumerable<CardModel>> selectionTask = ShouldUseDetachedHandSelection(state.ChoiceSpec)
+                ? StartDetachedHandSelection(hand, player, state.ChoiceSpec)
+                : TryAwaitExistingHandSelection()
+                    ?? hand.SelectCards(state.ChoiceSpec.SelectionPrefs, state.ChoiceSpec.BuildHandFilter(player), null);
             IEnumerable<CardModel> selected = await selectionTask;
             return MapAndSyncHandSelection(runState, state, player, selected);
         }
+    }
+
+    private static bool ShouldUseDetachedHandSelection(UndoChoiceSpec choiceSpec)
+    {
+        return choiceSpec.SourcePileType == PileType.Hand
+            && string.Equals(choiceSpec.SelectionPrefs.Prompt.LocTable, "card_selection", StringComparison.Ordinal)
+            && string.Equals(choiceSpec.SelectionPrefs.Prompt.LocEntryKey, "TO_DISCARD", StringComparison.Ordinal);
+    }
+
+    private static Task<IEnumerable<CardModel>> StartDetachedHandSelection(NPlayerHand hand, Player player, UndoChoiceSpec choiceSpec)
+    {
+        if (hand.IsInCardSelection)
+            UndoReflectionUtil.FindMethod(hand.GetType(), "AfterCardsSelected")?.Invoke(hand, [null]);
+
+        UndoReflectionUtil.FindField(hand.GetType(), "_selectionCompletionSource")?.SetValue(hand, null);
+        return hand.SelectCards(choiceSpec.SelectionPrefs, choiceSpec.BuildHandFilter(player), null);
     }
 
     private sealed class ChooseACardPausedChoiceCodec : IUndoActionCodec<PausedChoiceState>
