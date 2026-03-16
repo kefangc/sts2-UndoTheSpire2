@@ -65,6 +65,13 @@ internal sealed class UndoPairIntRuntimeComplexState : UndoComplexRuntimeState
     public int SecondValue { get; init; }
 }
 
+internal sealed class UndoPairDecimalRuntimeComplexState : UndoComplexRuntimeState
+{
+    public decimal FirstValue { get; init; }
+
+    public decimal SecondValue { get; init; }
+}
+
 internal sealed class UndoSovereignBladeRuntimeComplexState : UndoComplexRuntimeState
 {
     public decimal CurrentDamage { get; init; }
@@ -220,7 +227,7 @@ internal static class UndoRuntimeStateCodecRegistry
     private static readonly IReadOnlyList<IUndoCardRuntimeCodec> CardCodecs =
     [
         new UpMySleeveCardCodec(),
-        new ClawCardCodec(),
+        new DamageGrowthCardCodec(),
         new SovereignBladeCardCodec()
     ];
 
@@ -369,37 +376,55 @@ internal static class UndoRuntimeStateCodecRegistry
             UndoReflectionUtil.TrySetFieldValue(card, "_timesPlayedThisCombat", state.Value);
         }
     }
-    private sealed class ClawCardCodec : UndoCardRuntimeCodec<UndoPairIntRuntimeComplexState>
+    private sealed class DamageGrowthCardCodec : UndoCardRuntimeCodec<UndoPairDecimalRuntimeComplexState>
     {
-        public override string CodecId => "card:Claw.damageGrowth";
+        public override string CodecId => "card:DamageGrowth.baseAndAccumulator";
 
         public override bool CanHandle(CardModel card)
         {
-            return card is Claw;
+            return TryGetAccumulatorFieldName(card) != null;
         }
 
-        public override UndoPairIntRuntimeComplexState? Capture(CardModel card, UndoRuntimeCaptureContext context)
+        public override UndoPairDecimalRuntimeComplexState? Capture(CardModel card, UndoRuntimeCaptureContext context)
         {
-            if (card is not Claw claw)
+            string? accumulatorFieldName = TryGetAccumulatorFieldName(card);
+            if (accumulatorFieldName == null || !card.DynamicVars.ContainsKey("Damage"))
                 return null;
 
-            decimal currentDamage = claw.DynamicVars.Damage.BaseValue;
-            decimal extraDamage = UndoReflectionUtil.FindField(claw.GetType(), "_extraDamageFromClawPlays")?.GetValue(claw) is decimal value ? value : 0m;
-            return new UndoPairIntRuntimeComplexState
+            decimal currentDamage = card.DynamicVars.Damage.BaseValue;
+            decimal accumulatedDamage = UndoReflectionUtil.FindField(card.GetType(), accumulatorFieldName)?.GetValue(card) is decimal value ? value : 0m;
+            return new UndoPairDecimalRuntimeComplexState
             {
                 CodecId = CodecId,
-                FirstValue = (int)extraDamage,
-                SecondValue = (int)currentDamage
+                FirstValue = accumulatedDamage,
+                SecondValue = currentDamage
             };
         }
 
-        public override void Restore(CardModel card, UndoPairIntRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        public override void Restore(CardModel card, UndoPairDecimalRuntimeComplexState state, UndoRuntimeRestoreContext context)
         {
-            if (card is not Claw claw)
+            string? accumulatorFieldName = TryGetAccumulatorFieldName(card);
+            if (accumulatorFieldName == null || !card.DynamicVars.ContainsKey("Damage"))
                 return;
 
-            UndoReflectionUtil.TrySetFieldValue(claw, "_extraDamageFromClawPlays", (decimal)state.FirstValue);
-            claw.DynamicVars.Damage.BaseValue = state.SecondValue;
+            UndoReflectionUtil.TrySetFieldValue(card, accumulatorFieldName, state.FirstValue);
+            card.DynamicVars.Damage.BaseValue = state.SecondValue;
+        }
+
+        // Official source currently implements combat-persistent self damage growth
+        // for these cards by mutating DynamicVars.Damage.BaseValue and storing a
+        // private accumulator that AfterDowngraded re-applies.
+        private static string? TryGetAccumulatorFieldName(CardModel card)
+        {
+            return card switch
+            {
+                Claw => "_extraDamageFromClawPlays",
+                Rampage => "_extraDamageFromPlays",
+                Thrash => "_extraDamage",
+                KinglyPunch => "_extraDamage",
+                Maul => "_extraDamageFromMaulPlays",
+                _ => null
+            };
         }
     }
 
