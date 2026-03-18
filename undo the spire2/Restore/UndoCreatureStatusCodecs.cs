@@ -8,8 +8,8 @@ using MegaCrit.Sts2.Core.Models.Monsters;
 
 namespace UndoTheSpire2;
 
-// Creature status codecs persist monster runtime booleans that drive sleep,
-// stun, hover, and awake logic outside topology and move-state metadata.
+// Creature status codecs persist monster runtime fields that drive branching,
+// form progression, and visuals outside topology and move-state metadata.
 internal interface IUndoCreatureStatusCodec
 {
     string CodecId { get; }
@@ -181,9 +181,25 @@ internal static class UndoCreatureStatusCodecRegistry
         new ThievingHopperHoveringCodec(),
         new OwlMagistrateFlyingCodec(),
         new QueenHasAmalgamDiedCodec(),
+        new CrossbowRubyRaiderReloadedCodec(),
+        new FabricatorCanFabricateCodec(),
+        new FrogKnightHasBeetleChargedCodec(),
+        new FuzzyWurmCrawlerPuffedCodec(),
+        new GasBombHasExplodedCodec(),
+        new KinPriestSpeechUsedCodec(),
+        new MechaKnightWoundUpCodec(),
+        new OvicopterCanLayCodec(),
+        new SnappingJaxfruitChargedCodec(),
+        new TheInsatiableHasLiquifiedCodec(),
+        new TheObscuraHasSummonedCodec(),
         new TestSubjectExtraMultiClawCountCodec(),
+        new TestSubjectRespawnsCodec(),
+        new TwoTailedRatTurnsUntilSummonableCodec(),
+        new TwoTailedRatCallForBackupCountCodec(),
         new WaterfallGiantCurrentPressureGunDamageCodec(),
-        new WaterfallGiantSteamEruptionDamageCodec()
+        new WaterfallGiantSteamEruptionDamageCodec(),
+        new WaterfallGiantAboutToBlowCodec(),
+        new WaterfallGiantPressureBuildupIdxCodec()
     ];
 
     public static HashSet<string> GetImplementedCodecIds()
@@ -352,11 +368,109 @@ internal static class UndoCreatureStatusCodecRegistry
         protected override string PropertyName => "HasAmalgamDied";
     }
 
+    private sealed class CrossbowRubyRaiderReloadedCodec : UndoCreatureStatusBoolCodec<CrossbowRubyRaider>
+    {
+        public override string CodecId => "status:CrossbowRubyRaider.IsCrossbowReloaded";
+
+        protected override string PropertyName => "IsCrossbowReloaded";
+    }
+
+    private sealed class FabricatorCanFabricateCodec : UndoCreatureStatusBoolCodec<Fabricator>
+    {
+        public override string CodecId => "status:Fabricator.CanFabricate";
+
+        protected override string PropertyName => "CanFabricate";
+    }
+
+    private sealed class FrogKnightHasBeetleChargedCodec : UndoCreatureStatusBoolCodec<FrogKnight>
+    {
+        public override string CodecId => "status:FrogKnight.HasBeetleCharged";
+
+        protected override string PropertyName => "HasBeetleCharged";
+    }
+
+    private sealed class FuzzyWurmCrawlerPuffedCodec : UndoCreatureStatusBoolCodec<FuzzyWurmCrawler>
+    {
+        public override string CodecId => "status:FuzzyWurmCrawler.IsPuffed";
+
+        protected override string PropertyName => "IsPuffed";
+    }
+
+    private sealed class GasBombHasExplodedCodec : UndoCreatureStatusBoolCodec<GasBomb>
+    {
+        public override string CodecId => "status:GasBomb.HasExploded";
+
+        protected override string PropertyName => "HasExploded";
+    }
+
+    private sealed class KinPriestSpeechUsedCodec : UndoCreatureStatusBoolCodec<KinPriest>
+    {
+        public override string CodecId => "status:KinPriest.SpeechUsed";
+
+        protected override string PropertyName => "SpeechUsed";
+    }
+
+    private sealed class MechaKnightWoundUpCodec : UndoCreatureStatusBoolCodec<MechaKnight>
+    {
+        public override string CodecId => "status:MechaKnight.IsWoundUp";
+
+        protected override string PropertyName => "IsWoundUp";
+    }
+
+    private sealed class OvicopterCanLayCodec : UndoCreatureStatusBoolCodec<Ovicopter>
+    {
+        public override string CodecId => "status:Ovicopter.CanLay";
+
+        protected override string PropertyName => "CanLay";
+    }
+
+    private sealed class SnappingJaxfruitChargedCodec : UndoCreatureStatusBoolCodec<SnappingJaxfruit>
+    {
+        public override string CodecId => "status:SnappingJaxfruit.IsCharged";
+
+        protected override string PropertyName => "IsCharged";
+    }
+
+    private sealed class TheInsatiableHasLiquifiedCodec : UndoCreatureStatusBoolCodec<TheInsatiable>
+    {
+        public override string CodecId => "status:TheInsatiable.HasLiquified";
+
+        protected override string PropertyName => "HasLiquified";
+    }
+
+    private sealed class TheObscuraHasSummonedCodec : UndoCreatureStatusBoolCodec<TheObscura>
+    {
+        public override string CodecId => "status:TheObscura.HasSummoned";
+
+        protected override string PropertyName => "HasSummoned";
+    }
+
     private sealed class TestSubjectExtraMultiClawCountCodec : UndoCreatureStatusIntCodec<TestSubject>
     {
         public override string CodecId => "status:TestSubject.ExtraMultiClawCount";
 
         protected override string PropertyName => "ExtraMultiClawCount";
+    }
+
+    private sealed class TestSubjectRespawnsCodec : UndoCreatureStatusIntCodec<TestSubject>
+    {
+        public override string CodecId => "status:TestSubject.Respawns";
+
+        protected override string PropertyName => "Respawns";
+    }
+
+    private sealed class TwoTailedRatTurnsUntilSummonableCodec : UndoCreatureStatusIntCodec<TwoTailedRat>
+    {
+        public override string CodecId => "status:TwoTailedRat.TurnsUntilSummonable";
+
+        protected override string PropertyName => "TurnsUntilSummonable";
+    }
+
+    private sealed class TwoTailedRatCallForBackupCountCodec : UndoCreatureStatusIntCodec<TwoTailedRat>
+    {
+        public override string CodecId => "status:TwoTailedRat.CallForBackupCount";
+
+        protected override string PropertyName => "CallForBackupCount";
     }
 
     private sealed class WaterfallGiantCurrentPressureGunDamageCodec : UndoCreatureStatusIntCodec<WaterfallGiant>
@@ -371,5 +485,19 @@ internal static class UndoCreatureStatusCodecRegistry
         public override string CodecId => "status:WaterfallGiant.SteamEruptionDamage";
 
         protected override string PropertyName => "SteamEruptionDamage";
+    }
+
+    private sealed class WaterfallGiantAboutToBlowCodec : UndoCreatureStatusBoolCodec<WaterfallGiant>
+    {
+        public override string CodecId => "status:WaterfallGiant.IsAboutToBlow";
+
+        protected override string PropertyName => "IsAboutToBlow";
+    }
+
+    private sealed class WaterfallGiantPressureBuildupIdxCodec : UndoCreatureStatusIntCodec<WaterfallGiant>
+    {
+        public override string CodecId => "status:WaterfallGiant.PressureBuildupIdx";
+
+        protected override string PropertyName => "PressureBuildupIdx";
     }
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
@@ -47,5 +48,18 @@ internal static class UndoMonsterMoveStateUtil
     public static bool HasVisibleNextIntent(Creature creature)
     {
         return creature.Monster?.NextMove?.Intents.Count > 0;
+    }
+
+    public static bool IsPendingRevive(Creature creature)
+    {
+        return creature.Powers.Any(IsPendingRevivePower);
+    }
+
+    private static bool IsPendingRevivePower(object power)
+    {
+        if (UndoReflectionUtil.FindProperty(power.GetType(), "IsReviving")?.GetValue(power) is bool isReviving && isReviving)
+            return true;
+
+        return UndoReflectionUtil.FindProperty(power.GetType(), "IsHalfDead")?.GetValue(power) is bool isHalfDead && isHalfDead;
     }
 }

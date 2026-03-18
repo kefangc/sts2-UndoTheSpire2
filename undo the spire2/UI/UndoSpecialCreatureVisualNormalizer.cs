@@ -50,6 +50,17 @@ internal static class UndoSpecialCreatureVisualNormalizer
             RefreshCreatureStatusVisual(creature, combatRoom);
     }
 
+    public static void RefreshSingle(Creature creature, NCombatRoom combatRoom, bool normalizeAnimation = true)
+    {
+        if (ShouldWarmCreatureVisualScene(creature))
+            WarmCreatureVisualScene(creature);
+
+        if (creature.Monster is PaelsLegionMonster)
+            RefreshPaelsLegionVisual(creature, combatRoom);
+
+        RefreshCreatureStatusVisual(creature, combatRoom, normalizeAnimation);
+    }
+
     public static void DetachStateDisplayTracking(NCombatRoom combatRoom)
     {
         foreach (NCreature creatureNode in combatRoom.CreatureNodes)
@@ -77,7 +88,7 @@ internal static class UndoSpecialCreatureVisualNormalizer
         creatureNode.SetAnimationTrigger(expectation.Trigger);
     }
 
-    private static void RefreshCreatureStatusVisual(Creature creature, NCombatRoom combatRoom)
+    private static void RefreshCreatureStatusVisual(Creature creature, NCombatRoom combatRoom, bool normalizeAnimation = true)
     {
         MonsterModel? monster = creature.Monster;
         if (monster == null)
@@ -88,9 +99,20 @@ internal static class UndoSpecialCreatureVisualNormalizer
             return;
 
         NormalizeCreatureNodeVisibility(creature, creatureNode);
+        if (!normalizeAnimation)
+            return;
 
         switch (monster)
         {
+            case TestSubject testSubject:
+                NormalizeTestSubject(testSubject, creatureNode);
+                break;
+            case DecimillipedeSegment decimillipedeSegment:
+                NormalizeDecimillipedeSegment(decimillipedeSegment, creatureNode);
+                break;
+            case Parafright parafright:
+                NormalizeParafright(parafright, creatureNode);
+                break;
             case SlumberingBeetle slumberingBeetle:
                 NormalizeSleepingBeetle(slumberingBeetle, creatureNode);
                 break;
@@ -388,6 +410,59 @@ internal static class UndoSpecialCreatureVisualNormalizer
         }
     }
 
+    private static void NormalizeTestSubject(TestSubject monster, NCreature creatureNode)
+    {
+        int respawns = ReadIntMonsterProperty(monster, "Respawns");
+        int phaseIndex = Math.Clamp(respawns + 1, 1, 3);
+        creatureNode.SetDefaultScaleTo(1f + respawns * 0.1f, 0f);
+        if (UndoMonsterMoveStateUtil.IsPendingRevive(monster.Creature))
+        {
+            creatureNode.SetAnimationTrigger("DeadTrigger");
+            EnsureBaseAnimation(creatureNode, $"knocked_out_loop{phaseIndex}", loop: true);
+            return;
+        }
+
+        if (monster.Creature.IsDead)
+        {
+            creatureNode.SetAnimationTrigger("Dead");
+            EnsureBaseAnimation(creatureNode, "die", loop: false);
+            return;
+        }
+
+        EnsureBaseAnimation(creatureNode, $"idle_loop{phaseIndex}", loop: true);
+    }
+
+    private static void NormalizeDecimillipedeSegment(DecimillipedeSegment monster, NCreature creatureNode)
+    {
+        if (UndoMonsterMoveStateUtil.IsPendingRevive(monster.Creature) || monster.Creature.IsDead)
+        {
+            creatureNode.SetAnimationTrigger("Dead");
+            EnsureBaseAnimation(creatureNode, "dead_loop", loop: true);
+            return;
+        }
+
+        EnsureIdleState(creatureNode);
+    }
+
+    private static void NormalizeParafright(Parafright monster, NCreature creatureNode)
+    {
+        if (UndoMonsterMoveStateUtil.IsPendingRevive(monster.Creature))
+        {
+            creatureNode.SetAnimationTrigger("StunTrigger");
+            EnsureBaseAnimation(creatureNode, "stunned_loop", loop: true);
+            return;
+        }
+
+        if (monster.Creature.IsDead)
+        {
+            creatureNode.SetAnimationTrigger("Dead");
+            EnsureBaseAnimation(creatureNode, "die", loop: false);
+            return;
+        }
+
+        EnsureIdleState(creatureNode);
+    }
+
     private static void NormalizeGremlinAwakeState(NCreature creatureNode, bool isAwake)
     {
         if (isAwake)
@@ -438,9 +513,9 @@ internal static class UndoSpecialCreatureVisualNormalizer
         }
 
         bool canShowMonsterUi = nodeVisible && creature.Monster?.IsHealthBarVisible == true;
-        bool interactable = canShowMonsterUi && !creature.IsDead;
-        bool showStateDisplay = canShowMonsterUi
-            && (!creature.IsDead || UndoMonsterMoveStateUtil.HasVisibleNextIntent(creature));
+        bool isPendingRevive = UndoMonsterMoveStateUtil.IsPendingRevive(creature);
+        bool interactable = canShowMonsterUi && creature.IsAlive && !isPendingRevive;
+        bool showStateDisplay = canShowMonsterUi && creature.IsAlive && !isPendingRevive;
         creatureNode.ToggleIsInteractable(interactable);
         NormalizeStateDisplayVisibility(creatureNode, showStateDisplay);
     }
@@ -586,6 +661,15 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
         string fieldName = '_' + char.ToLowerInvariant(propertyName[0]) + propertyName[1..];
         return UndoReflectionUtil.FindField(monster.GetType(), fieldName)?.GetValue(monster) is bool fieldValue && fieldValue;
+    }
+
+    private static int ReadIntMonsterProperty(object monster, string propertyName)
+    {
+        if (UndoReflectionUtil.FindProperty(monster.GetType(), propertyName)?.GetValue(monster) is int propertyValue)
+            return propertyValue;
+
+        string fieldName = '_' + char.ToLowerInvariant(propertyName[0]) + propertyName[1..];
+        return UndoReflectionUtil.FindField(monster.GetType(), fieldName)?.GetValue(monster) as int? ?? 0;
     }
 
     private static bool TryGetPaelsLegionExpectation(Creature creature, out PaelsLegionVisualExpectation? expectation, out PaelsLegionRelic? relic)

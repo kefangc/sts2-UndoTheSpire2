@@ -242,6 +242,13 @@ internal static class UndoRuntimeStateCodecRegistry
         new NightmareSelectedCardPowerCodec(),
         new DampenPowerCodec(),
         new DoorRevivalHalfDeadPowerCodec(),
+        new RevivePendingPowerCodec(),
+        new PrivateBoolFieldPowerCodec<BeaconOfHopePower>("power:BeaconOfHopePower.hasAlreadyBeenGivenBlock", "_hasAlreadyBeenGivenBlock"),
+        new PrivateBoolFieldPowerCodec<NemesisPower>("power:NemesisPower.shouldApplyIntangible", "_shouldApplyIntangible"),
+        new PrivateBoolFieldPowerCodec<RitualPower>("power:RitualPower.wasJustAppliedByEnemy", "_wasJustAppliedByEnemy"),
+        new PrivateBoolFieldPowerCodec<TemporaryDexterityPower>("power:TemporaryDexterityPower.shouldIgnoreNextInstance", "_shouldIgnoreNextInstance"),
+        new PrivateBoolFieldPowerCodec<TemporaryFocusPower>("power:TemporaryFocusPower.shouldIgnoreNextInstance", "_shouldIgnoreNextInstance"),
+        new PrivateBoolFieldPowerCodec<TemporaryStrengthPower>("power:TemporaryStrengthPower.shouldIgnoreNextInstance", "_shouldIgnoreNextInstance"),
         new ChainsOfBindingBoundCardPlayedPowerCodec()
     ];
 
@@ -389,6 +396,46 @@ internal static class UndoRuntimeStateCodecRegistry
             return UndoReflectionUtil.TrySetPropertyValue(power, "CardsPlayedThisTurn", value);
 
         return UndoReflectionUtil.TrySetFieldValue(power, "_cardsPlayedThisTurn", value);
+    }
+
+    private static bool TryGetPowerBoolField(PowerModel power, string fieldName, bool preferInternalData, out bool value)
+    {
+        object? internalData = GetPowerInternalData(power);
+        if (preferInternalData && internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), fieldName)?.GetValue(internalData) is bool internalBool)
+        {
+            value = internalBool;
+            return true;
+        }
+
+        if (UndoReflectionUtil.FindField(power.GetType(), fieldName)?.GetValue(power) is bool fieldBool)
+        {
+            value = fieldBool;
+            return true;
+        }
+
+        if (!preferInternalData && internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), fieldName)?.GetValue(internalData) is bool fallbackInternalBool)
+        {
+            value = fallbackInternalBool;
+            return true;
+        }
+
+        value = false;
+        return false;
+    }
+
+    private static bool TrySetPowerBoolField(PowerModel power, string fieldName, bool value, bool preferInternalData)
+    {
+        object? internalData = GetPowerInternalData(power);
+        if (preferInternalData && internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), fieldName) != null)
+            return UndoReflectionUtil.TrySetFieldValue(internalData, fieldName, value);
+
+        if (UndoReflectionUtil.FindField(power.GetType(), fieldName) != null)
+            return UndoReflectionUtil.TrySetFieldValue(power, fieldName, value);
+
+        if (!preferInternalData && internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), fieldName) != null)
+            return UndoReflectionUtil.TrySetFieldValue(internalData, fieldName, value);
+
+        return false;
     }
 
     private static bool IsCardsPlayedTurnCounterRelic(RelicModel relic)
@@ -862,6 +909,75 @@ internal static class UndoRuntimeStateCodecRegistry
                 return;
 
             UndoReflectionUtil.TrySetFieldValue(internalData, "isHalfDead", state.Value);
+        }
+    }
+
+    private sealed class RevivePendingPowerCodec : UndoPowerRuntimeCodec<UndoBoolRuntimeComplexState>
+    {
+        public override string CodecId => "power:RevivePending.isReviving";
+
+        public override bool CanHandle(PowerModel power)
+        {
+            object? internalData = GetPowerInternalData(power);
+            return internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), "isReviving") != null;
+        }
+
+        public override UndoBoolRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
+        {
+            if (!TryGetPowerBoolField(power, "isReviving", preferInternalData: true, out bool value))
+                return null;
+
+            return new UndoBoolRuntimeComplexState
+            {
+                CodecId = CodecId,
+                Value = value
+            };
+        }
+
+        public override void Restore(PowerModel power, UndoBoolRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            if (TrySetPowerBoolField(power, "isReviving", state.Value, preferInternalData: true))
+                InvokeDisplayAmountChanged(power);
+        }
+    }
+
+    private sealed class PrivateBoolFieldPowerCodec<TPower> : UndoPowerRuntimeCodec<UndoBoolRuntimeComplexState>
+        where TPower : PowerModel
+    {
+        private readonly string _codecId;
+        private readonly string _fieldName;
+        private readonly bool _preferInternalData;
+
+        public PrivateBoolFieldPowerCodec(string codecId, string fieldName, bool preferInternalData = false)
+        {
+            _codecId = codecId;
+            _fieldName = fieldName;
+            _preferInternalData = preferInternalData;
+        }
+
+        public override string CodecId => _codecId;
+
+        public override bool CanHandle(PowerModel power)
+        {
+            return power is TPower && TryGetPowerBoolField(power, _fieldName, _preferInternalData, out _);
+        }
+
+        public override UndoBoolRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
+        {
+            if (!TryGetPowerBoolField(power, _fieldName, _preferInternalData, out bool value))
+                return null;
+
+            return new UndoBoolRuntimeComplexState
+            {
+                CodecId = CodecId,
+                Value = value
+            };
+        }
+
+        public override void Restore(PowerModel power, UndoBoolRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            if (TrySetPowerBoolField(power, _fieldName, state.Value, _preferInternalData))
+                InvokeDisplayAmountChanged(power);
         }
     }
 

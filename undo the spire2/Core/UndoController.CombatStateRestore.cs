@@ -1340,11 +1340,9 @@ public sealed partial class UndoController
             }
         }
 
-        bool isReattaching = monster.Creature.GetPower<ReattachPower>() is ReattachPower reattachPower
-            && FindProperty(reattachPower.GetType(), "IsReviving")?.GetValue(reattachPower) is bool isReviving
-            && isReviving;
+        bool isPendingRevive = UndoMonsterMoveStateUtil.IsPendingRevive(monster.Creature);
 
-        if ((monster.Creature.IsDead || isReattaching)
+        if ((monster.Creature.IsDead || isPendingRevive)
             && FindProperty(monster.GetType(), "DeadState")?.GetValue(monster) is MoveState deadState)
         {
             if (UndoMonsterMoveStateUtil.ShouldKeepDeadState(moveStateMachine, state, deadState))
@@ -1373,7 +1371,7 @@ public sealed partial class UndoController
             SetPrivateFieldValue(moveState, "_performedAtLeastOnce", state.NextMovePerformedAtLeastOnce);
         }
 
-        if (monster.Creature.IsDead || isReattaching)
+        if (monster.Creature.IsDead || isPendingRevive)
             NCombatRoom.Instance?.SetCreatureIsInteractable(monster.Creature, false);
     }
 
