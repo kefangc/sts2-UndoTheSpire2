@@ -1,4 +1,6 @@
 // 文件说明：Mod 入口，负责注册补丁并初始化撤销控制器。
+using System;
+using System.Linq;
 using System.Reflection;
 using Godot;
 using HarmonyLib;
@@ -16,9 +18,31 @@ public partial class MainFile : Node
         UndoDebugLog.Initialize();
         UndoModSettings.Initialize();
         Harmony harmony = new(ModId);
-        harmony.PatchAll(Assembly.GetExecutingAssembly());
-        Logger.Info("UndoTheSpire2 patches applied.");
+        (int patchedClasses, int failedClasses) = PatchAllSafely(harmony, Assembly.GetExecutingAssembly());
+        Logger.Info($"UndoTheSpire2 patching finished. patchedClasses={patchedClasses}, failedClasses={failedClasses}");
         UndoDebugLog.Write($"MainFile initialized. Debug log path={UndoDebugLog.CurrentPath}");
+    }
+
+    private static (int patchedClasses, int failedClasses) PatchAllSafely(Harmony harmony, Assembly assembly)
+    {
+        int patchedClasses = 0;
+        int failedClasses = 0;
+        foreach (Type type in assembly.GetTypes().Where(static t => t.GetCustomAttributes(typeof(HarmonyPatch), false).Length > 0))
+        {
+            try
+            {
+                harmony.CreateClassProcessor(type).Patch();
+                patchedClasses++;
+            }
+            catch (Exception ex)
+            {
+                failedClasses++;
+                Logger.Error($"Failed to patch {type.FullName}: {ex}");
+                UndoDebugLog.Write($"Failed to patch {type.FullName}: {ex}");
+            }
+        }
+
+        return (patchedClasses, failedClasses);
     }
 }
 

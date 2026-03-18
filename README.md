@@ -94,7 +94,7 @@ UI 没有直接改原版场景，而是通过 patch 在战斗 UI 激活时动态
 - `ModLocalization.cs`：本地化加载
 
 资源与配置：
-- `mod_manifest.json`
+- `UndoTheSpire2.json`
 - `project.godot`
 - `export_presets.cfg`
 - `UndoTheSpire2/localization/*.json`
@@ -112,8 +112,9 @@ UI 没有直接改原版场景，而是通过 patch 在战斗 UI 激活时动态
 - 反编译后的 `sts2.dll` 作为 API 参考和编译引用
 
 当前项目的构建/发布行为：
-- `dotnet build` 会输出 DLL，并自动复制到游戏 `mods` 目录。
-- `dotnet publish` 后会调用 Godot headless 导出 `.pck`。
+- `dotnet build` 会输出 DLL，并自动复制 `UndoTheSpire2.dll` 和外置 manifest `UndoTheSpire2.json` 到游戏 `mods` 目录。
+- 当前版本按新版 mod 结构仅部署 `dll + json`，不再导出或依赖 `UndoTheSpire2.pck`。
+- 构建时如果 `mods` 目录里还留着旧的 `UndoTheSpire2.pck`，会一并删除，避免继续按旧结构加载。
 
 当前项目里默认使用的关键路径：
 - 游戏目录：`\SteamLibrary\steamapps\common\Slay the Spire 2`

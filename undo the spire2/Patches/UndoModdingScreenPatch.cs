@@ -5,12 +5,20 @@ using MegaCrit.Sts2.addons.mega_text;
 using MegaCrit.Sts2.Core.Modding;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Screens.ModdingScreen;
+using System.Reflection;
 
 namespace UndoTheSpire2;
 
 [HarmonyPatch(typeof(NModdingScreen), nameof(NModdingScreen.OnRowSelected))]
 internal static class UndoModdingScreenPatch
 {
+    private static readonly string[] ModIdentityCandidates =
+    [
+        MainFile.ModId,
+        $"{MainFile.ModId}.dll",
+        "Undo the Spire 2"
+    ];
+
     [HarmonyPostfix]
     private static void OnRowSelectedPostfix(NModdingScreen __instance, NModMenuRow row)
     {
@@ -19,7 +27,7 @@ internal static class UndoModdingScreenPatch
             return;
 
         UndoModSettingsPanel? existing = infoContainer.GetNodeOrNull<UndoModSettingsPanel>(nameof(UndoModSettingsPanel));
-        bool isOurMod = string.Equals(row.Mod?.pckName, MainFile.ModId, StringComparison.OrdinalIgnoreCase);
+        bool isOurMod = IsOurMod(row.Mod);
         if (!isOurMod)
         {
             existing?.QueueFree();
@@ -31,6 +39,56 @@ internal static class UndoModdingScreenPatch
             infoContainer.AddChild(existing);
 
         existing.Bind(infoContainer);
+    }
+
+    private static bool IsOurMod(Mod? mod)
+    {
+        if (mod == null)
+            return false;
+
+        foreach (string memberName in new[] { "id", "modId", "name", "dllName", "dllFilename" })
+        {
+            if (MatchesOurMod(ReadStringMember(mod, memberName)))
+                return true;
+        }
+
+        object? manifest = ReadMember(mod, "manifest") ?? ReadMember(mod, "modManifest");
+        if (manifest == null)
+            return false;
+
+        foreach (string memberName in new[] { "id", "name", "dllName", "dllFilename" })
+        {
+            if (MatchesOurMod(ReadStringMember(manifest, memberName)))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool MatchesOurMod(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        foreach (string candidate in ModIdentityCandidates)
+        {
+            if (string.Equals(value, candidate, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static string? ReadStringMember(object instance, string memberName)
+    {
+        return ReadMember(instance, memberName) as string;
+    }
+
+    private static object? ReadMember(object instance, string memberName)
+    {
+        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        Type type = instance.GetType();
+        return type.GetProperty(memberName, Flags)?.GetValue(instance) ?? type.GetField(memberName, Flags)?.GetValue(instance);
     }
 }
 
