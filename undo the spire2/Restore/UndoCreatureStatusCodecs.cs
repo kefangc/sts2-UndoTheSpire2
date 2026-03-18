@@ -180,7 +180,10 @@ internal static class UndoCreatureStatusCodecRegistry
         new KnowledgeDemonBurntCodec(),
         new ThievingHopperHoveringCodec(),
         new OwlMagistrateFlyingCodec(),
-        new QueenHasAmalgamDiedCodec()
+        new QueenHasAmalgamDiedCodec(),
+        new TestSubjectExtraMultiClawCountCodec(),
+        new WaterfallGiantCurrentPressureGunDamageCodec(),
+        new WaterfallGiantSteamEruptionDamageCodec()
     ];
 
     public static HashSet<string> GetImplementedCodecIds()
@@ -347,5 +350,26 @@ internal static class UndoCreatureStatusCodecRegistry
         public override string CodecId => "status:Queen.HasAmalgamDied";
 
         protected override string PropertyName => "HasAmalgamDied";
+    }
+
+    private sealed class TestSubjectExtraMultiClawCountCodec : UndoCreatureStatusIntCodec<TestSubject>
+    {
+        public override string CodecId => "status:TestSubject.ExtraMultiClawCount";
+
+        protected override string PropertyName => "ExtraMultiClawCount";
+    }
+
+    private sealed class WaterfallGiantCurrentPressureGunDamageCodec : UndoCreatureStatusIntCodec<WaterfallGiant>
+    {
+        public override string CodecId => "status:WaterfallGiant.CurrentPressureGunDamage";
+
+        protected override string PropertyName => "CurrentPressureGunDamage";
+    }
+
+    private sealed class WaterfallGiantSteamEruptionDamageCodec : UndoCreatureStatusIntCodec<WaterfallGiant>
+    {
+        public override string CodecId => "status:WaterfallGiant.SteamEruptionDamage";
+
+        protected override string PropertyName => "SteamEruptionDamage";
     }
 }

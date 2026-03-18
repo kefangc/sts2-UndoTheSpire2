@@ -460,10 +460,13 @@ internal static class UndoCreatureTopologyCodecRegistry
                 && isReviving)
             && UndoReflectionUtil.FindProperty(monster.GetType(), "DeadState")?.GetValue(monster) is MoveState deadState)
         {
-            monster.SetMoveImmediate(deadState, true);
-            moveStateMachine.ForceCurrentState(deadState);
-            UndoReflectionUtil.TrySetFieldValue(deadState, "_performedAtLeastOnce", state.NextMovePerformedAtLeastOnce);
-            return;
+            if (UndoMonsterMoveStateUtil.ShouldKeepDeadState(moveStateMachine, state, deadState))
+            {
+                monster.SetMoveImmediate(deadState, true);
+                moveStateMachine.ForceCurrentState(deadState);
+                UndoReflectionUtil.TrySetFieldValue(deadState, "_performedAtLeastOnce", state.NextMovePerformedAtLeastOnce);
+                return;
+            }
         }
 
         if (state.CurrentStateId != null && moveStateMachine.States.TryGetValue(state.CurrentStateId, out MonsterState? currentState))

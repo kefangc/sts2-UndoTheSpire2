@@ -437,9 +437,12 @@ internal static class UndoSpecialCreatureVisualNormalizer
             creatureNode.Body.Modulate = Colors.White;
         }
 
-        bool interactable = nodeVisible && creature.Monster?.IsHealthBarVisible == true && !creature.IsDead;
+        bool canShowMonsterUi = nodeVisible && creature.Monster?.IsHealthBarVisible == true;
+        bool interactable = canShowMonsterUi && !creature.IsDead;
+        bool showStateDisplay = canShowMonsterUi
+            && (!creature.IsDead || UndoMonsterMoveStateUtil.HasVisibleNextIntent(creature));
         creatureNode.ToggleIsInteractable(interactable);
-        NormalizeStateDisplayVisibility(creatureNode, interactable);
+        NormalizeStateDisplayVisibility(creatureNode, showStateDisplay);
     }
 
     private static bool ShouldShowCreatureNode(Creature creature)
@@ -459,13 +462,13 @@ internal static class UndoSpecialCreatureVisualNormalizer
         return !doormakerInCombat;
     }
 
-    private static void NormalizeStateDisplayVisibility(NCreature creatureNode, bool interactable)
+    private static void NormalizeStateDisplayVisibility(NCreature creatureNode, bool showStateDisplay)
     {
         object? stateDisplay = UndoReflectionUtil.FindField(creatureNode.GetType(), "_stateDisplay")?.GetValue(creatureNode);
         if (stateDisplay is not Control stateDisplayControl || !GodotObject.IsInstanceValid(stateDisplayControl))
             return;
 
-        bool visible = interactable && !NCombatUi.IsDebugHidingHpBar;
+        bool visible = showStateDisplay && !NCombatUi.IsDebugHidingHpBar;
         stateDisplayControl.Visible = visible;
         Color modulate = stateDisplayControl.Modulate;
         modulate.A = visible ? 1f : 0f;

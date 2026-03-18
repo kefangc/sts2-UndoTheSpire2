@@ -87,14 +87,10 @@ public sealed partial class UndoController
                 if (creatureNode == null)
                     continue;
 
-                bool isReattaching = creature.GetPower<ReattachPower>() is ReattachPower reattachPower
-                    && FindProperty(reattachPower.GetType(), "IsReviving")?.GetValue(reattachPower) is bool isReviving
-                    && isReviving;
-
-                if (creature.IsDead || isReattaching)
-                    ClearCreatureIntentUi(creatureNode);
-                else
+                if (UndoMonsterMoveStateUtil.HasVisibleNextIntent(creature))
                     await creatureNode.RefreshIntents();
+                else
+                    ClearCreatureIntentUi(creatureNode);
             }
 
             SnapEnemyCreatureNodesToSlots(combatState);

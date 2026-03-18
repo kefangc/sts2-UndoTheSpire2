@@ -261,9 +261,7 @@ internal static class UndoActionCodecRegistry
 
     private static bool ShouldUseDetachedHandSelection(UndoChoiceSpec choiceSpec)
     {
-        return choiceSpec.SourcePileType == PileType.Hand
-            && string.Equals(choiceSpec.SelectionPrefs.Prompt.LocTable, "card_selection", StringComparison.Ordinal)
-            && string.Equals(choiceSpec.SelectionPrefs.Prompt.LocEntryKey, "TO_DISCARD", StringComparison.Ordinal);
+        return choiceSpec.SourcePileType == PileType.Hand;
     }
 
     private static Task<IEnumerable<CardModel>> StartDetachedHandSelection(NPlayerHand hand, Player player, UndoChoiceSpec choiceSpec)
