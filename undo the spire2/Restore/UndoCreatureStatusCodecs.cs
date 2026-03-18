@@ -196,6 +196,7 @@ internal static class UndoCreatureStatusCodecRegistry
         new TestSubjectRespawnsCodec(),
         new TwoTailedRatTurnsUntilSummonableCodec(),
         new TwoTailedRatCallForBackupCountCodec(),
+        new CreatureShowsInfiniteHpCodec(),
         new WaterfallGiantCurrentPressureGunDamageCodec(),
         new WaterfallGiantSteamEruptionDamageCodec(),
         new WaterfallGiantAboutToBlowCodec(),
@@ -471,6 +472,41 @@ internal static class UndoCreatureStatusCodecRegistry
         public override string CodecId => "status:TwoTailedRat.CallForBackupCount";
 
         protected override string PropertyName => "CallForBackupCount";
+    }
+
+    private sealed class CreatureShowsInfiniteHpCodec : IUndoCreatureStatusCodec<UndoBoolCreatureStatusRuntimePayload>
+    {
+        public string CodecId => "status:Creature.ShowsInfiniteHp";
+
+        public bool CanHandle(MonsterModel monster)
+        {
+            return monster.Creature != null;
+        }
+
+        public UndoBoolCreatureStatusRuntimePayload? CaptureTyped(MonsterModel monster)
+        {
+            return new UndoBoolCreatureStatusRuntimePayload
+            {
+                CodecId = CodecId,
+                Value = monster.Creature.ShowsInfiniteHp
+            };
+        }
+
+        public bool RestoreTyped(MonsterModel monster, UndoBoolCreatureStatusRuntimePayload state)
+        {
+            monster.Creature.ShowsInfiniteHp = state.Value;
+            return true;
+        }
+
+        UndoCreatureStatusRuntimePayload? IUndoCreatureStatusCodec.Capture(MonsterModel monster)
+        {
+            return CaptureTyped(monster);
+        }
+
+        bool IUndoCreatureStatusCodec.Restore(MonsterModel monster, UndoCreatureStatusRuntimePayload state)
+        {
+            return state is UndoBoolCreatureStatusRuntimePayload typed && RestoreTyped(monster, typed);
+        }
     }
 
     private sealed class WaterfallGiantCurrentPressureGunDamageCodec : UndoCreatureStatusIntCodec<WaterfallGiant>

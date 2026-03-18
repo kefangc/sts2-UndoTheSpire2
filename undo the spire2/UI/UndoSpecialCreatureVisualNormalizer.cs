@@ -143,6 +143,9 @@ internal static class UndoSpecialCreatureVisualNormalizer
             case CeremonialBeast ceremonialBeast:
                 NormalizeCeremonialBeast(ceremonialBeast, creatureNode);
                 break;
+            case WaterfallGiant waterfallGiant:
+                NormalizeWaterfallGiant(waterfallGiant, creatureNode);
+                break;
         }
     }
 
@@ -495,6 +498,31 @@ internal static class UndoSpecialCreatureVisualNormalizer
         EnsureIdleState(creatureNode);
     }
 
+    private static void NormalizeWaterfallGiant(WaterfallGiant monster, NCreature creatureNode)
+    {
+        SyncWaterfallGiantBuildUpTrack(monster, creatureNode);
+        ReconcileWaterfallGiantVfx(monster, creatureNode);
+
+        bool aboutToBlow = ReadBoolMonsterProperty(monster, "IsAboutToBlow")
+            || monster.Creature.ShowsInfiniteHp
+            || string.Equals(monster.NextMove?.Id, "ABOUT_TO_BLOW_MOVE", StringComparison.Ordinal);
+
+        if (aboutToBlow)
+        {
+            EnsureBaseAnimation(creatureNode, "die_loop", loop: true);
+            return;
+        }
+
+        if (monster.Creature.IsDead)
+        {
+            creatureNode.SetAnimationTrigger("Dead");
+            EnsureBaseAnimation(creatureNode, "die_loop", loop: true);
+            return;
+        }
+
+        EnsureBaseAnimation(creatureNode, "idle_loop", loop: true);
+    }
+
     private static void NormalizeCreatureNodeVisibility(Creature creature, NCreature creatureNode)
     {
         bool nodeVisible = ShouldShowCreatureNode(creature);
@@ -550,6 +578,144 @@ internal static class UndoSpecialCreatureVisualNormalizer
         stateDisplayControl.Modulate = modulate;
         if (visible)
             TryInvokePrivateMethod(stateDisplay, "RefreshValues");
+
+        if (creatureNode.Entity is Creature creature && !creature.ShowsInfiniteHp)
+            HideInfinityHealthIndicator(stateDisplay);
+    }
+
+    private static void SyncWaterfallGiantBuildUpTrack(WaterfallGiant monster, NCreature creatureNode)
+    {
+        var animationState = creatureNode.Visuals?.SpineBody?.GetAnimationState();
+        if (animationState == null)
+            return;
+
+        int pressureBuildupIdx = ReadIntMonsterProperty(monster, "PressureBuildupIdx");
+        string? expectedTrack = pressureBuildupIdx <= 0
+            ? null
+            : $"_tracks/buildup{Math.Clamp((int)MathF.Floor(pressureBuildupIdx * 0.5f), 1, 3)}";
+        string? currentTrack = animationState.GetCurrent(1)?.GetAnimation()?.GetName();
+        if (string.Equals(currentTrack, expectedTrack, StringComparison.Ordinal))
+            return;
+
+        if (expectedTrack == null)
+        {
+            animationState.AddEmptyAnimation(1);
+            return;
+        }
+
+        animationState.SetAnimation(expectedTrack, true, 1);
+    }
+
+    private static void HideInfinityHealthIndicator(object stateDisplay)
+    {
+        object? healthBar = UndoReflectionUtil.FindField(stateDisplay.GetType(), "_healthBar")?.GetValue(stateDisplay);
+        if (healthBar == null)
+            return;
+
+        if (UndoReflectionUtil.FindField(healthBar.GetType(), "_infinityTex")?.GetValue(healthBar) is TextureRect infinityTex)
+            infinityTex.Visible = false;
+
+        if (UndoReflectionUtil.FindField(healthBar.GetType(), "_hpLabel")?.GetValue(healthBar) is Control hpLabel)
+            hpLabel.Visible = true;
+    }
+
+    private static void ReconcileWaterfallGiantVfx(WaterfallGiant monster, NCreature creatureNode)
+    {
+        Node? vfxNode = FindDescendantByTypeName(creatureNode.Visuals, "NWaterfallGiantVfx");
+        if (vfxNode == null)
+            return;
+
+        bool aboutToBlow = ReadBoolMonsterProperty(monster, "IsAboutToBlow")
+            || monster.Creature.ShowsInfiniteHp
+            || string.Equals(monster.NextMove?.Id, "ABOUT_TO_BLOW_MOVE", StringComparison.Ordinal);
+        int pressureBuildupIdx = ReadIntMonsterProperty(monster, "PressureBuildupIdx");
+        int buildupLevel = pressureBuildupIdx <= 0 ? 0 : Math.Clamp((int)MathF.Floor(pressureBuildupIdx * 0.5f), 1, 3);
+
+        SetWaterfallEmitter(vfxNode, "_mistParticles", emitting: true, visible: true);
+        SetWaterfallEmitter(vfxNode, "_dropletParticles", emitting: true, visible: true);
+        SetWaterfallEmitter(vfxNode, "_mouthParticles", emitting: true, visible: true);
+
+        bool leakActive = aboutToBlow || buildupLevel > 0;
+        bool steam1Active = aboutToBlow;
+        bool steam2Active = aboutToBlow;
+        bool steam34Active = aboutToBlow;
+        bool steam56Active = aboutToBlow;
+
+        SetWaterfallEmitter(vfxNode, "_steam1Particles", steam1Active, steam1Active);
+        SetWaterfallEmitter(vfxNode, "_steam2Particles", steam2Active, steam2Active);
+        SetWaterfallEmitter(vfxNode, "_steam3Particles", steam34Active, steam34Active);
+        SetWaterfallEmitter(vfxNode, "_steam4Particles", steam34Active, steam34Active);
+        SetWaterfallEmitter(vfxNode, "_steam5Particles", steam56Active, steam56Active);
+        SetWaterfallEmitter(vfxNode, "_steam6Particles", steam56Active, steam56Active);
+        SetWaterfallEmitter(vfxNode, "_steamLeakParticles1", leakActive, leakActive);
+        SetWaterfallEmitter(vfxNode, "_steamLeakParticles2", leakActive, leakActive);
+        SetWaterfallEmitter(vfxNode, "_steamLeakParticles3", leakActive, leakActive);
+        ApplyWaterfallLeakIntensity(vfxNode, buildupLevel);
+
+        UndoReflectionUtil.TrySetFieldValue(vfxNode, "_isDead", false);
+    }
+
+    private static void SetWaterfallEmitter(Node vfxNode, string fieldName, bool emitting, bool visible)
+    {
+        if (UndoReflectionUtil.FindField(vfxNode.GetType(), fieldName)?.GetValue(vfxNode) is not GpuParticles2D emitter)
+            return;
+
+        bool wasVisible = emitter.Visible;
+        bool wasEmitting = emitter.Emitting;
+        emitter.Visible = visible;
+        emitter.Emitting = emitting;
+        if (!visible)
+        {
+            emitter.Restart();
+            return;
+        }
+
+        if (emitting && (!wasVisible || !wasEmitting))
+            emitter.Restart();
+    }
+
+    private static void ApplyWaterfallLeakIntensity(Node vfxNode, int buildupLevel)
+    {
+        (int amount, float lifetime) = buildupLevel switch
+        {
+            1 => (8, 0.37f),
+            2 => (15, 0.45f),
+            3 => (20, 0.6f),
+            _ => (0, 0f)
+        };
+
+        foreach (string fieldName in new[] { "_steamLeakParticles1", "_steamLeakParticles2", "_steamLeakParticles3" })
+        {
+            if (UndoReflectionUtil.FindField(vfxNode.GetType(), fieldName)?.GetValue(vfxNode) is not GpuParticles2D emitter)
+                continue;
+
+            if (buildupLevel <= 0)
+            {
+                emitter.Amount = 0;
+                continue;
+            }
+
+            emitter.Amount = amount;
+            emitter.Lifetime = lifetime;
+        }
+    }
+
+    private static Node? FindDescendantByTypeName(Node? root, string typeName)
+    {
+        if (root == null)
+            return null;
+
+        foreach (Node child in root.GetChildren().OfType<Node>())
+        {
+            if (string.Equals(child.GetType().Name, typeName, StringComparison.Ordinal))
+                return child;
+
+            Node? nested = FindDescendantByTypeName(child, typeName);
+            if (nested != null)
+                return nested;
+        }
+
+        return null;
     }
 
     private static void ApplyBoundsContainer(NCreature creatureNode, string boundsContainerName)
@@ -564,8 +730,14 @@ internal static class UndoSpecialCreatureVisualNormalizer
     private static void EnsureIdleState(NCreature creatureNode)
     {
         if (TryInvokePrivateMethod(creatureNode, "ImmediatelySetIdle"))
-            return;
+        {
+            string? currentAnimation = creatureNode.SpineController.GetAnimationState().GetCurrent(0)?.GetAnimation()?.GetName();
+            if (string.Equals(currentAnimation, "idle_loop", StringComparison.Ordinal))
+                return;
+        }
 
+        if (string.Equals(creatureNode.SpineController.GetAnimationState().GetCurrent(0)?.GetAnimation()?.GetName(), "idle_loop", StringComparison.Ordinal))
+            return;
         EnsureBaseAnimation(creatureNode, "idle_loop", loop: true);
     }
 
