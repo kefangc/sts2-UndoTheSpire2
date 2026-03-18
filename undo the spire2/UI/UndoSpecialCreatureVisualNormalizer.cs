@@ -50,6 +50,17 @@ internal static class UndoSpecialCreatureVisualNormalizer
             RefreshCreatureStatusVisual(creature, combatRoom);
     }
 
+    public static void RefreshSingle(Creature creature, NCombatRoom combatRoom, bool normalizeAnimation = true)
+    {
+        if (ShouldWarmCreatureVisualScene(creature))
+            WarmCreatureVisualScene(creature);
+
+        if (creature.Monster is PaelsLegionMonster)
+            RefreshPaelsLegionVisual(creature, combatRoom);
+
+        RefreshCreatureStatusVisual(creature, combatRoom, normalizeAnimation);
+    }
+
     public static void DetachStateDisplayTracking(NCombatRoom combatRoom)
     {
         foreach (NCreature creatureNode in combatRoom.CreatureNodes)
@@ -77,7 +88,7 @@ internal static class UndoSpecialCreatureVisualNormalizer
         creatureNode.SetAnimationTrigger(expectation.Trigger);
     }
 
-    private static void RefreshCreatureStatusVisual(Creature creature, NCombatRoom combatRoom)
+    private static void RefreshCreatureStatusVisual(Creature creature, NCombatRoom combatRoom, bool normalizeAnimation = true)
     {
         MonsterModel? monster = creature.Monster;
         if (monster == null)
@@ -88,9 +99,20 @@ internal static class UndoSpecialCreatureVisualNormalizer
             return;
 
         NormalizeCreatureNodeVisibility(creature, creatureNode);
+        if (!normalizeAnimation)
+            return;
 
         switch (monster)
         {
+            case TestSubject testSubject:
+                NormalizeTestSubject(testSubject, creatureNode);
+                break;
+            case DecimillipedeSegment decimillipedeSegment:
+                NormalizeDecimillipedeSegment(decimillipedeSegment, creatureNode);
+                break;
+            case Parafright parafright:
+                NormalizeParafright(parafright, creatureNode);
+                break;
             case SlumberingBeetle slumberingBeetle:
                 NormalizeSleepingBeetle(slumberingBeetle, creatureNode);
                 break;
@@ -120,6 +142,9 @@ internal static class UndoSpecialCreatureVisualNormalizer
                 break;
             case CeremonialBeast ceremonialBeast:
                 NormalizeCeremonialBeast(ceremonialBeast, creatureNode);
+                break;
+            case WaterfallGiant waterfallGiant:
+                NormalizeWaterfallGiant(waterfallGiant, creatureNode);
                 break;
         }
     }
@@ -362,7 +387,7 @@ internal static class UndoSpecialCreatureVisualNormalizer
         if (spineBoneNode != null)
             spineBoneNode.Position = Vector2.Zero;
 
-        Marker2D? stolenCardPos = creatureNode.GetNodeOrNull<Marker2D>("%StolenCardPos");
+        Marker2D? stolenCardPos = creatureNode.Visuals?.GetNodeOrNull<Marker2D>("%StolenCardPos");
         bool isHoldingCard = monster.Creature.Powers.OfType<SwipePower>().Any(static power => power.StolenCard != null);
         if (!isHoldingCard && stolenCardPos != null)
             ClearNodeChildren(stolenCardPos);
@@ -386,6 +411,59 @@ internal static class UndoSpecialCreatureVisualNormalizer
             child.GetParent()?.RemoveChild(child);
             child.QueueFree();
         }
+    }
+
+    private static void NormalizeTestSubject(TestSubject monster, NCreature creatureNode)
+    {
+        int respawns = ReadIntMonsterProperty(monster, "Respawns");
+        int phaseIndex = Math.Clamp(respawns + 1, 1, 3);
+        creatureNode.SetDefaultScaleTo(1f + respawns * 0.1f, 0f);
+        if (UndoMonsterMoveStateUtil.IsPendingRevive(monster.Creature))
+        {
+            creatureNode.SetAnimationTrigger("DeadTrigger");
+            EnsureBaseAnimation(creatureNode, $"knocked_out_loop{phaseIndex}", loop: true);
+            return;
+        }
+
+        if (monster.Creature.IsDead)
+        {
+            creatureNode.SetAnimationTrigger("Dead");
+            EnsureBaseAnimation(creatureNode, "die", loop: false);
+            return;
+        }
+
+        EnsureBaseAnimation(creatureNode, $"idle_loop{phaseIndex}", loop: true);
+    }
+
+    private static void NormalizeDecimillipedeSegment(DecimillipedeSegment monster, NCreature creatureNode)
+    {
+        if (UndoMonsterMoveStateUtil.IsPendingRevive(monster.Creature) || monster.Creature.IsDead)
+        {
+            creatureNode.SetAnimationTrigger("Dead");
+            EnsureBaseAnimation(creatureNode, "dead_loop", loop: true);
+            return;
+        }
+
+        EnsureIdleState(creatureNode);
+    }
+
+    private static void NormalizeParafright(Parafright monster, NCreature creatureNode)
+    {
+        if (UndoMonsterMoveStateUtil.IsPendingRevive(monster.Creature))
+        {
+            creatureNode.SetAnimationTrigger("StunTrigger");
+            EnsureBaseAnimation(creatureNode, "stunned_loop", loop: true);
+            return;
+        }
+
+        if (monster.Creature.IsDead)
+        {
+            creatureNode.SetAnimationTrigger("Dead");
+            EnsureBaseAnimation(creatureNode, "die", loop: false);
+            return;
+        }
+
+        EnsureIdleState(creatureNode);
     }
 
     private static void NormalizeGremlinAwakeState(NCreature creatureNode, bool isAwake)
@@ -420,6 +498,31 @@ internal static class UndoSpecialCreatureVisualNormalizer
         EnsureIdleState(creatureNode);
     }
 
+    private static void NormalizeWaterfallGiant(WaterfallGiant monster, NCreature creatureNode)
+    {
+        SyncWaterfallGiantBuildUpTrack(monster, creatureNode);
+        ReconcileWaterfallGiantVfx(monster, creatureNode);
+
+        bool aboutToBlow = ReadBoolMonsterProperty(monster, "IsAboutToBlow")
+            || monster.Creature.ShowsInfiniteHp
+            || string.Equals(monster.NextMove?.Id, "ABOUT_TO_BLOW_MOVE", StringComparison.Ordinal);
+
+        if (aboutToBlow)
+        {
+            EnsureBaseAnimation(creatureNode, "die_loop", loop: true);
+            return;
+        }
+
+        if (monster.Creature.IsDead)
+        {
+            creatureNode.SetAnimationTrigger("Dead");
+            EnsureBaseAnimation(creatureNode, "die_loop", loop: true);
+            return;
+        }
+
+        EnsureBaseAnimation(creatureNode, "idle_loop", loop: true);
+    }
+
     private static void NormalizeCreatureNodeVisibility(Creature creature, NCreature creatureNode)
     {
         bool nodeVisible = ShouldShowCreatureNode(creature);
@@ -437,9 +540,12 @@ internal static class UndoSpecialCreatureVisualNormalizer
             creatureNode.Body.Modulate = Colors.White;
         }
 
-        bool interactable = nodeVisible && creature.Monster?.IsHealthBarVisible == true && !creature.IsDead;
+        bool canShowMonsterUi = nodeVisible && creature.Monster?.IsHealthBarVisible == true;
+        bool isPendingRevive = UndoMonsterMoveStateUtil.IsPendingRevive(creature);
+        bool interactable = canShowMonsterUi && creature.IsAlive && !isPendingRevive;
+        bool showStateDisplay = canShowMonsterUi && creature.IsAlive && !isPendingRevive;
         creatureNode.ToggleIsInteractable(interactable);
-        NormalizeStateDisplayVisibility(creatureNode, interactable);
+        NormalizeStateDisplayVisibility(creatureNode, showStateDisplay);
     }
 
     private static bool ShouldShowCreatureNode(Creature creature)
@@ -459,19 +565,157 @@ internal static class UndoSpecialCreatureVisualNormalizer
         return !doormakerInCombat;
     }
 
-    private static void NormalizeStateDisplayVisibility(NCreature creatureNode, bool interactable)
+    private static void NormalizeStateDisplayVisibility(NCreature creatureNode, bool showStateDisplay)
     {
         object? stateDisplay = UndoReflectionUtil.FindField(creatureNode.GetType(), "_stateDisplay")?.GetValue(creatureNode);
         if (stateDisplay is not Control stateDisplayControl || !GodotObject.IsInstanceValid(stateDisplayControl))
             return;
 
-        bool visible = interactable && !NCombatUi.IsDebugHidingHpBar;
+        bool visible = showStateDisplay && !NCombatUi.IsDebugHidingHpBar;
         stateDisplayControl.Visible = visible;
         Color modulate = stateDisplayControl.Modulate;
         modulate.A = visible ? 1f : 0f;
         stateDisplayControl.Modulate = modulate;
         if (visible)
             TryInvokePrivateMethod(stateDisplay, "RefreshValues");
+
+        if (creatureNode.Entity is Creature creature && !creature.ShowsInfiniteHp)
+            HideInfinityHealthIndicator(stateDisplay);
+    }
+
+    private static void SyncWaterfallGiantBuildUpTrack(WaterfallGiant monster, NCreature creatureNode)
+    {
+        var animationState = creatureNode.Visuals?.SpineBody?.GetAnimationState();
+        if (animationState == null)
+            return;
+
+        int pressureBuildupIdx = ReadIntMonsterProperty(monster, "PressureBuildupIdx");
+        string? expectedTrack = pressureBuildupIdx <= 0
+            ? null
+            : $"_tracks/buildup{Math.Clamp((int)MathF.Floor(pressureBuildupIdx * 0.5f), 1, 3)}";
+        string? currentTrack = animationState.GetCurrent(1)?.GetAnimation()?.GetName();
+        if (string.Equals(currentTrack, expectedTrack, StringComparison.Ordinal))
+            return;
+
+        if (expectedTrack == null)
+        {
+            animationState.AddEmptyAnimation(1);
+            return;
+        }
+
+        animationState.SetAnimation(expectedTrack, true, 1);
+    }
+
+    private static void HideInfinityHealthIndicator(object stateDisplay)
+    {
+        object? healthBar = UndoReflectionUtil.FindField(stateDisplay.GetType(), "_healthBar")?.GetValue(stateDisplay);
+        if (healthBar == null)
+            return;
+
+        if (UndoReflectionUtil.FindField(healthBar.GetType(), "_infinityTex")?.GetValue(healthBar) is TextureRect infinityTex)
+            infinityTex.Visible = false;
+
+        if (UndoReflectionUtil.FindField(healthBar.GetType(), "_hpLabel")?.GetValue(healthBar) is Control hpLabel)
+            hpLabel.Visible = true;
+    }
+
+    private static void ReconcileWaterfallGiantVfx(WaterfallGiant monster, NCreature creatureNode)
+    {
+        Node? vfxNode = FindDescendantByTypeName(creatureNode.Visuals, "NWaterfallGiantVfx");
+        if (vfxNode == null)
+            return;
+
+        bool aboutToBlow = ReadBoolMonsterProperty(monster, "IsAboutToBlow")
+            || monster.Creature.ShowsInfiniteHp
+            || string.Equals(monster.NextMove?.Id, "ABOUT_TO_BLOW_MOVE", StringComparison.Ordinal);
+        int pressureBuildupIdx = ReadIntMonsterProperty(monster, "PressureBuildupIdx");
+        int buildupLevel = pressureBuildupIdx <= 0 ? 0 : Math.Clamp((int)MathF.Floor(pressureBuildupIdx * 0.5f), 1, 3);
+
+        SetWaterfallEmitter(vfxNode, "_mistParticles", emitting: true, visible: true);
+        SetWaterfallEmitter(vfxNode, "_dropletParticles", emitting: true, visible: true);
+        SetWaterfallEmitter(vfxNode, "_mouthParticles", emitting: true, visible: true);
+
+        bool leakActive = aboutToBlow || buildupLevel > 0;
+        bool steam1Active = aboutToBlow;
+        bool steam2Active = aboutToBlow;
+        bool steam34Active = aboutToBlow;
+        bool steam56Active = aboutToBlow;
+
+        SetWaterfallEmitter(vfxNode, "_steam1Particles", steam1Active, steam1Active);
+        SetWaterfallEmitter(vfxNode, "_steam2Particles", steam2Active, steam2Active);
+        SetWaterfallEmitter(vfxNode, "_steam3Particles", steam34Active, steam34Active);
+        SetWaterfallEmitter(vfxNode, "_steam4Particles", steam34Active, steam34Active);
+        SetWaterfallEmitter(vfxNode, "_steam5Particles", steam56Active, steam56Active);
+        SetWaterfallEmitter(vfxNode, "_steam6Particles", steam56Active, steam56Active);
+        SetWaterfallEmitter(vfxNode, "_steamLeakParticles1", leakActive, leakActive);
+        SetWaterfallEmitter(vfxNode, "_steamLeakParticles2", leakActive, leakActive);
+        SetWaterfallEmitter(vfxNode, "_steamLeakParticles3", leakActive, leakActive);
+        ApplyWaterfallLeakIntensity(vfxNode, buildupLevel);
+
+        UndoReflectionUtil.TrySetFieldValue(vfxNode, "_isDead", false);
+    }
+
+    private static void SetWaterfallEmitter(Node vfxNode, string fieldName, bool emitting, bool visible)
+    {
+        if (UndoReflectionUtil.FindField(vfxNode.GetType(), fieldName)?.GetValue(vfxNode) is not GpuParticles2D emitter)
+            return;
+
+        bool wasVisible = emitter.Visible;
+        bool wasEmitting = emitter.Emitting;
+        emitter.Visible = visible;
+        emitter.Emitting = emitting;
+        if (!visible)
+        {
+            emitter.Restart();
+            return;
+        }
+
+        if (emitting && (!wasVisible || !wasEmitting))
+            emitter.Restart();
+    }
+
+    private static void ApplyWaterfallLeakIntensity(Node vfxNode, int buildupLevel)
+    {
+        (int amount, float lifetime) = buildupLevel switch
+        {
+            1 => (8, 0.37f),
+            2 => (15, 0.45f),
+            3 => (20, 0.6f),
+            _ => (0, 0f)
+        };
+
+        foreach (string fieldName in new[] { "_steamLeakParticles1", "_steamLeakParticles2", "_steamLeakParticles3" })
+        {
+            if (UndoReflectionUtil.FindField(vfxNode.GetType(), fieldName)?.GetValue(vfxNode) is not GpuParticles2D emitter)
+                continue;
+
+            if (buildupLevel <= 0)
+            {
+                emitter.Amount = 0;
+                continue;
+            }
+
+            emitter.Amount = amount;
+            emitter.Lifetime = lifetime;
+        }
+    }
+
+    private static Node? FindDescendantByTypeName(Node? root, string typeName)
+    {
+        if (root == null)
+            return null;
+
+        foreach (Node child in root.GetChildren().OfType<Node>())
+        {
+            if (string.Equals(child.GetType().Name, typeName, StringComparison.Ordinal))
+                return child;
+
+            Node? nested = FindDescendantByTypeName(child, typeName);
+            if (nested != null)
+                return nested;
+        }
+
+        return null;
     }
 
     private static void ApplyBoundsContainer(NCreature creatureNode, string boundsContainerName)
@@ -486,8 +730,14 @@ internal static class UndoSpecialCreatureVisualNormalizer
     private static void EnsureIdleState(NCreature creatureNode)
     {
         if (TryInvokePrivateMethod(creatureNode, "ImmediatelySetIdle"))
-            return;
+        {
+            string? currentAnimation = creatureNode.SpineController.GetAnimationState().GetCurrent(0)?.GetAnimation()?.GetName();
+            if (string.Equals(currentAnimation, "idle_loop", StringComparison.Ordinal))
+                return;
+        }
 
+        if (string.Equals(creatureNode.SpineController.GetAnimationState().GetCurrent(0)?.GetAnimation()?.GetName(), "idle_loop", StringComparison.Ordinal))
+            return;
         EnsureBaseAnimation(creatureNode, "idle_loop", loop: true);
     }
 
@@ -583,6 +833,15 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
         string fieldName = '_' + char.ToLowerInvariant(propertyName[0]) + propertyName[1..];
         return UndoReflectionUtil.FindField(monster.GetType(), fieldName)?.GetValue(monster) is bool fieldValue && fieldValue;
+    }
+
+    private static int ReadIntMonsterProperty(object monster, string propertyName)
+    {
+        if (UndoReflectionUtil.FindProperty(monster.GetType(), propertyName)?.GetValue(monster) is int propertyValue)
+            return propertyValue;
+
+        string fieldName = '_' + char.ToLowerInvariant(propertyName[0]) + propertyName[1..];
+        return UndoReflectionUtil.FindField(monster.GetType(), fieldName)?.GetValue(monster) as int? ?? 0;
     }
 
     private static bool TryGetPaelsLegionExpectation(Creature creature, out PaelsLegionVisualExpectation? expectation, out PaelsLegionRelic? relic)

@@ -184,6 +184,7 @@ public sealed partial class UndoController
         RunManager.Instance.ActionQueueSynchronizer.SetCombatState(ActionSynchronizerCombatState.NotPlayPhase);
         await CombatManager.Instance.EndPlayerTurnPhaseTwoInternal();
         await CombatManager.Instance.SwitchFromPlayerToEnemySide();
+        await StabilizeAfterFlowAdvancingChoiceExecutionAsync();
         return true;
     }
 

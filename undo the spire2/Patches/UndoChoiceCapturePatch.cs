@@ -56,8 +56,8 @@ public static class UndoChoiceCapturePatch
 
     [HarmonyPatch(typeof(CardSelectCmd), nameof(CardSelectCmd.FromSimpleGrid))]
     [HarmonyPrefix]
-    public static void SimpleGridPrefix(PlayerChoiceContext context, IReadOnlyList<CardModel> cards, Player player, CardSelectorPrefs prefs)
+    public static void SimpleGridPrefix(PlayerChoiceContext context, IReadOnlyList<CardModel> cardsIn, Player player, CardSelectorPrefs prefs)
     {
-        MainFile.Controller.RegisterPendingSimpleGridChoice(player, cards, prefs, context.LastInvolvedModel);
+        MainFile.Controller.RegisterPendingSimpleGridChoice(player, cardsIn, prefs, context.LastInvolvedModel);
     }
 }

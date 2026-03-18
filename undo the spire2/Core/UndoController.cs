@@ -950,36 +950,17 @@ public sealed partial class UndoController
         if (baseSnapshot.ReplayEventCount > targetSnapshot.ReplayEventCount)
             return false;
 
-        NRun? currentRun = NGame.Instance?.CurrentRunNode;
-        bool restoreVisible = currentRun?.Visible ?? false;
-        if (currentRun != null)
-            currentRun.Visible = false;
+        if (!await TryApplyFullStateInPlaceAsync(baseSnapshot.CombatState))
+            return false;
 
-        try
-        {
-            if (!await TryApplyFullStateInPlaceAsync(baseSnapshot.CombatState, true))
-                return false;
+        RunState? runState = RunManager.Instance.DebugOnlyGetState();
+        if (runState == null)
+            return false;
 
-            if (currentRun != null)
-                currentRun.Visible = false;
-
-            RunState? runState = RunManager.Instance.DebugOnlyGetState();
-            if (runState == null)
-                return false;
-
-            await ReplayEventsAsync(runState, baseSnapshot.ReplayEventCount, targetSnapshot.ReplayEventCount);
-            await WaitForReplayToSettleAsync();
-            await WaitForChoiceUiReadyAsync();
-            return IsChoiceUiReady();
-        }
-        finally
-        {
-            if (currentRun != null)
-            {
-                currentRun.Visible = restoreVisible;
-                await WaitOneFrameAsync();
-            }
-        }
+        await ReplayEventsAsync(runState, baseSnapshot.ReplayEventCount, targetSnapshot.ReplayEventCount);
+        await WaitForReplayToSettleAsync();
+        await WaitForChoiceUiReadyAsync();
+        return IsChoiceUiReady();
     }
 
     private async Task<bool> TryApplyFullStateInPlaceAsync(UndoCombatFullState snapshot, bool hideCurrentRun = false)

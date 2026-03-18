@@ -169,7 +169,9 @@ public sealed partial class UndoController
                 NextMovePerformedAtLeastOnce = nextMovePerformedAtLeastOnce,
                 TransientNextMoveFollowUpId = transientNextMoveFollowUpId,
                 SpecialNodeStateKey = specialNodeStateKey,
-                StarterMoveIndex = monster is TwoTailedRat twoTailedRat ? twoTailedRat.StarterMoveIndex : null,
+                StarterMoveIndex = UndoMonsterMoveStateUtil.TryGetStarterMoveIndex(monster, out int starterMoveIndex)
+                    ? starterMoveIndex
+                    : null,
                 TurnsUntilSummonable = monster is TwoTailedRat
                     && FindField(monster.GetType(), "_turnsUntilSummonable")?.GetValue(monster) is int turnsUntilSummonable
                     ? turnsUntilSummonable

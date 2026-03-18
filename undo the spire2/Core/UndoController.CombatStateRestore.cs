@@ -1316,11 +1316,11 @@ public sealed partial class UndoController
         monster.Creature.SlotName = state.SlotName;
         if (monster is ThievingHopper thievingHopper)
             thievingHopper.IsHovering = state.IsHovering;
+        if (state.StarterMoveIndex is int starterMoveIndex)
+            UndoMonsterMoveStateUtil.TrySetStarterMoveIndex(monster, starterMoveIndex);
+
         if (monster is TwoTailedRat twoTailedRat)
         {
-            if (state.StarterMoveIndex is int starterMoveIndex)
-                twoTailedRat.StarterMoveIndex = starterMoveIndex;
-
             if (state.TurnsUntilSummonable is int turnsUntilSummonable)
                 UndoReflectionUtil.TrySetFieldValue(twoTailedRat, "_turnsUntilSummonable", turnsUntilSummonable);
 
@@ -1340,18 +1340,19 @@ public sealed partial class UndoController
             }
         }
 
-        bool isReattaching = monster.Creature.GetPower<ReattachPower>() is ReattachPower reattachPower
-            && FindProperty(reattachPower.GetType(), "IsReviving")?.GetValue(reattachPower) is bool isReviving
-            && isReviving;
+        bool isPendingRevive = UndoMonsterMoveStateUtil.IsPendingRevive(monster.Creature);
 
-        if ((monster.Creature.IsDead || isReattaching)
+        if ((monster.Creature.IsDead || isPendingRevive)
             && FindProperty(monster.GetType(), "DeadState")?.GetValue(monster) is MoveState deadState)
         {
-            monster.SetMoveImmediate(deadState, true);
-            moveStateMachine.ForceCurrentState(deadState);
-            SetPrivateFieldValue(deadState, "_performedAtLeastOnce", state.NextMovePerformedAtLeastOnce);
-            NCombatRoom.Instance?.SetCreatureIsInteractable(monster.Creature, false);
-            return;
+            if (UndoMonsterMoveStateUtil.ShouldKeepDeadState(moveStateMachine, state, deadState))
+            {
+                monster.SetMoveImmediate(deadState, true);
+                moveStateMachine.ForceCurrentState(deadState);
+                SetPrivateFieldValue(deadState, "_performedAtLeastOnce", state.NextMovePerformedAtLeastOnce);
+                NCombatRoom.Instance?.SetCreatureIsInteractable(monster.Creature, false);
+                return;
+            }
         }
 
         if (state.CurrentStateId != null && moveStateMachine.States.TryGetValue(state.CurrentStateId, out MonsterState? currentState))
@@ -1369,6 +1370,9 @@ public sealed partial class UndoController
                 moveStateMachine.ForceCurrentState(moveState);
             SetPrivateFieldValue(moveState, "_performedAtLeastOnce", state.NextMovePerformedAtLeastOnce);
         }
+
+        if (monster.Creature.IsDead || isPendingRevive)
+            NCombatRoom.Instance?.SetCreatureIsInteractable(monster.Creature, false);
     }
 
 

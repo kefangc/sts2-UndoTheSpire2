@@ -1,4 +1,5 @@
 // 文件说明：恢复卡牌、能力、遗物等通用运行时属性。
+using System.Reflection;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
@@ -63,6 +64,13 @@ internal sealed class UndoPairIntRuntimeComplexState : UndoComplexRuntimeState
     public int FirstValue { get; init; }
 
     public int SecondValue { get; init; }
+}
+
+internal sealed class UndoPairDecimalRuntimeComplexState : UndoComplexRuntimeState
+{
+    public decimal FirstValue { get; init; }
+
+    public decimal SecondValue { get; init; }
 }
 
 internal sealed class UndoSovereignBladeRuntimeComplexState : UndoComplexRuntimeState
@@ -220,19 +228,27 @@ internal static class UndoRuntimeStateCodecRegistry
     private static readonly IReadOnlyList<IUndoCardRuntimeCodec> CardCodecs =
     [
         new UpMySleeveCardCodec(),
-        new ClawCardCodec(),
+        new DamageGrowthCardCodec(),
         new SovereignBladeCardCodec()
     ];
 
     private static readonly IReadOnlyList<IUndoPowerRuntimeCodec> PowerCodecs =
     [
         new AutomationCardsLeftPowerCodec(),
+        new CardsPlayedThisTurnPowerCodec(),
         new JugglingAttacksPlayedPowerCodec(),
         new VitalSparkTriggeredPlayersPowerCodec(),
         new AfterimagePlayedCardsPowerCodec(),
         new NightmareSelectedCardPowerCodec(),
         new DampenPowerCodec(),
         new DoorRevivalHalfDeadPowerCodec(),
+        new RevivePendingPowerCodec(),
+        new PrivateBoolFieldPowerCodec<BeaconOfHopePower>("power:BeaconOfHopePower.hasAlreadyBeenGivenBlock", "_hasAlreadyBeenGivenBlock"),
+        new PrivateBoolFieldPowerCodec<NemesisPower>("power:NemesisPower.shouldApplyIntangible", "_shouldApplyIntangible"),
+        new PrivateBoolFieldPowerCodec<RitualPower>("power:RitualPower.wasJustAppliedByEnemy", "_wasJustAppliedByEnemy"),
+        new PrivateBoolFieldPowerCodec<TemporaryDexterityPower>("power:TemporaryDexterityPower.shouldIgnoreNextInstance", "_shouldIgnoreNextInstance"),
+        new PrivateBoolFieldPowerCodec<TemporaryFocusPower>("power:TemporaryFocusPower.shouldIgnoreNextInstance", "_shouldIgnoreNextInstance"),
+        new PrivateBoolFieldPowerCodec<TemporaryStrengthPower>("power:TemporaryStrengthPower.shouldIgnoreNextInstance", "_shouldIgnoreNextInstance"),
         new ChainsOfBindingBoundCardPlayedPowerCodec()
     ];
 
@@ -240,8 +256,7 @@ internal static class UndoRuntimeStateCodecRegistry
     [
         new PaelsLegionAffectedCardPlayRelicCodec(),
         new PenNibAttackToDoubleRelicCodec(),
-        new PocketwatchTurnCountRelicCodec(),
-        new VelvetChokerCardsPlayedRelicCodec()
+        new CardsPlayedTurnCounterRelicCodec()
     ];
 
     public static HashSet<string> GetImplementedCodecIds()
@@ -346,6 +361,134 @@ internal static class UndoRuntimeStateCodecRegistry
         return UndoReflectionUtil.FindField(typeof(PowerModel), "_internalData")?.GetValue(power);
     }
 
+    private static bool TryGetPowerCardsPlayedThisTurn(PowerModel power, out int value)
+    {
+        object? internalData = GetPowerInternalData(power);
+        if (internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), "cardsPlayedThisTurn")?.GetValue(internalData) is int internalValue)
+        {
+            value = internalValue;
+            return true;
+        }
+
+        if (UndoReflectionUtil.FindProperty(power.GetType(), "CardsPlayedThisTurn")?.GetValue(power) is int propertyValue)
+        {
+            value = propertyValue;
+            return true;
+        }
+
+        if (UndoReflectionUtil.FindField(power.GetType(), "_cardsPlayedThisTurn")?.GetValue(power) is int fieldValue)
+        {
+            value = fieldValue;
+            return true;
+        }
+
+        value = 0;
+        return false;
+    }
+
+    private static bool TrySetPowerCardsPlayedThisTurn(PowerModel power, int value)
+    {
+        object? internalData = GetPowerInternalData(power);
+        if (internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), "cardsPlayedThisTurn") != null)
+            return UndoReflectionUtil.TrySetFieldValue(internalData, "cardsPlayedThisTurn", value);
+
+        if (UndoReflectionUtil.FindProperty(power.GetType(), "CardsPlayedThisTurn") != null)
+            return UndoReflectionUtil.TrySetPropertyValue(power, "CardsPlayedThisTurn", value);
+
+        return UndoReflectionUtil.TrySetFieldValue(power, "_cardsPlayedThisTurn", value);
+    }
+
+    private static bool TryGetPowerBoolField(PowerModel power, string fieldName, bool preferInternalData, out bool value)
+    {
+        object? internalData = GetPowerInternalData(power);
+        if (preferInternalData && internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), fieldName)?.GetValue(internalData) is bool internalBool)
+        {
+            value = internalBool;
+            return true;
+        }
+
+        if (UndoReflectionUtil.FindField(power.GetType(), fieldName)?.GetValue(power) is bool fieldBool)
+        {
+            value = fieldBool;
+            return true;
+        }
+
+        if (!preferInternalData && internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), fieldName)?.GetValue(internalData) is bool fallbackInternalBool)
+        {
+            value = fallbackInternalBool;
+            return true;
+        }
+
+        value = false;
+        return false;
+    }
+
+    private static bool TrySetPowerBoolField(PowerModel power, string fieldName, bool value, bool preferInternalData)
+    {
+        object? internalData = GetPowerInternalData(power);
+        if (preferInternalData && internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), fieldName) != null)
+            return UndoReflectionUtil.TrySetFieldValue(internalData, fieldName, value);
+
+        if (UndoReflectionUtil.FindField(power.GetType(), fieldName) != null)
+            return UndoReflectionUtil.TrySetFieldValue(power, fieldName, value);
+
+        if (!preferInternalData && internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), fieldName) != null)
+            return UndoReflectionUtil.TrySetFieldValue(internalData, fieldName, value);
+
+        return false;
+    }
+
+    private static bool IsCardsPlayedTurnCounterRelic(RelicModel relic)
+    {
+        return relic is BrilliantScarf or DiamondDiadem or Pocketwatch or VelvetChoker;
+    }
+
+    private static bool TryGetRelicCardsPlayedThisTurn(RelicModel relic, out int value)
+    {
+        if (UndoReflectionUtil.FindProperty(relic.GetType(), "CardsPlayedThisTurn")?.GetValue(relic) is int propertyValue)
+        {
+            value = propertyValue;
+            return true;
+        }
+
+        if (UndoReflectionUtil.FindField(relic.GetType(), "_cardsPlayedThisTurn")?.GetValue(relic) is int fieldValue)
+        {
+            value = fieldValue;
+            return true;
+        }
+
+        value = 0;
+        return false;
+    }
+
+    private static void SetRelicCardsPlayedThisTurn(RelicModel relic, int value)
+    {
+        if (UndoReflectionUtil.FindProperty(relic.GetType(), "CardsPlayedThisTurn") != null)
+        {
+            UndoReflectionUtil.TrySetPropertyValue(relic, "CardsPlayedThisTurn", value);
+            return;
+        }
+
+        UndoReflectionUtil.TrySetFieldValue(relic, "_cardsPlayedThisTurn", value);
+    }
+
+    private static void RefreshRelicCounterDisplay(RelicModel relic)
+    {
+        if (UndoReflectionUtil.FindMethod(relic.GetType(), "RefreshCounter") is MethodInfo refreshCounter)
+        {
+            refreshCounter.Invoke(relic, []);
+            return;
+        }
+
+        if (UndoReflectionUtil.FindMethod(relic.GetType(), "UpdateDisplay") is MethodInfo updateDisplay)
+        {
+            updateDisplay.Invoke(relic, []);
+            return;
+        }
+
+        UndoReflectionUtil.FindMethod(relic.GetType(), "InvokeDisplayAmountChanged")?.Invoke(relic, []);
+    }
+
     private sealed class UpMySleeveCardCodec : UndoCardRuntimeCodec<UndoIntRuntimeComplexState>
     {
         public override string CodecId => "card:UpMySleeve.timesPlayedThisCombat";
@@ -369,37 +512,55 @@ internal static class UndoRuntimeStateCodecRegistry
             UndoReflectionUtil.TrySetFieldValue(card, "_timesPlayedThisCombat", state.Value);
         }
     }
-    private sealed class ClawCardCodec : UndoCardRuntimeCodec<UndoPairIntRuntimeComplexState>
+    private sealed class DamageGrowthCardCodec : UndoCardRuntimeCodec<UndoPairDecimalRuntimeComplexState>
     {
-        public override string CodecId => "card:Claw.damageGrowth";
+        public override string CodecId => "card:DamageGrowth.baseAndAccumulator";
 
         public override bool CanHandle(CardModel card)
         {
-            return card is Claw;
+            return TryGetAccumulatorFieldName(card) != null;
         }
 
-        public override UndoPairIntRuntimeComplexState? Capture(CardModel card, UndoRuntimeCaptureContext context)
+        public override UndoPairDecimalRuntimeComplexState? Capture(CardModel card, UndoRuntimeCaptureContext context)
         {
-            if (card is not Claw claw)
+            string? accumulatorFieldName = TryGetAccumulatorFieldName(card);
+            if (accumulatorFieldName == null || !card.DynamicVars.ContainsKey("Damage"))
                 return null;
 
-            decimal currentDamage = claw.DynamicVars.Damage.BaseValue;
-            decimal extraDamage = UndoReflectionUtil.FindField(claw.GetType(), "_extraDamageFromClawPlays")?.GetValue(claw) is decimal value ? value : 0m;
-            return new UndoPairIntRuntimeComplexState
+            decimal currentDamage = card.DynamicVars.Damage.BaseValue;
+            decimal accumulatedDamage = UndoReflectionUtil.FindField(card.GetType(), accumulatorFieldName)?.GetValue(card) is decimal value ? value : 0m;
+            return new UndoPairDecimalRuntimeComplexState
             {
                 CodecId = CodecId,
-                FirstValue = (int)extraDamage,
-                SecondValue = (int)currentDamage
+                FirstValue = accumulatedDamage,
+                SecondValue = currentDamage
             };
         }
 
-        public override void Restore(CardModel card, UndoPairIntRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        public override void Restore(CardModel card, UndoPairDecimalRuntimeComplexState state, UndoRuntimeRestoreContext context)
         {
-            if (card is not Claw claw)
+            string? accumulatorFieldName = TryGetAccumulatorFieldName(card);
+            if (accumulatorFieldName == null || !card.DynamicVars.ContainsKey("Damage"))
                 return;
 
-            UndoReflectionUtil.TrySetFieldValue(claw, "_extraDamageFromClawPlays", (decimal)state.FirstValue);
-            claw.DynamicVars.Damage.BaseValue = state.SecondValue;
+            UndoReflectionUtil.TrySetFieldValue(card, accumulatorFieldName, state.FirstValue);
+            card.DynamicVars.Damage.BaseValue = state.SecondValue;
+        }
+
+        // Official source currently implements combat-persistent self damage growth
+        // for these cards by mutating DynamicVars.Damage.BaseValue and storing a
+        // private accumulator that AfterDowngraded re-applies.
+        private static string? TryGetAccumulatorFieldName(CardModel card)
+        {
+            return card switch
+            {
+                Claw => "_extraDamageFromClawPlays",
+                Rampage => "_extraDamageFromPlays",
+                Thrash => "_extraDamage",
+                KinglyPunch => "_extraDamage",
+                Maul => "_extraDamageFromMaulPlays",
+                _ => null
+            };
         }
     }
 
@@ -472,6 +633,36 @@ internal static class UndoRuntimeStateCodecRegistry
                 return;
 
             UndoReflectionUtil.TrySetFieldValue(internalData, "cardsLeft", state.Value);
+            InvokeDisplayAmountChanged(power);
+        }
+    }
+
+    private sealed class CardsPlayedThisTurnPowerCodec : UndoPowerRuntimeCodec<UndoIntRuntimeComplexState>
+    {
+        public override string CodecId => "power:CardsPlayedThisTurn.counter";
+
+        public override bool CanHandle(PowerModel power)
+        {
+            return power is VoidFormPower or TenderPower or SlothPower;
+        }
+
+        public override UndoIntRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
+        {
+            if (!TryGetPowerCardsPlayedThisTurn(power, out int cardsPlayedThisTurn))
+                return null;
+
+            return new UndoIntRuntimeComplexState
+            {
+                CodecId = CodecId,
+                Value = cardsPlayedThisTurn
+            };
+        }
+
+        public override void Restore(PowerModel power, UndoIntRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            if (!TrySetPowerCardsPlayedThisTurn(power, state.Value))
+                return;
+
             InvokeDisplayAmountChanged(power);
         }
     }
@@ -721,6 +912,75 @@ internal static class UndoRuntimeStateCodecRegistry
         }
     }
 
+    private sealed class RevivePendingPowerCodec : UndoPowerRuntimeCodec<UndoBoolRuntimeComplexState>
+    {
+        public override string CodecId => "power:RevivePending.isReviving";
+
+        public override bool CanHandle(PowerModel power)
+        {
+            object? internalData = GetPowerInternalData(power);
+            return internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), "isReviving") != null;
+        }
+
+        public override UndoBoolRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
+        {
+            if (!TryGetPowerBoolField(power, "isReviving", preferInternalData: true, out bool value))
+                return null;
+
+            return new UndoBoolRuntimeComplexState
+            {
+                CodecId = CodecId,
+                Value = value
+            };
+        }
+
+        public override void Restore(PowerModel power, UndoBoolRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            if (TrySetPowerBoolField(power, "isReviving", state.Value, preferInternalData: true))
+                InvokeDisplayAmountChanged(power);
+        }
+    }
+
+    private sealed class PrivateBoolFieldPowerCodec<TPower> : UndoPowerRuntimeCodec<UndoBoolRuntimeComplexState>
+        where TPower : PowerModel
+    {
+        private readonly string _codecId;
+        private readonly string _fieldName;
+        private readonly bool _preferInternalData;
+
+        public PrivateBoolFieldPowerCodec(string codecId, string fieldName, bool preferInternalData = false)
+        {
+            _codecId = codecId;
+            _fieldName = fieldName;
+            _preferInternalData = preferInternalData;
+        }
+
+        public override string CodecId => _codecId;
+
+        public override bool CanHandle(PowerModel power)
+        {
+            return power is TPower && TryGetPowerBoolField(power, _fieldName, _preferInternalData, out _);
+        }
+
+        public override UndoBoolRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
+        {
+            if (!TryGetPowerBoolField(power, _fieldName, _preferInternalData, out bool value))
+                return null;
+
+            return new UndoBoolRuntimeComplexState
+            {
+                CodecId = CodecId,
+                Value = value
+            };
+        }
+
+        public override void Restore(PowerModel power, UndoBoolRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            if (TrySetPowerBoolField(power, _fieldName, state.Value, _preferInternalData))
+                InvokeDisplayAmountChanged(power);
+        }
+    }
+
     private sealed class ChainsOfBindingBoundCardPlayedPowerCodec : UndoPowerRuntimeCodec<UndoBoolRuntimeComplexState>
     {
         public override string CodecId => "power:ChainsOfBindingPower.boundCardPlayed";
@@ -809,56 +1069,33 @@ internal static class UndoRuntimeStateCodecRegistry
         }
     }
 
-    private sealed class PocketwatchTurnCountRelicCodec : UndoRelicRuntimeCodec<UndoPairIntRuntimeComplexState>
+    private sealed class CardsPlayedTurnCounterRelicCodec : UndoRelicRuntimeCodec<UndoPairIntRuntimeComplexState>
     {
-        public override string CodecId => "relic:Pocketwatch.turnCounts";
+        public override string CodecId => "relic:CardsPlayedTurnCounters.data";
 
         public override bool CanHandle(RelicModel relic)
         {
-            return relic is Pocketwatch;
+            return IsCardsPlayedTurnCounterRelic(relic);
         }
 
         public override UndoPairIntRuntimeComplexState? Capture(RelicModel relic, UndoRuntimeCaptureContext context)
         {
+            if (!TryGetRelicCardsPlayedThisTurn(relic, out int thisTurn))
+                return null;
+
             return new UndoPairIntRuntimeComplexState
             {
                 CodecId = CodecId,
-                FirstValue = UndoReflectionUtil.FindField(relic.GetType(), "_cardsPlayedThisTurn")?.GetValue(relic) is int thisTurn ? thisTurn : 0,
+                FirstValue = thisTurn,
                 SecondValue = UndoReflectionUtil.FindField(relic.GetType(), "_cardsPlayedLastTurn")?.GetValue(relic) is int lastTurn ? lastTurn : 0
             };
         }
 
         public override void Restore(RelicModel relic, UndoPairIntRuntimeComplexState state, UndoRuntimeRestoreContext context)
         {
-            UndoReflectionUtil.TrySetFieldValue(relic, "_cardsPlayedThisTurn", state.FirstValue);
+            SetRelicCardsPlayedThisTurn(relic, state.FirstValue);
             UndoReflectionUtil.TrySetFieldValue(relic, "_cardsPlayedLastTurn", state.SecondValue);
-            UndoReflectionUtil.TrySetPropertyValue(relic, "Status", state.FirstValue <= 3 ? RelicStatus.Active : RelicStatus.Normal);
-            UndoReflectionUtil.FindMethod(relic.GetType(), "InvokeDisplayAmountChanged")?.Invoke(relic, []);
-        }
-    }
-
-    private sealed class VelvetChokerCardsPlayedRelicCodec : UndoRelicRuntimeCodec<UndoIntRuntimeComplexState>
-    {
-        public override string CodecId => "relic:VelvetChoker.cardsPlayedThisTurn";
-
-        public override bool CanHandle(RelicModel relic)
-        {
-            return relic is VelvetChoker;
-        }
-
-        public override UndoIntRuntimeComplexState? Capture(RelicModel relic, UndoRuntimeCaptureContext context)
-        {
-            return new UndoIntRuntimeComplexState
-            {
-                CodecId = CodecId,
-                Value = UndoReflectionUtil.FindField(relic.GetType(), "_cardsPlayedThisTurn")?.GetValue(relic) is int value ? value : 0
-            };
-        }
-
-        public override void Restore(RelicModel relic, UndoIntRuntimeComplexState state, UndoRuntimeRestoreContext context)
-        {
-            UndoReflectionUtil.TrySetFieldValue(relic, "_cardsPlayedThisTurn", state.Value);
-            UndoReflectionUtil.FindMethod(relic.GetType(), "InvokeDisplayAmountChanged")?.Invoke(relic, []);
+            RefreshRelicCounterDisplay(relic);
         }
     }
 }

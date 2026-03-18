@@ -21,7 +21,10 @@ using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Cards;
+using MegaCrit.Sts2.Core.Models.Potions;
 using MegaCrit.Sts2.Core.Models.Powers;
+using MegaCrit.Sts2.Core.Models.Relics;
 using MegaCrit.Sts2.Core.Models.Orbs;
 using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
@@ -126,7 +129,10 @@ public sealed partial class UndoController
             NotifyStateChanged();
             // 对 from-hand 这类手牌选择，不要在 restore 事务里等待玩家选完。
             // 只要 choice UI 已经真正回到场上，就立刻结束 restore，让 HUD 和二次 undo 恢复可用。
-            TaskHelper.RunSafely(HandlePrimaryChoiceSelectionAsync(primarySession, selectionTask, pausedChoiceState != null && stateAlreadyApplied));
+            TaskHelper.RunSafely(HandlePrimaryChoiceSelectionAsync(
+                primarySession,
+                selectionTask,
+                ShouldPreferLiveBranchCommit(pausedChoiceState, choiceSpec, stateAlreadyApplied)));
             return true;
         }
 
@@ -232,7 +238,7 @@ public sealed partial class UndoController
                 && choiceSpec.SourcePileType == PileType.Hand
                 && IsDiscardSelection(choiceSpec.SelectionPrefs))
             {
-                return false;
+                return true;
             }
 
             return false;
@@ -362,6 +368,9 @@ public sealed partial class UndoController
         if (replayEventCount <= session.AnchorSnapshot.ReplayEventCount)
             return false;
 
+        if (!DidLiveBranchResumePastChoice(session, replayEventCount))
+            return false;
+
         UndoSnapshot branchSnapshot = new(
             CaptureCurrentCombatFullState(),
             replayEventCount,
@@ -376,7 +385,10 @@ public sealed partial class UndoController
         _lastResolvedChoiceResultKey = selectedKey;
         session.RememberBranch(selectedKey, branchSnapshot);
         _futureSnapshots.Clear();
+        RewriteReplayChoiceBranch(session.AnchorSnapshot, branchSnapshot);
         _combatReplay.ActiveEventCount = branchSnapshot.ReplayEventCount;
+        TruncateReplayChecksumsFrom(branchSnapshot.CombatState.NextChecksumId);
+        DisableReplayChecksumComparison(branchSnapshot.CombatState.NextChecksumId);
 
         if (_pastSnapshots.First?.Value is UndoSnapshot existing
             && existing.IsChoiceAnchor
@@ -401,14 +413,50 @@ public sealed partial class UndoController
         return true;
     }
 
+    private bool DidLiveBranchResumePastChoice(UndoSyntheticChoiceSession session, int replayEventCount)
+    {
+        if (_combatReplay == null)
+            return false;
+
+        PausedChoiceState? pausedChoiceState = session.AnchorSnapshot.CombatState.ActionKernelState.PausedChoiceState;
+        if (!string.Equals(pausedChoiceState?.SourceActionCodecId, "action:from-hand", StringComparison.Ordinal)
+            || !IsOfficialFromHandDiscardChoice(session.ChoiceSpec))
+        {
+            return true;
+        }
+
+        int startIndex = Math.Max(0, session.AnchorSnapshot.ReplayEventCount);
+        int endIndex = Math.Min(replayEventCount, _combatReplay.Events.Count);
+        for (int i = startIndex; i < endIndex; i++)
+        {
+            if (_combatReplay.Events[i].eventType == CombatReplayEventType.ResumeAction)
+                return true;
+        }
+
+        UndoDebugLog.Write($"primary_choice_live_resume_missing:{session.ChoiceSpec.SourceModelTypeName ?? "unknown"} replayEvents={session.AnchorSnapshot.ReplayEventCount}->{replayEventCount}");
+        return false;
+    }
+
     private async Task<bool> TryCommitCustomChoiceBranchAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey)
     {
         if (!CombatManager.Instance.IsInProgress)
             return false;
 
-        if (await TryExecuteHandDiscardChoiceAsync(session, selectedKey))
+        if (await TryExecuteRetainChoiceAsync(session, selectedKey))
         {
             await FinalizeCustomChoiceBranchAsync(session, selectedKey, stabilizeQueues: false);
+            return true;
+        }
+
+        if (await TryExecuteHandDiscardChoiceAsync(session, selectedKey))
+        {
+            await FinalizeCustomChoiceBranchAsync(session, selectedKey);
+            return true;
+        }
+
+        if (await TryExecuteSelectedCardMutationChoiceAsync(session, selectedKey))
+        {
+            await FinalizeCustomChoiceBranchAsync(session, selectedKey);
             return true;
         }
 
@@ -433,10 +481,7 @@ public sealed partial class UndoController
     private static bool ShouldPreferCustomChoiceBeforeCached(UndoSyntheticChoiceSession session)
     {
         UndoChoiceSpec choiceSpec = session.ChoiceSpec;
-        return (choiceSpec.Kind == UndoChoiceKind.HandSelection
-                && choiceSpec.SourcePileType == PileType.Hand
-                && IsDiscardSelection(choiceSpec.SelectionPrefs))
-            || IsSourceChoice(choiceSpec, "MegaCrit.Sts2.Core.Models.Cards.DecisionsDecisions");
+        return IsSourceChoice(choiceSpec, "MegaCrit.Sts2.Core.Models.Cards.DecisionsDecisions");
     }
 
     private async Task FinalizeCustomChoiceBranchAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey, bool stabilizeQueues = true)
@@ -478,7 +523,12 @@ public sealed partial class UndoController
         {
             CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
             if (combatState != null)
-                await RefreshCombatUiAsync(combatState);
+            {
+                if (IsOfficialFromHandDiscardChoice(session.ChoiceSpec))
+                    await RefreshCombatUiAfterHandDiscardChoiceAsync(combatState);
+                else
+                    await RefreshCombatUiAsync(combatState);
+            }
         }
 
         EnsurePlayerChoiceUndoAnchor(
@@ -493,10 +543,25 @@ public sealed partial class UndoController
     private static bool ShouldRefreshCombatUiAfterCustomChoice(UndoSyntheticChoiceSession session)
     {
         UndoChoiceSpec choiceSpec = session.ChoiceSpec;
-        return (choiceSpec.Kind == UndoChoiceKind.HandSelection
-                && choiceSpec.SourcePileType == PileType.Hand
-                && IsDiscardSelection(choiceSpec.SelectionPrefs))
+        return IsOfficialFromHandDiscardChoice(choiceSpec)
             || IsSourceChoice(choiceSpec, "MegaCrit.Sts2.Core.Models.Cards.DecisionsDecisions");
+    }
+
+    private static bool ShouldPreferLiveBranchCommit(PausedChoiceState? pausedChoiceState, UndoChoiceSpec choiceSpec, bool stateAlreadyApplied)
+    {
+        if (pausedChoiceState == null)
+            return false;
+
+        if (string.Equals(pausedChoiceState.SourceActionCodecId, "action:from-hand", StringComparison.Ordinal)
+            && IsOfficialFromHandDiscardChoice(choiceSpec))
+        {
+            return true;
+        }
+
+        if (stateAlreadyApplied)
+            return true;
+
+        return false;
     }
 
     private async Task WaitForTransientCardFlyVfxToSettleAsync(int maxFrames = 60)
@@ -532,6 +597,7 @@ public sealed partial class UndoController
 
     private async Task StabilizeAfterCustomChoiceExecutionAsync(UndoSyntheticChoiceSession session)
     {
+        await WaitForTransientCardFlyVfxToSettleAsync();
         await WaitOneFrameAsync();
 
         RunState? runState = RunManager.Instance.DebugOnlyGetState();
@@ -550,6 +616,29 @@ public sealed partial class UndoController
         await WaitOneFrameAsync();
     }
 
+    private async Task StabilizeAfterFlowAdvancingChoiceExecutionAsync()
+    {
+        await WaitOneFrameAsync();
+
+        RunState? runState = RunManager.Instance.DebugOnlyGetState();
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        if (runState == null || combatState == null || !CombatManager.Instance.IsInProgress)
+            return;
+
+        await DismissSupportedChoiceUiIfPresentAsync();
+        ResetActionExecutorForRestore();
+        RunManager.Instance.ActionQueueSet.Reset();
+        ResetActionSynchronizerForRestore();
+        RebuildActionQueues(runState.Players);
+
+        ActionSynchronizerCombatState targetSynchronizerState = combatState.CurrentSide == CombatSide.Player
+            && CombatManager.Instance.IsPlayPhase
+                ? ActionSynchronizerCombatState.PlayPhase
+                : ActionSynchronizerCombatState.NotPlayPhase;
+        RestoreActionSynchronizationState(targetSynchronizerState, ActionKernelBoundaryKind.StableBoundary, out _);
+        await WaitOneFrameAsync();
+    }
+
     private static bool IsSourceChoice(UndoChoiceSpec choiceSpec, Type sourceType)
     {
         return string.Equals(choiceSpec.SourceModelTypeName, sourceType.FullName, StringComparison.Ordinal);
@@ -558,6 +647,21 @@ public sealed partial class UndoController
     private static bool IsSourceChoice(UndoChoiceSpec choiceSpec, string sourceTypeName)
     {
         return string.Equals(choiceSpec.SourceModelTypeName, sourceTypeName, StringComparison.Ordinal);
+    }
+
+    private static bool IsRetainChoiceSource(UndoChoiceSpec choiceSpec)
+    {
+        return IsSourceChoice(choiceSpec, typeof(WellLaidPlansPower));
+    }
+
+    private static bool IsSelectedCardMutationSource(UndoChoiceSpec choiceSpec)
+    {
+        return IsSourceChoice(choiceSpec, typeof(Nightmare))
+            || IsSourceChoice(choiceSpec, typeof(HandTrick))
+            || IsSourceChoice(choiceSpec, typeof(Snap))
+            || IsSourceChoice(choiceSpec, typeof(SculptingStrike))
+            || IsSourceChoice(choiceSpec, typeof(Transfigure))
+            || IsSourceChoice(choiceSpec, typeof(TouchOfInsanity));
     }
 
     private static void DisableReplayChecksumComparison(uint nextChecksumId)
@@ -584,13 +688,49 @@ public sealed partial class UndoController
             .Where(checksum => checksum.checksumData.id >= nextChecksumId)];
     }
 
+    private async Task<bool> TryExecuteRetainChoiceAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey)
+    {
+        UndoChoiceSpec choiceSpec = session.ChoiceSpec;
+        if (choiceSpec.Kind != UndoChoiceKind.HandSelection
+            || choiceSpec.SourcePileType != PileType.Hand
+            || !IsRetainChoiceSource(choiceSpec))
+        {
+            return false;
+        }
+
+        DisableReplayChecksumComparison(session.AnchorSnapshot.CombatState.NextChecksumId);
+
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        Player? player = combatState == null ? null : LocalContext.GetMe(combatState);
+        if (combatState == null || player == null || combatState.CurrentSide != CombatSide.Player)
+            return false;
+
+        IReadOnlyList<CardModel> handCards = PileType.Hand.GetPile(player).Cards;
+        foreach (int optionIndex in selectedKey.OptionIndexes)
+        {
+            if (optionIndex < 0 || optionIndex >= choiceSpec.SourcePileOptionIndexes.Count)
+                return false;
+
+            int handIndex = choiceSpec.SourcePileOptionIndexes[optionIndex];
+            if (handIndex < 0 || handIndex >= handCards.Count)
+                return false;
+
+            handCards[handIndex].GiveSingleTurnRetain();
+        }
+
+        RunManager.Instance.ActionQueueSynchronizer.SetCombatState(ActionSynchronizerCombatState.NotPlayPhase);
+        await CombatManager.Instance.EndPlayerTurnPhaseTwoInternal();
+        await CombatManager.Instance.SwitchFromPlayerToEnemySide();
+        await StabilizeAfterFlowAdvancingChoiceExecutionAsync();
+        return true;
+    }
+
     private async Task<bool> TryExecuteHandDiscardChoiceAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey)
     {
         UndoChoiceSpec choiceSpec = session.ChoiceSpec;
         if (choiceSpec.Kind != UndoChoiceKind.HandSelection
             || choiceSpec.SourcePileType != PileType.Hand
-            || selectedKey.OptionIndexes.Count == 0
-            || !IsDiscardSelection(choiceSpec.SelectionPrefs))
+            || !IsOfficialFromHandDiscardChoice(choiceSpec))
         {
             return false;
         }
@@ -602,34 +742,144 @@ public sealed partial class UndoController
         if (player == null)
             return false;
 
-        IReadOnlyList<CardModel> handCards = PileType.Hand.GetPile(player).Cards;
-        List<CardModel> selectedCards = [];
-        foreach (int optionIndex in selectedKey.OptionIndexes)
+        if (!TryResolveSelectedHandCards(choiceSpec, selectedKey, player, out List<CardModel> selectedCards))
+            return false;
+
+        BlockingPlayerChoiceContext choiceContext = new();
+        if (IsSourceChoice(choiceSpec, typeof(GamblingChip))
+            || IsSourceChoice(choiceSpec, typeof(GamblersBrew)))
         {
-            if (optionIndex < 0 || optionIndex >= choiceSpec.SourcePileOptionIndexes.Count)
-                return false;
-
-            int handIndex = choiceSpec.SourcePileOptionIndexes[optionIndex];
-            if (handIndex < 0 || handIndex >= handCards.Count)
-                return false;
-
-            selectedCards.Add(handCards[handIndex]);
+            await CardCmd.DiscardAndDraw(choiceContext, selectedCards, selectedCards.Count);
+        }
+        else
+        {
+            await CardCmd.Discard(choiceContext, selectedCards);
         }
 
-        // 这类锚点已经处在“前置效果执行完，只差官方 discard 收尾”的位置；
-        // 直接走 CardCmd.Discard 可以补回 AfterCardDiscarded、Sly 自动打出等副作用。
-        BlockingPlayerChoiceContext choiceContext = new();
-        await CardCmd.Discard(choiceContext, selectedCards);
-        if (string.Equals(choiceSpec.SourceModelTypeName, "MegaCrit.Sts2.Core.Models.Cards.Survivor", StringComparison.Ordinal))
-            await FinalizeDetachedPlayedCardAsync(player, choiceContext);
+        if (IsSourceChoice(choiceSpec, typeof(HiddenDaggers)))
+        {
+            CardModel? sourceCard = ResolveSourceCardFromPlayPile(player, choiceSpec);
+            CombatState? shivCombatState = sourceCard?.CombatState ?? player.Creature.CombatState;
+            if (shivCombatState == null)
+                return false;
+
+            int shivCount = sourceCard?.DynamicVars["Shivs"].IntValue ?? 0;
+            IEnumerable<CardModel> shivs = await Shiv.CreateInHand(player, shivCount, shivCombatState);
+            if (sourceCard?.IsUpgraded == true)
+            {
+                foreach (CardModel shiv in shivs)
+                    CardCmd.Upgrade(shiv, CardPreviewStyle.HorizontalLayout);
+            }
+        }
+
+        if (choiceSpec.SourceCombatCard != null)
+            await FinalizeDetachedPlayedCardAsync(player, choiceContext, choiceSpec);
         return true;
     }
 
-    private static async Task FinalizeDetachedPlayedCardAsync(Player player, PlayerChoiceContext choiceContext)
+    private async Task<bool> TryExecuteSelectedCardMutationChoiceAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey)
     {
-        CardModel? playedCard = PileType.Play.GetPile(player).Cards.LastOrDefault();
+        UndoChoiceSpec choiceSpec = session.ChoiceSpec;
+        if (choiceSpec.Kind != UndoChoiceKind.HandSelection
+            || choiceSpec.SourcePileType != PileType.Hand
+            || selectedKey.OptionIndexes.Count != 1
+            || !IsSelectedCardMutationSource(choiceSpec))
+        {
+            return false;
+        }
+
+        DisableReplayChecksumComparison(session.AnchorSnapshot.CombatState.NextChecksumId);
+
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        Player? player = combatState == null ? null : LocalContext.GetMe(combatState);
+        if (player == null)
+            return false;
+
+        if (!TryResolveSelectedHandCard(choiceSpec, selectedKey, player, out CardModel? selectedCard) || selectedCard == null)
+            return false;
+
+        BlockingPlayerChoiceContext choiceContext = new();
+        CardModel? sourceCard = ResolveSourceCardFromPlayPile(player, choiceSpec);
+        if (IsSourceChoice(choiceSpec, typeof(Nightmare)))
+        {
+            NightmarePower nightmarePower = await PowerCmd.Apply<NightmarePower>(player.Creature, 3m, player.Creature, sourceCard, false);
+            nightmarePower.SetSelectedCard(selectedCard);
+        }
+        else if (IsSourceChoice(choiceSpec, typeof(HandTrick)))
+        {
+            CardCmd.ApplySingleTurnSly(selectedCard);
+        }
+        else if (IsSourceChoice(choiceSpec, typeof(Snap)))
+        {
+            CardCmd.ApplyKeyword(selectedCard, CardKeyword.Retain);
+        }
+        else if (IsSourceChoice(choiceSpec, typeof(SculptingStrike)))
+        {
+            CardCmd.ApplyKeyword(selectedCard, CardKeyword.Ethereal);
+        }
+        else if (IsSourceChoice(choiceSpec, typeof(Transfigure)))
+        {
+            if (!selectedCard.EnergyCost.CostsX && selectedCard.EnergyCost.GetWithModifiers(CostModifiers.None) >= 0)
+                selectedCard.EnergyCost.AddThisCombat(1, false);
+
+            selectedCard.BaseReplayCount++;
+        }
+        else if (IsSourceChoice(choiceSpec, typeof(TouchOfInsanity)))
+        {
+            selectedCard.SetToFreeThisCombat();
+        }
+        else
+        {
+            return false;
+        }
+
+        if (choiceSpec.SourceCombatCard != null)
+            await FinalizeDetachedPlayedCardAsync(player, choiceContext, choiceSpec);
+
+        return true;
+    }
+
+    private static bool TryResolveSelectedHandCard(UndoChoiceSpec choiceSpec, UndoChoiceResultKey selectedKey, Player player, out CardModel? selectedCard)
+    {
+        selectedCard = null;
+        if (selectedKey.OptionIndexes.Count != 1)
+            return false;
+
+        int optionIndex = selectedKey.OptionIndexes[0];
+        if (optionIndex < 0 || optionIndex >= choiceSpec.SourcePileOptionIndexes.Count)
+            return false;
+
+        IReadOnlyList<CardModel> handCards = PileType.Hand.GetPile(player).Cards;
+        int handIndex = choiceSpec.SourcePileOptionIndexes[optionIndex];
+        if (handIndex < 0 || handIndex >= handCards.Count)
+            return false;
+
+        selectedCard = handCards[handIndex];
+        return true;
+    }
+
+    private static CardModel? ResolveSourceCardFromPlayPile(Player player, UndoChoiceSpec choiceSpec)
+    {
+        IReadOnlyList<CardModel> playCards = PileType.Play.GetPile(player).Cards;
+        if (choiceSpec.SourceCombatCard != null)
+        {
+            CardModel? matchedCard = playCards.FirstOrDefault(card => Equals(NetCombatCard.FromModel(card), choiceSpec.SourceCombatCard));
+            if (matchedCard != null)
+                return matchedCard;
+        }
+
+        return playCards.LastOrDefault();
+    }
+
+    private static async Task FinalizeDetachedPlayedCardAsync(Player player, PlayerChoiceContext choiceContext, UndoChoiceSpec choiceSpec)
+    {
+        CardModel? playedCard = ResolveSourceCardFromPlayPile(player, choiceSpec);
         if (playedCard == null)
             return;
+
+        NPlayerHand? hand = NCombatRoom.Instance?.Ui?.Hand;
+        if (hand != null)
+            MainFile.Controller.DetachPendingHandSelectionSource(hand);
 
         playedCard.InvokeExecutionFinished();
         await playedCard.MoveToResultPileWithoutPlaying(choiceContext);
@@ -671,7 +921,7 @@ public sealed partial class UndoController
         for (int i = 0; i < 3; i++)
             await CardCmd.AutoPlay(choiceContext, selectedCard, null, AutoPlayType.Default, false, false);
 
-        await FinalizeDetachedPlayedCardAsync(player, choiceContext);
+        await FinalizeDetachedPlayedCardAsync(player, choiceContext, choiceSpec);
         return true;
     }
 
@@ -753,6 +1003,44 @@ public sealed partial class UndoController
     {
         return string.Equals(prefs.Prompt.LocTable, "card_selection", StringComparison.Ordinal)
             && string.Equals(prefs.Prompt.LocEntryKey, "TO_DISCARD", StringComparison.Ordinal);
+    }
+
+    private static bool IsOfficialFromHandDiscardChoice(UndoChoiceSpec choiceSpec)
+    {
+        return choiceSpec.Kind == UndoChoiceKind.HandSelection
+            && choiceSpec.SourcePileType == PileType.Hand
+            && IsDiscardSelection(choiceSpec.SelectionPrefs)
+            && (
+                IsSourceChoice(choiceSpec, typeof(Acrobatics))
+                || IsSourceChoice(choiceSpec, typeof(DaggerThrow))
+                || IsSourceChoice(choiceSpec, typeof(HiddenDaggers))
+                || IsSourceChoice(choiceSpec, typeof(Prepared))
+                || IsSourceChoice(choiceSpec, typeof(Survivor))
+                || IsSourceChoice(choiceSpec, typeof(GamblingChip))
+                || IsSourceChoice(choiceSpec, typeof(GamblersBrew))
+                || IsSourceChoice(choiceSpec, typeof(ToolsOfTheTradePower)));
+    }
+
+    private static bool TryResolveSelectedHandCards(UndoChoiceSpec choiceSpec, UndoChoiceResultKey selectedKey, Player player, out List<CardModel> selectedCards)
+    {
+        selectedCards = [];
+        if (selectedKey.OptionIndexes.Count == 0)
+            return choiceSpec.CanSkip;
+
+        IReadOnlyList<CardModel> handCards = PileType.Hand.GetPile(player).Cards;
+        foreach (int optionIndex in selectedKey.OptionIndexes)
+        {
+            if (optionIndex < 0 || optionIndex >= choiceSpec.SourcePileOptionIndexes.Count)
+                return false;
+
+            int handIndex = choiceSpec.SourcePileOptionIndexes[optionIndex];
+            if (handIndex < 0 || handIndex >= handCards.Count)
+                return false;
+
+            selectedCards.Add(handCards[handIndex]);
+        }
+
+        return true;
     }
 
     private void RememberSavedChoiceBranches(UndoSyntheticChoiceSession session, IReadOnlyList<UndoChoiceBranchState> branchStates)

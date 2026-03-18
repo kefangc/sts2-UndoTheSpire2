@@ -250,10 +250,11 @@ internal static class UndoActionCodecRegistry
             if (player == null || hand == null || state.ChoiceSpec == null)
                 return null;
 
-            Task<IEnumerable<CardModel>> selectionTask = ShouldUseDetachedHandSelection(state.ChoiceSpec)
-                ? StartDetachedHandSelection(hand, player, state.ChoiceSpec)
-                : TryAwaitExistingHandSelection()
-                    ?? hand.SelectCards(state.ChoiceSpec.SelectionPrefs, state.ChoiceSpec.BuildHandFilter(player), null);
+            Task<IEnumerable<CardModel>>? existingSelectionTask = TryAwaitExistingHandSelection();
+            Task<IEnumerable<CardModel>> selectionTask = existingSelectionTask
+                ?? (ShouldUseDetachedHandSelection(state.ChoiceSpec)
+                    ? StartDetachedHandSelection(hand, player, state.ChoiceSpec)
+                    : hand.SelectCards(state.ChoiceSpec.SelectionPrefs, state.ChoiceSpec.BuildHandFilter(player), null));
             IEnumerable<CardModel> selected = await selectionTask;
             return MapAndSyncHandSelection(runState, state, player, selected);
         }
@@ -261,9 +262,7 @@ internal static class UndoActionCodecRegistry
 
     private static bool ShouldUseDetachedHandSelection(UndoChoiceSpec choiceSpec)
     {
-        return choiceSpec.SourcePileType == PileType.Hand
-            && string.Equals(choiceSpec.SelectionPrefs.Prompt.LocTable, "card_selection", StringComparison.Ordinal)
-            && string.Equals(choiceSpec.SelectionPrefs.Prompt.LocEntryKey, "TO_DISCARD", StringComparison.Ordinal);
+        return choiceSpec.SourcePileType == PileType.Hand;
     }
 
     private static Task<IEnumerable<CardModel>> StartDetachedHandSelection(NPlayerHand hand, Player player, UndoChoiceSpec choiceSpec)
