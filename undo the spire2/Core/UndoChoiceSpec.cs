@@ -94,7 +94,7 @@ internal sealed class UndoChoiceSpec
             eligibleIndexes,
             eligibleCombatCards,
             source is CardModel sourceCard ? NetCombatCard.FromModel(sourceCard) : null,
-            false,
+            prefs.MinSelect == 0,
             source?.GetType().FullName,
             source?.Id.Entry);
     }
@@ -227,7 +227,6 @@ internal sealed class UndoChoiceSpec
             mappedIndexes.Add(mappedIndex);
         }
 
-        mappedIndexes.Sort();
         return new UndoChoiceResultKey(mappedIndexes);
     }
 
@@ -236,7 +235,7 @@ internal sealed class UndoChoiceSpec
         if (indexes == null)
             return null;
 
-        return new UndoChoiceResultKey(indexes.OrderBy(static index => index));
+        return new UndoChoiceResultKey(indexes);
     }
 
     private UndoChoiceResultKey? TryMapCombatCardResult(List<NetCombatCard>? combatCards)
@@ -254,7 +253,6 @@ internal sealed class UndoChoiceSpec
             mappedIndexes.Add(mappedIndex);
         }
 
-        mappedIndexes.Sort();
         return new UndoChoiceResultKey(mappedIndexes);
     }
 
@@ -291,7 +289,6 @@ internal sealed class UndoChoiceSpec
             mappedIndexes.Add(mappedIndex);
         }
 
-        mappedIndexes.Sort();
         return new UndoChoiceResultKey(mappedIndexes);
     }
 
@@ -313,7 +310,6 @@ internal sealed class UndoChoiceSpec
                 mappedIndexes.Add(optionIndex);
             }
 
-            mappedIndexes.Sort();
             return new UndoChoiceResultKey(mappedIndexes);
         }
 
@@ -331,7 +327,6 @@ internal sealed class UndoChoiceSpec
             mappedIndexes.Add(optionIndex);
         }
 
-        mappedIndexes.Sort();
         return new UndoChoiceResultKey(mappedIndexes);
     }
 
