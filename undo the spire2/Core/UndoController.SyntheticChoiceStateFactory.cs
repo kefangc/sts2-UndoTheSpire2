@@ -110,6 +110,21 @@ public sealed partial class UndoController
         branchPlayerState.piles[pileIndex] = branchPileState;
         fullState.Players[playerIndex] = branchPlayerState;
         combatState = CreateDerivedCombatState(templateSnapshot.CombatState, anchorSnapshot.CombatState, fullState);
+        if (combatState != null && selectedOptionIndex >= 0)
+        {
+            // Choose-a-card potions and similar effects often apply extra runtime state
+            // (for example SetToFreeThisTurn) after the choice resolves. When we swap the
+            // generated card to a different option, packet matching falls back to the
+            // default card state and drops those supplemental overrides unless we carry
+            // them over from the template-generated slot explicitly.
+            combatState = ApplyTemplateGeneratedCardSupplementalOverrides(
+                combatState,
+                templateSnapshot.CombatState,
+                branchPlayerState.playerId,
+                branchPileState.pileType,
+                cardIndex);
+        }
+
         return true;
     }
 
@@ -666,6 +681,89 @@ public sealed partial class UndoController
         }
 
         return CreateDerivedCombatState(derivedCombatState, derivedCombatState.FullState, updatedCostStates, updatedRuntimeStates);
+    }
+
+    private static UndoCombatFullState ApplyTemplateGeneratedCardSupplementalOverrides(
+        UndoCombatFullState derivedCombatState,
+        UndoCombatFullState templateCombatState,
+        ulong playerNetId,
+        PileType pileType,
+        int cardIndex)
+    {
+        IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardCostState>>? templateCostStatesByPile = GetCardCostStatesForPlayer(templateCombatState, playerNetId);
+        IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardRuntimeState>>? templateRuntimeStatesByPile = GetCardRuntimeStatesForPlayer(templateCombatState, playerNetId);
+        IReadOnlyList<UndoCardCostState>? templatePileCostStates = null;
+        IReadOnlyList<UndoCardRuntimeState>? templatePileRuntimeStates = null;
+        templateCostStatesByPile?.TryGetValue(pileType, out templatePileCostStates);
+        templateRuntimeStatesByPile?.TryGetValue(pileType, out templatePileRuntimeStates);
+
+        UndoCardCostState? templateCostState = templatePileCostStates != null && cardIndex >= 0 && cardIndex < templatePileCostStates.Count
+            ? templatePileCostStates[cardIndex]
+            : null;
+        UndoCardRuntimeState? templateRuntimeState = templatePileRuntimeStates != null && cardIndex >= 0 && cardIndex < templatePileRuntimeStates.Count
+            ? templatePileRuntimeStates[cardIndex]
+            : null;
+        if (templateCostState == null && templateRuntimeState == null)
+            return derivedCombatState;
+
+        bool costUpdated = false;
+        List<UndoPlayerPileCardCostState> updatedCostStates = [];
+        foreach (UndoPlayerPileCardCostState pileState in derivedCombatState.CardCostStates)
+        {
+            if (templateCostState == null
+                || pileState.PlayerNetId != playerNetId
+                || pileState.PileType != pileType
+                || cardIndex < 0
+                || cardIndex >= pileState.Cards.Count)
+            {
+                updatedCostStates.Add(pileState);
+                continue;
+            }
+
+            List<UndoCardCostState> cards = [.. pileState.Cards];
+            cards[cardIndex] = templateCostState;
+            updatedCostStates.Add(new UndoPlayerPileCardCostState
+            {
+                PlayerNetId = pileState.PlayerNetId,
+                PileType = pileState.PileType,
+                Cards = cards
+            });
+            costUpdated = true;
+        }
+
+        bool runtimeUpdated = false;
+        List<UndoPlayerPileCardRuntimeState> updatedRuntimeStates = [];
+        foreach (UndoPlayerPileCardRuntimeState pileState in derivedCombatState.CardRuntimeStates)
+        {
+            if (templateRuntimeState == null
+                || pileState.PlayerNetId != playerNetId
+                || pileState.PileType != pileType
+                || cardIndex < 0
+                || cardIndex >= pileState.Cards.Count)
+            {
+                updatedRuntimeStates.Add(pileState);
+                continue;
+            }
+
+            List<UndoCardRuntimeState> cards = [.. pileState.Cards];
+            cards[cardIndex] = templateRuntimeState;
+            updatedRuntimeStates.Add(new UndoPlayerPileCardRuntimeState
+            {
+                PlayerNetId = pileState.PlayerNetId,
+                PileType = pileState.PileType,
+                Cards = cards
+            });
+            runtimeUpdated = true;
+        }
+
+        if (!costUpdated && !runtimeUpdated)
+            return derivedCombatState;
+
+        return CreateDerivedCombatState(
+            derivedCombatState,
+            derivedCombatState.FullState,
+            costUpdated ? updatedCostStates : derivedCombatState.CardCostStates,
+            runtimeUpdated ? updatedRuntimeStates : derivedCombatState.CardRuntimeStates);
     }
 
     private static bool TryApplyVariableCountSourceSelectionDestinationPattern(
