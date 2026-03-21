@@ -571,6 +571,9 @@ public sealed partial class UndoController
         if (!HasRedo)
             return;
 
+        if (TryRedoActiveChoiceBranch())
+            return;
+
         if (TryOpenChoiceRedoSession())
             return;
 
@@ -610,7 +613,7 @@ public sealed partial class UndoController
             return false;
 
         UndoSnapshot? anchorSnapshot = GetCurrentChoiceAnchorSnapshot();
-        UndoSnapshot? branchSnapshot = _futureSnapshots.First?.Value;
+        UndoSnapshot? branchSnapshot = anchorSnapshot == null ? null : ResolveChoiceRedoBranchSnapshot(anchorSnapshot);
         if (anchorSnapshot?.ChoiceSpec?.SupportsSyntheticRestore != true
             || !IsCurrentStateAtChoiceAnchor(anchorSnapshot)
             || branchSnapshot == null
@@ -622,6 +625,94 @@ public sealed partial class UndoController
         OpenSyntheticChoiceSession(anchorSnapshot, branchSnapshot);
         NotifyStateChanged();
         return true;
+    }
+
+    private bool TryRedoActiveChoiceBranch()
+    {
+        if (!UndoModSettings.EnableChoiceUndo || !UndoModSettings.EnableUnifiedEffectMode)
+            return false;
+
+        UndoSyntheticChoiceSession? activeSession = _syntheticChoiceSession;
+        UndoSnapshot? branchSnapshot = activeSession == null ? null : ResolveChoiceRedoBranchSnapshot(activeSession);
+        if (activeSession == null
+            || branchSnapshot?.ChoiceResultKey == null
+            || branchSnapshot.IsChoiceAnchor
+            || !ReferenceEquals(activeSession.AnchorSnapshot, GetCurrentChoiceAnchorSnapshot())
+            || !IsCurrentStateAtChoiceAnchor(activeSession.AnchorSnapshot))
+        {
+            return false;
+        }
+
+        TaskHelper.RunSafely(RedoActiveChoiceBranchAsync(activeSession, branchSnapshot));
+        return true;
+    }
+
+    private UndoSnapshot? ResolveChoiceRedoBranchSnapshot(UndoSnapshot anchorSnapshot)
+    {
+        UndoSnapshot? preferredBranch = FindSyntheticChoiceTemplateSnapshot(_futureSnapshots.First?.Value, anchorSnapshot.ReplayEventCount);
+        if (preferredBranch?.ChoiceResultKey != null && !preferredBranch.IsChoiceAnchor)
+            return preferredBranch;
+
+        return _futureSnapshots
+            .FirstOrDefault(snapshot => !snapshot.IsChoiceAnchor
+                && snapshot.ChoiceResultKey != null
+                && snapshot.ReplayEventCount >= anchorSnapshot.ReplayEventCount);
+    }
+
+    private UndoSnapshot? ResolveChoiceRedoBranchSnapshot(UndoSyntheticChoiceSession session)
+    {
+        UndoSnapshot? futureBranch = ResolveChoiceRedoBranchSnapshot(session.AnchorSnapshot);
+        if (futureBranch?.ChoiceResultKey != null)
+            return futureBranch;
+
+        if (session.TemplateSnapshot?.ChoiceResultKey != null)
+            return session.TemplateSnapshot;
+
+        if (_lastResolvedChoiceResultKey != null
+            && session.CachedBranches.TryGetValue(_lastResolvedChoiceResultKey, out UndoSnapshot? lastResolvedBranch)
+            && lastResolvedBranch.ChoiceResultKey != null)
+        {
+            return lastResolvedBranch;
+        }
+
+        return session.CachedBranches.Values
+            .Where(static snapshot => snapshot.ChoiceResultKey != null)
+            .OrderByDescending(static snapshot => snapshot.SequenceId)
+            .FirstOrDefault();
+    }
+
+    private async Task RedoActiveChoiceBranchAsync(UndoSyntheticChoiceSession session, UndoSnapshot branchSnapshot)
+    {
+        UndoChoiceResultKey selectedKey = branchSnapshot.ChoiceResultKey
+            ?? throw new InvalidOperationException("Redo branch snapshot is missing a choice result key.");
+        IsRestoring = true;
+        ClearTurnTransitionBlock();
+        NotifyStateChanged();
+
+        try
+        {
+            session.RememberBranch(selectedKey, branchSnapshot);
+
+            _syntheticChoiceSession = null;
+            await DismissSupportedChoiceUiIfPresentAsync();
+
+            SyntheticChoiceVfxRequest? vfxRequest = CaptureSyntheticChoiceVfxRequest(session, branchSnapshot, selectedKey);
+            if (await TryApplySynthesizedChoiceBranchAsync(session, branchSnapshot, selectedKey, vfxRequest))
+            {
+                WriteInteractionLog("redo_choice_branch", $"choice={selectedKey} label={session.AnchorSnapshot.ActionLabel} replayEvents={branchSnapshot.ReplayEventCount} mode=direct");
+                UndoDebugLog.Write($"redo_choice_branch:{selectedKey} replayEvents={branchSnapshot.ReplayEventCount} label={session.AnchorSnapshot.ActionLabel}");
+                MainFile.Logger.Info($"Reapplied choice redo branch {selectedKey} directly. ReplayEvents={branchSnapshot.ReplayEventCount}");
+                return;
+            }
+
+            throw new InvalidOperationException($"Failed to reapply choice redo branch {selectedKey}.");
+        }
+        finally
+        {
+            IsRestoring = false;
+            NotifyStateChanged();
+            ProcessQueuedHistoryMoves();
+        }
     }
     private static bool HasRestorableChoiceSession(UndoSelectionSessionState? selectionSession)
     {
@@ -835,6 +926,20 @@ public sealed partial class UndoController
         }
                 catch (Exception ex)
         {
+            string failure = _lastRestoreFailureReason ?? DescribeException(ex);
+            bool rollbackSucceeded = false;
+            if (currentSnapshot != null)
+            {
+                try
+                {
+                    rollbackSucceeded = await TryApplyFullStateInPlaceAsync(currentSnapshot.CombatState);
+                }
+                catch (Exception rollbackEx)
+                {
+                    MainFile.Logger.Warn($"Rollback after failed {operation} also failed: {DescribeException(rollbackEx)}");
+                }
+            }
+
             if (currentSnapshot != null)
             {
                 if (destination.First?.Value == currentSnapshot)
@@ -845,7 +950,8 @@ public sealed partial class UndoController
             source.AddFirst(snapshot);
             for (int i = skippedRedoSnapshots.Count - 1; i >= 0; i--)
                 source.AddFirst(skippedRedoSnapshots[i]);
-            string failure = _lastRestoreFailureReason ?? DescribeException(ex);
+            if (rollbackSucceeded)
+                failure += " rollback=restored_current_snapshot";
             MainFile.Logger.Error($"Failed to {operation}: {failure}");
         }
         finally

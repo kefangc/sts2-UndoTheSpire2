@@ -27,6 +27,10 @@ internal static class UndoCreatureReconciliationCodecRegistry
 {
     private static readonly IReadOnlyList<IUndoCreatureReconciliationCodec> Codecs =
     [
+        // Recreate vanilla no-op stunned moves for any monster first, then let
+        // monster-specific codecs overwrite the callback when the stun carries
+        // custom wake-up / follow-up behavior.
+        new GenericTransientStunReconciliationCodec(),
         new SlumberingBeetleReconciliationCodec(),
         new LagavulinMatriarchReconciliationCodec(),
         new OwlMagistrateReconciliationCodec(),
@@ -35,8 +39,7 @@ internal static class UndoCreatureReconciliationCodecRegistry
         new TunnelerReconciliationCodec(),
         new CeremonialBeastReconciliationCodec(),
         new WrigglerReconciliationCodec(),
-        new CorpseSlugReconciliationCodec(),
-        new GenericTransientStunReconciliationCodec()
+        new CorpseSlugReconciliationCodec()
     ];
 
     public static HashSet<string> GetImplementedCodecIds()
@@ -469,7 +472,7 @@ internal static class UndoCreatureReconciliationCodecRegistry
 
         public bool CanHandle(MonsterModel monster)
         {
-            return monster is BowlbugRock or ThievingHopper or FatGremlin or SneakyGremlin or CeremonialBeast or Wriggler;
+            return true;
         }
 
         public void Reconcile(MonsterModel monster, UndoMonsterState? state)

@@ -418,11 +418,49 @@ internal static class UndoCreatureStatusCodecRegistry
         protected override string PropertyName => "IsWoundUp";
     }
 
-    private sealed class OvicopterCanLayCodec : UndoCreatureStatusBoolCodec<Ovicopter>
+    private sealed class OvicopterCanLayCodec : IUndoCreatureStatusCodec<UndoBoolCreatureStatusRuntimePayload>
     {
-        public override string CodecId => "status:Ovicopter.CanLay";
+        public string CodecId => "status:Ovicopter.CanLay";
 
-        protected override string PropertyName => "CanLay";
+        public bool CanHandle(MonsterModel monster)
+        {
+            return monster is Ovicopter;
+        }
+
+        public UndoBoolCreatureStatusRuntimePayload? CaptureTyped(MonsterModel monster)
+        {
+            if (monster is not Ovicopter ovicopter)
+                return null;
+
+            return new UndoBoolCreatureStatusRuntimePayload
+            {
+                CodecId = CodecId,
+                Value = ReadCanLay(ovicopter)
+            };
+        }
+
+        public bool RestoreTyped(MonsterModel monster, UndoBoolCreatureStatusRuntimePayload state)
+        {
+            // CanLay is a computed branch predicate derived from current live topology,
+            // not a mutable runtime field. Keep the codec id for backward compatibility
+            // with existing snapshots, but let restore recompute it from combat state.
+            return monster is Ovicopter;
+        }
+
+        UndoCreatureStatusRuntimePayload? IUndoCreatureStatusCodec.Capture(MonsterModel monster)
+        {
+            return CaptureTyped(monster);
+        }
+
+        bool IUndoCreatureStatusCodec.Restore(MonsterModel monster, UndoCreatureStatusRuntimePayload state)
+        {
+            return state is UndoBoolCreatureStatusRuntimePayload typed && RestoreTyped(monster, typed);
+        }
+
+        private static bool ReadCanLay(Ovicopter ovicopter)
+        {
+            return UndoReflectionUtil.FindProperty(typeof(Ovicopter), "CanLay")?.GetValue(ovicopter) is true;
+        }
     }
 
     private sealed class SnappingJaxfruitChargedCodec : UndoCreatureStatusBoolCodec<SnappingJaxfruit>
