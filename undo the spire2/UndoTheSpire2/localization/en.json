@@ -17,5 +17,7 @@
   "settings.choice_undo_title": "Enable Choice Undo",
   "settings.choice_undo_description": "When enabled, undo on cards or potions with choices returns to the choice screen; when disabled, undo defaults to before the card or potion was played.",
   "settings.unified_effect_title": "Enable Unified Effect Mode",
-  "settings.unified_effect_description": "Prefer the current generic instant-effect synthesis path; disable it to fall back to the more conservative choice restore path."
+  "settings.unified_effect_description": "Prefer the current generic instant-effect synthesis path; disable it to fall back to the more conservative choice restore path.",
+  "settings.hud2_title": "Enable HUD2",
+  "settings.hud2_description": "Enable a second HUD style inspired by Slay the Spire 2's dark stone-and-brass combat UI."
 }

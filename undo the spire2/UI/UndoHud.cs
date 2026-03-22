@@ -63,6 +63,9 @@ public partial class UndoHud : Control
         Position = energyPosition + new Vector2(-4f, -Size.Y - 20f);
         _undoButton.IsEnabled = controller.CanUndoNow(_combatUi);
         _redoButton.IsEnabled = controller.CanRedoNow(_combatUi);
+        bool useHud2 = UndoModSettings.EnableHud2;
+        _undoButton.UseHud2 = useHud2;
+        _redoButton.UseHud2 = useHud2;
         _undoButton.HoverTitle = ModLocalization.Get("hud.undo_hover_title", "Undo (Ctrl+Z)");
         _redoButton.HoverTitle = ModLocalization.Get("hud.redo_hover_title", "Redo (Ctrl+Y)");
         _undoButton.HoverDescription = controller.HasUndo

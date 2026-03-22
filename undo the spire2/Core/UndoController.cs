@@ -464,7 +464,8 @@ public sealed partial class UndoController
         return GodotObject.IsInstanceValid(combatUi)
             && combatUi.IsVisibleInTree()
             && IsSinglePlayerCombat()
-            && CombatManager.Instance.IsInProgress;
+            && CombatManager.Instance.IsInProgress
+            && !IsHudHiddenByNonChoiceUi(combatUi);
     }
 
     public bool CanUndoNow(NCombatUi combatUi)
@@ -1509,6 +1510,38 @@ public sealed partial class UndoController
     {
         return IsUndoRedoTemporarilyBlocked(combatUi) || IsCombatUiTransitioning(combatUi);
     }
+
+    private static bool IsHudHiddenByNonChoiceUi(NCombatUi combatUi)
+    {
+        if (IsSupportedChoiceUiActive(combatUi))
+            return false;
+
+        if (combatUi.Hand.IsInCardSelection)
+            return false;
+
+        if (NOverlayStack.Instance?.ScreenCount > 0)
+            return true;
+
+        object? currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+        if (currentScreen == null)
+            return false;
+
+        if (ReferenceEquals(currentScreen, NCombatRoom.Instance) || ReferenceEquals(currentScreen, combatUi))
+            return false;
+
+        if (currentScreen is Node screenNode)
+        {
+            if (ReferenceEquals(screenNode, NCombatRoom.Instance)
+                || ReferenceEquals(screenNode, combatUi)
+                || screenNode.IsAncestorOf(combatUi))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private static bool IsCombatUiTransitioning(NCombatUi combatUi)
     {
         if (!CombatManager.Instance.EndingPlayerTurnPhaseOne && !CombatManager.Instance.EndingPlayerTurnPhaseTwo)

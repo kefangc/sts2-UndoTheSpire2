@@ -99,6 +99,8 @@ internal sealed partial class UndoModSettingsPanel : PanelContainer
     private readonly Label _choiceUndoDescription;
     private readonly CheckBox _unifiedEffectToggle;
     private readonly Label _unifiedEffectDescription;
+    private readonly CheckBox _hud2Toggle;
+    private readonly Label _hud2Description;
     private NModInfoContainer? _container;
     private bool _isRefreshing;
 
@@ -133,7 +135,7 @@ internal sealed partial class UndoModSettingsPanel : PanelContainer
         VBoxContainer layout = new()
         {
             Name = "Layout",
-            CustomMinimumSize = new Vector2(340f, 148f),
+            CustomMinimumSize = new Vector2(340f, 220f),
             SizeFlagsHorizontal = SizeFlags.ExpandFill
         };
         AddChild(layout);
@@ -143,15 +145,20 @@ internal sealed partial class UndoModSettingsPanel : PanelContainer
         _choiceUndoDescription = CreateDescriptionLabel();
         _unifiedEffectToggle = CreateToggle();
         _unifiedEffectDescription = CreateDescriptionLabel();
+        _hud2Toggle = CreateToggle();
+        _hud2Description = CreateDescriptionLabel();
 
         layout.AddChild(_titleLabel);
         layout.AddChild(_choiceUndoToggle);
         layout.AddChild(_choiceUndoDescription);
         layout.AddChild(_unifiedEffectToggle);
         layout.AddChild(_unifiedEffectDescription);
+        layout.AddChild(_hud2Toggle);
+        layout.AddChild(_hud2Description);
 
         _choiceUndoToggle.Toggled += OnChoiceUndoToggled;
         _unifiedEffectToggle.Toggled += OnUnifiedEffectToggled;
+        _hud2Toggle.Toggled += OnHud2Toggled;
         RefreshTexts();
         RefreshFromSettings();
     }
@@ -186,9 +193,9 @@ internal sealed partial class UndoModSettingsPanel : PanelContainer
         Visible = true;
         float titleBottom = title.Position.Y + title.Size.Y;
         float descriptionBottom = description.Position.Y + Mathf.Min(description.GetContentHeight(), 180);
-        float panelY = Mathf.Clamp(descriptionBottom + 22f, titleBottom + 92f, Mathf.Max(titleBottom + 92f, _container.Size.Y - 180f));
+        float panelY = Mathf.Clamp(descriptionBottom + 22f, titleBottom + 92f, Mathf.Max(titleBottom + 92f, _container.Size.Y - 248f));
         Position = new Vector2(description.Position.X, panelY);
-        Size = new Vector2(Mathf.Max(340f, _container.Size.X - 12f), 148f);
+        Size = new Vector2(Mathf.Max(340f, _container.Size.X - 12f), 220f);
     }
     private void OnTreeExiting()
     {
@@ -216,6 +223,14 @@ internal sealed partial class UndoModSettingsPanel : PanelContainer
         UndoModSettings.SetEnableUnifiedEffectMode(toggled);
     }
 
+    private void OnHud2Toggled(bool toggled)
+    {
+        if (_isRefreshing)
+            return;
+
+        UndoModSettings.SetEnableHud2(toggled);
+    }
+
     private void RefreshTexts()
     {
         _titleLabel.Text = ModLocalization.Get("settings.panel_title", "Undo Settings");
@@ -227,6 +242,10 @@ internal sealed partial class UndoModSettingsPanel : PanelContainer
         _unifiedEffectDescription.Text = ModLocalization.Get(
             "settings.unified_effect_description",
             "Prefer the generic instant-restore effect synthesis path instead of conservative fallbacks.");
+        _hud2Toggle.Text = ModLocalization.Get("settings.hud2_title", "Enable HUD2");
+        _hud2Description.Text = ModLocalization.Get(
+            "settings.hud2_description",
+            "Use an alternate HUD style inspired by Slay the Spire 2's dark stone-and-brass combat UI.");
     }
 
     private void RefreshFromSettings()
@@ -234,6 +253,7 @@ internal sealed partial class UndoModSettingsPanel : PanelContainer
         _isRefreshing = true;
         _choiceUndoToggle.ButtonPressed = UndoModSettings.EnableChoiceUndo;
         _unifiedEffectToggle.ButtonPressed = UndoModSettings.EnableUnifiedEffectMode;
+        _hud2Toggle.ButtonPressed = UndoModSettings.EnableHud2;
         _unifiedEffectToggle.Disabled = !_choiceUndoToggle.ButtonPressed;
         _isRefreshing = false;
     }

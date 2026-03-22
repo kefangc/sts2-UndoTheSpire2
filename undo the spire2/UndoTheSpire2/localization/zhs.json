@@ -17,5 +17,7 @@
   "settings.choice_undo_title": "启用选择撤销",
   "settings.choice_undo_description": "启用后，选择类牌或药水撤销时会先回到选择界面；关闭时默认直接回到打出该牌或药水之前。",
   "settings.unified_effect_title": "启用统一效果模式",
-  "settings.unified_effect_description": "启用后优先使用当前这套统一的瞬时效果合成逻辑；关闭时回退到更保守的选择恢复路径。"
+  "settings.unified_effect_description": "启用后优先使用当前这套统一的瞬时效果合成逻辑；关闭时回退到更保守的选择恢复路径。",
+  "settings.hud2_title": "启用HUD2",
+  "settings.hud2_description": "启用第二种 HUD 风格，参考《杀戮尖塔2》公开画面中的深蓝石质底板与黄铜描边视觉。"
 }
