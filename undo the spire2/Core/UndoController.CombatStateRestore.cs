@@ -668,8 +668,14 @@ public sealed partial class UndoController
             _pastSnapshots.RemoveFirst();
         }
 
+        UndoCombatFullState anchorCombatState = BuildChoiceAnchorCombatState(
+            restoredSnapshot,
+            choiceSpec,
+            existing,
+            replayEventCount,
+            anchorCombatStateOverride);
         UndoSnapshot anchor = new(
-            anchorCombatStateOverride ?? CaptureCurrentCombatFullState(choiceSpec),
+            anchorCombatState,
             replayEventCount,
             UndoActionKind.PlayerChoice,
             _nextSequenceId++,
@@ -680,6 +686,54 @@ public sealed partial class UndoController
         _pastSnapshots.AddFirst(anchor);
         TrimSnapshots(_pastSnapshots);
         MainFile.Logger.Info($"Re-armed player choice undo anchor. ReplayEvents={anchor.ReplayEventCount}, UndoCount={_pastSnapshots.Count}, ChoiceKind={(choiceSpec == null ? "null" : choiceSpec.Kind)} forceRefresh={forceRefresh}");
+    }
+
+    private UndoCombatFullState BuildChoiceAnchorCombatState(
+        UndoSnapshot restoredSnapshot,
+        UndoChoiceSpec choiceSpec,
+        UndoSnapshot? existingAnchor,
+        int replayEventCount,
+        UndoCombatFullState? anchorCombatStateOverride)
+    {
+        UndoCombatFullState anchorCombatState = anchorCombatStateOverride ?? CaptureCurrentCombatFullState(choiceSpec);
+        if (anchorCombatStateOverride != null)
+            return anchorCombatState;
+
+        Dictionary<UndoChoiceResultKey, UndoChoiceBranchState> savedBranches = new();
+        RememberChoiceBranchStates(savedBranches, anchorCombatState.ChoiceBranchStates);
+        if (existingAnchor?.IsChoiceAnchor == true && existingAnchor.ReplayEventCount == replayEventCount)
+            RememberChoiceBranchStates(savedBranches, existingAnchor.CombatState.ChoiceBranchStates);
+        RememberChoiceBranchStates(savedBranches, restoredSnapshot.CombatState.ChoiceBranchStates);
+
+        if (restoredSnapshot.ChoiceResultKey != null)
+        {
+            savedBranches[restoredSnapshot.ChoiceResultKey] = CaptureChoiceBranchState(restoredSnapshot);
+        }
+        else if (restoredSnapshot.ActionKind == UndoActionKind.PlayerChoice
+            && _lastResolvedChoiceResultKey != null
+            && restoredSnapshot.ReplayEventCount == replayEventCount)
+        {
+            UndoSnapshot resolvedBranchSnapshot = new(
+                anchorCombatState,
+                replayEventCount,
+                restoredSnapshot.ActionKind,
+                restoredSnapshot.SequenceId,
+                restoredSnapshot.ActionLabel,
+                choiceResultKey: _lastResolvedChoiceResultKey);
+            savedBranches[_lastResolvedChoiceResultKey] = CaptureChoiceBranchState(resolvedBranchSnapshot);
+        }
+
+        return savedBranches.Count == 0
+            ? anchorCombatState
+            : WithChoiceBranchStates(anchorCombatState, [.. savedBranches.Values.OrderBy(static branch => branch.ReplayEventCount)]);
+    }
+
+    private static void RememberChoiceBranchStates(
+        Dictionary<UndoChoiceResultKey, UndoChoiceBranchState> destination,
+        IReadOnlyList<UndoChoiceBranchState> branchStates)
+    {
+        foreach (UndoChoiceBranchState branchState in branchStates)
+            destination[branchState.ChoiceResultKey] = branchState;
     }
 
     private static void RebuildActionQueues(IReadOnlyList<Player> players)

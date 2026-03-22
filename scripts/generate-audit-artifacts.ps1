@@ -266,7 +266,7 @@ Repo: `$RepoRoot`
 - `WellLaidPlans`: paused hand selection anchor and branch-state restore.
 - `PaelsLegion`: pet ownership topology and special visual normalization.
 - `SlumberingBeetle` / `LagavulinMatriarch`: power-driven sleep/wake move reconciliation.
-- `BowlbugRock`, `ThievingHopper`, `FatGremlin`, `SneakyGremlin`, `CeremonialBeast`, `Wriggler`: stunned/sleeping runtime plus transient move reconciliation.
+- `BowlbugRock`, `ThievingHopper`, `FatGremlin`, `SneakyGremlin`, `CeremonialBeast`, `Wriggler`, `TerrorEel`, and generic stun effects such as `Whistle`/`ShriekPower`/`ImbalancedPower`: transient stunned move reconciliation.
 - `AutomationPower`: private combat counter.
 - `VitalSparkPower`: `HashSet<Player>` runtime graph.
 - `PenNib`: private `AttackToDouble` card reference.

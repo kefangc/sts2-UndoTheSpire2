@@ -13,7 +13,7 @@ namespace UndoTheSpire2;
 
 internal sealed class UndoCombatFullState
 {
-    public const int CurrentSchemaVersion = 7;
+    public const int CurrentSchemaVersion = 8;
 
     public UndoCombatFullState(
         NetFullCombatState fullState,
@@ -36,6 +36,7 @@ internal sealed class UndoCombatFullState
         PresentationHints? presentationHints = null,
         IReadOnlyList<CreatureTopologyState>? creatureTopologyStates = null,
         IReadOnlyList<CreatureStatusRuntimeState>? creatureStatusRuntimeStates = null,
+        IReadOnlyList<UndoCreatureVisualState>? creatureVisualStates = null,
         UndoCombatCardDbState? combatCardDbState = null,
         IReadOnlyList<UndoPlayerOrbState>? playerOrbStates = null,
         IReadOnlyList<UndoPlayerDeckState>? playerDeckStates = null,
@@ -55,6 +56,7 @@ internal sealed class UndoCombatFullState
         MonsterStates = monsterStates;
         CreatureTopologyStates = creatureTopologyStates ?? [];
         CreatureStatusRuntimeStates = creatureStatusRuntimeStates ?? [];
+        CreatureVisualStates = creatureVisualStates ?? [];
         CombatCardDbState = combatCardDbState ?? new UndoCombatCardDbState();
         PlayerOrbStates = playerOrbStates ?? [];
         PlayerDeckStates = playerDeckStates ?? [];
@@ -102,6 +104,8 @@ internal sealed class UndoCombatFullState
     public IReadOnlyList<CreatureTopologyState> CreatureTopologyStates { get; }
 
     public IReadOnlyList<CreatureStatusRuntimeState> CreatureStatusRuntimeStates { get; }
+
+    public IReadOnlyList<UndoCreatureVisualState> CreatureVisualStates { get; }
 
     public UndoCombatCardDbState CombatCardDbState { get; }
 

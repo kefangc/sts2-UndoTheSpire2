@@ -1,5 +1,6 @@
 // 文件说明：Mod 入口，负责注册补丁并初始化撤销控制器。
 using System;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using Godot;
@@ -17,10 +18,29 @@ public partial class MainFile : Node
     {
         UndoDebugLog.Initialize();
         UndoModSettings.Initialize();
+        LogBuildIdentity(Assembly.GetExecutingAssembly());
         Harmony harmony = new(ModId);
         (int patchedClasses, int failedClasses) = PatchAllSafely(harmony, Assembly.GetExecutingAssembly());
         Logger.Info($"UndoTheSpire2 patching finished. patchedClasses={patchedClasses}, failedClasses={failedClasses}");
         UndoDebugLog.Write($"MainFile initialized. Debug log path={UndoDebugLog.CurrentPath}");
+    }
+
+    private static void LogBuildIdentity(Assembly assembly)
+    {
+        try
+        {
+            string assemblyPath = assembly.Location;
+            FileInfo fileInfo = new(assemblyPath);
+            string version = assembly.GetName().Version?.ToString() ?? "unknown";
+            string identity =
+                $"Loaded assembly path={assemblyPath} version={version} lastWriteTime={fileInfo.LastWriteTime:yyyy-MM-dd HH:mm:ss.fff} length={fileInfo.Length}";
+            Logger.Info(identity);
+            UndoDebugLog.Write(identity);
+        }
+        catch (Exception ex)
+        {
+            UndoDebugLog.Write($"Failed to log assembly identity: {ex.Message}");
+        }
     }
 
     private static (int patchedClasses, int failedClasses) PatchAllSafely(Harmony harmony, Assembly assembly)

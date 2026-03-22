@@ -9,6 +9,7 @@ internal static class UndoModSettings
     {
         public bool EnableChoiceUndo { get; set; } = true;
         public bool EnableUnifiedEffectMode { get; set; } = true;
+        public bool EnableHud2 { get; set; } = false;
     }
 
     private static readonly Lock Sync = new();
@@ -26,6 +27,7 @@ internal static class UndoModSettings
     public static bool EnableChoiceUndo => _data.EnableChoiceUndo;
 
     public static bool EnableUnifiedEffectMode => _data.EnableUnifiedEffectMode;
+    public static bool EnableHud2 => _data.EnableHud2;
 
     public static string CurrentPath => _settingsPath ?? string.Empty;
 
@@ -48,6 +50,11 @@ internal static class UndoModSettings
         UpdateCore(data => data.EnableUnifiedEffectMode = value);
     }
 
+    public static void SetEnableHud2(bool value)
+    {
+        UpdateCore(data => data.EnableHud2 = value);
+    }
+
     private static void UpdateCore(Action<UndoModSettingsData> update)
     {
         bool changed;
@@ -57,7 +64,8 @@ internal static class UndoModSettings
             UndoModSettingsData before = Clone(_data);
             update(_data);
             changed = before.EnableChoiceUndo != _data.EnableChoiceUndo
-                || before.EnableUnifiedEffectMode != _data.EnableUnifiedEffectMode;
+                || before.EnableUnifiedEffectMode != _data.EnableUnifiedEffectMode
+                || before.EnableHud2 != _data.EnableHud2;
             if (!changed)
                 return;
 
@@ -65,7 +73,7 @@ internal static class UndoModSettings
         }
 
         Changed?.Invoke();
-        UndoDebugLog.Write($"Settings updated. choiceUndo={EnableChoiceUndo} unifiedEffectMode={EnableUnifiedEffectMode}");
+        UndoDebugLog.Write($"Settings updated. choiceUndo={EnableChoiceUndo} unifiedEffectMode={EnableUnifiedEffectMode} hud2={EnableHud2}");
     }
 
     private static UndoModSettingsData LoadCore(string settingsPath)
@@ -108,7 +116,8 @@ internal static class UndoModSettings
         return new UndoModSettingsData
         {
             EnableChoiceUndo = data.EnableChoiceUndo,
-            EnableUnifiedEffectMode = data.EnableUnifiedEffectMode
+            EnableUnifiedEffectMode = data.EnableUnifiedEffectMode,
+            EnableHud2 = data.EnableHud2
         };
     }
 
@@ -117,7 +126,8 @@ internal static class UndoModSettings
         return new UndoModSettingsData
         {
             EnableChoiceUndo = true,
-            EnableUnifiedEffectMode = true
+            EnableUnifiedEffectMode = true,
+            EnableHud2 = false
         };
     }
 

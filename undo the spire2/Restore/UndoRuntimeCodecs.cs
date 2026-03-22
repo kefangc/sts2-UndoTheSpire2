@@ -114,6 +114,18 @@ internal sealed class UndoCardIntMapRuntimeComplexState : UndoComplexRuntimeStat
     public IReadOnlyList<UndoCardIntMapEntry> Entries { get; init; } = [];
 }
 
+internal sealed class UndoNamedIntRuntimeEntry
+{
+    public required string Name { get; init; }
+
+    public int Value { get; init; }
+}
+
+internal sealed class UndoNamedIntFieldsRuntimeComplexState : UndoComplexRuntimeState
+{
+    public IReadOnlyList<UndoNamedIntRuntimeEntry> Entries { get; init; } = [];
+}
+
 internal sealed class UndoDampenRuntimeComplexState : UndoComplexRuntimeState
 {
     public IReadOnlyList<CreatureRef> Casters { get; init; } = [];
@@ -237,6 +249,10 @@ internal static class UndoRuntimeStateCodecRegistry
         new AutomationCardsLeftPowerCodec(),
         new CardsPlayedThisTurnPowerCodec(),
         new JugglingAttacksPlayedPowerCodec(),
+        new PowerIntFieldsCodec<DarkEmbracePower>("power:DarkEmbracePower.etherealCount", true, "etherealCount"),
+        new PowerIntFieldsCodec<FeralPower>("power:FeralPower.zeroCostAttacksPlayed", true, "zeroCostAttacksPlayed"),
+        new PowerIntFieldsCodec<OrbitPower>("power:OrbitPower.progress", true, "energySpent", "triggerCount"),
+        new PowerIntFieldsCodec<OutbreakPower>("power:OutbreakPower.timesPoisoned", true, "timesPoisoned"),
         new VitalSparkTriggeredPlayersPowerCodec(),
         new AfterimagePlayedCardsPowerCodec(),
         new NightmareSelectedCardPowerCodec(),
@@ -396,6 +412,46 @@ internal static class UndoRuntimeStateCodecRegistry
             return UndoReflectionUtil.TrySetPropertyValue(power, "CardsPlayedThisTurn", value);
 
         return UndoReflectionUtil.TrySetFieldValue(power, "_cardsPlayedThisTurn", value);
+    }
+
+    private static bool TryGetPowerIntField(PowerModel power, string fieldName, bool preferInternalData, out int value)
+    {
+        object? internalData = GetPowerInternalData(power);
+        if (preferInternalData && internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), fieldName)?.GetValue(internalData) is int internalValue)
+        {
+            value = internalValue;
+            return true;
+        }
+
+        if (UndoReflectionUtil.FindField(power.GetType(), fieldName)?.GetValue(power) is int fieldValue)
+        {
+            value = fieldValue;
+            return true;
+        }
+
+        if (!preferInternalData && internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), fieldName)?.GetValue(internalData) is int fallbackInternalValue)
+        {
+            value = fallbackInternalValue;
+            return true;
+        }
+
+        value = 0;
+        return false;
+    }
+
+    private static bool TrySetPowerIntField(PowerModel power, string fieldName, int value, bool preferInternalData)
+    {
+        object? internalData = GetPowerInternalData(power);
+        if (preferInternalData && internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), fieldName) != null)
+            return UndoReflectionUtil.TrySetFieldValue(internalData, fieldName, value);
+
+        if (UndoReflectionUtil.FindField(power.GetType(), fieldName) != null)
+            return UndoReflectionUtil.TrySetFieldValue(power, fieldName, value);
+
+        if (!preferInternalData && internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), fieldName) != null)
+            return UndoReflectionUtil.TrySetFieldValue(internalData, fieldName, value);
+
+        return false;
     }
 
     private static bool TryGetPowerBoolField(PowerModel power, string fieldName, bool preferInternalData, out bool value)
@@ -697,6 +753,60 @@ internal static class UndoRuntimeStateCodecRegistry
 
             UndoReflectionUtil.TrySetFieldValue(internalData, "attacksPlayedThisTurn", state.Value);
             InvokeDisplayAmountChanged(power);
+        }
+    }
+
+    private sealed class PowerIntFieldsCodec<TPower> : UndoPowerRuntimeCodec<UndoNamedIntFieldsRuntimeComplexState>
+        where TPower : PowerModel
+    {
+        private readonly string _codecId;
+        private readonly bool _preferInternalData;
+        private readonly IReadOnlyList<string> _fieldNames;
+
+        public PowerIntFieldsCodec(string codecId, bool preferInternalData, params string[] fieldNames)
+        {
+            _codecId = codecId;
+            _preferInternalData = preferInternalData;
+            _fieldNames = fieldNames;
+        }
+
+        public override string CodecId => _codecId;
+
+        public override bool CanHandle(PowerModel power)
+        {
+            return power is TPower && _fieldNames.All(fieldName => TryGetPowerIntField(power, fieldName, _preferInternalData, out _));
+        }
+
+        public override UndoNamedIntFieldsRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
+        {
+            List<UndoNamedIntRuntimeEntry> entries = [];
+            foreach (string fieldName in _fieldNames)
+            {
+                if (!TryGetPowerIntField(power, fieldName, _preferInternalData, out int value))
+                    return null;
+
+                entries.Add(new UndoNamedIntRuntimeEntry
+                {
+                    Name = fieldName,
+                    Value = value
+                });
+            }
+
+            return new UndoNamedIntFieldsRuntimeComplexState
+            {
+                CodecId = CodecId,
+                Entries = entries
+            };
+        }
+
+        public override void Restore(PowerModel power, UndoNamedIntFieldsRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            bool restoredAny = false;
+            foreach (UndoNamedIntRuntimeEntry entry in state.Entries)
+                restoredAny |= TrySetPowerIntField(power, entry.Name, entry.Value, _preferInternalData);
+
+            if (restoredAny)
+                InvokeDisplayAmountChanged(power);
         }
     }
 

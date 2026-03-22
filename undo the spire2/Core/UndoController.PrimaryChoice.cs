@@ -228,12 +228,16 @@ public sealed partial class UndoController
         if (string.Equals(pausedChoiceState.SourceActionCodecId, "action:choose-a-card", StringComparison.Ordinal))
             return false;
 
-        // from-hand 的弃牌类选择，优先回到官方 play snapshot 再 replay 到 choice 点。
-        // 这样可以复用 Survivor 这类 still-live 的官方收尾路径，避免直接对 choice snapshot
-        // 做 full-state restore 时命中手牌 holder/PlayCardAction 中间态。
+        // 官方的 from-hand 弃牌选择嵌在 live PlayCardAction 内部，主日志已经证明 replay/resume
+        // 可能把前台 action 留在非法 Executing 状态。对这类来源一律改走 detached choice + custom branch。
+        UndoChoiceSpec? choiceSpec = pausedChoiceState.ChoiceSpec;
+        if (choiceSpec != null && ShouldAvoidLiveFromHandDiscardRestore(pausedChoiceState, choiceSpec))
+            return false;
+
+        // 其他 from-hand 选择依然尽量复用 live paused action，避免 full-state restore 时
+        // 命中手牌 holder/PlayCardAction 的中间态。
         if (string.Equals(pausedChoiceState.SourceActionCodecId, "action:from-hand", StringComparison.Ordinal))
         {
-            UndoChoiceSpec? choiceSpec = pausedChoiceState.ChoiceSpec;
             if (choiceSpec != null
                 && choiceSpec.SourcePileType == PileType.Hand
                 && IsDiscardSelection(choiceSpec.SelectionPrefs))
@@ -552,11 +556,8 @@ public sealed partial class UndoController
         if (pausedChoiceState == null)
             return false;
 
-        if (string.Equals(pausedChoiceState.SourceActionCodecId, "action:from-hand", StringComparison.Ordinal)
-            && IsOfficialFromHandDiscardChoice(choiceSpec))
-        {
-            return true;
-        }
+        if (ShouldAvoidLiveFromHandDiscardRestore(pausedChoiceState, choiceSpec))
+            return false;
 
         if (stateAlreadyApplied)
             return true;
@@ -1021,6 +1022,12 @@ public sealed partial class UndoController
                 || IsSourceChoice(choiceSpec, typeof(ToolsOfTheTradePower)));
     }
 
+    private static bool ShouldAvoidLiveFromHandDiscardRestore(PausedChoiceState pausedChoiceState, UndoChoiceSpec choiceSpec)
+    {
+        return string.Equals(pausedChoiceState.SourceActionCodecId, "action:from-hand", StringComparison.Ordinal)
+            && IsOfficialFromHandDiscardChoice(choiceSpec);
+    }
+
     private static bool TryResolveSelectedHandCards(UndoChoiceSpec choiceSpec, UndoChoiceResultKey selectedKey, Player player, out List<CardModel> selectedCards)
     {
         selectedCards = [];
@@ -1142,6 +1149,7 @@ public sealed partial class UndoController
             source.PresentationHints,
             source.CreatureTopologyStates,
             source.CreatureStatusRuntimeStates,
+            source.CreatureVisualStates,
             source.CombatCardDbState,
             source.PlayerOrbStates,
             source.PlayerDeckStates,
