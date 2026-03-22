@@ -1149,6 +1149,7 @@ public sealed partial class UndoController
             source.PresentationHints,
             source.CreatureTopologyStates,
             source.CreatureStatusRuntimeStates,
+            source.CreatureVisualStates,
             source.CombatCardDbState,
             source.PlayerOrbStates,
             source.PlayerDeckStates,

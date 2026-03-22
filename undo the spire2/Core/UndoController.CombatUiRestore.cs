@@ -522,16 +522,30 @@ public sealed partial class UndoController
         if (combatRoom == null)
             return;
 
-        Dictionary<string, UndoMonsterState> monsterStatesByKey = snapshotState.MonsterStates
-            .Where(static state => state.VisualDefaultScale.HasValue || state.VisualHue.HasValue)
+        Dictionary<string, UndoCreatureVisualState> creatureVisualStatesByKey = snapshotState.CreatureVisualStates
+            .Where(static state => state.VisualDefaultScale.HasValue || state.VisualHue.HasValue || state.TempScale.HasValue)
             .ToDictionary(static state => state.CreatureKey, static state => state);
-        if (monsterStatesByKey.Count == 0)
+        if (creatureVisualStatesByKey.Count == 0 && snapshotState.MonsterStates.Count > 0)
+        {
+            creatureVisualStatesByKey = snapshotState.MonsterStates
+                .Where(static state => state.VisualDefaultScale.HasValue || state.VisualHue.HasValue)
+                .ToDictionary(
+                    static state => state.CreatureKey,
+                    static state => new UndoCreatureVisualState
+                    {
+                        CreatureKey = state.CreatureKey,
+                        VisualDefaultScale = state.VisualDefaultScale,
+                        VisualHue = state.VisualHue
+                    });
+        }
+
+        if (creatureVisualStatesByKey.Count == 0)
             return;
 
         for (int creatureIndex = 0; creatureIndex < combatState.Creatures.Count; creatureIndex++)
         {
             Creature creature = combatState.Creatures[creatureIndex];
-            if (!monsterStatesByKey.TryGetValue(BuildCreatureKey(creature, creatureIndex), out UndoMonsterState? monsterState))
+            if (!creatureVisualStatesByKey.TryGetValue(BuildCreatureKey(creature, creatureIndex), out UndoCreatureVisualState? creatureVisualState))
                 continue;
 
             NCreature? creatureNode = combatRoom.GetCreatureNode(creature);
@@ -539,13 +553,29 @@ public sealed partial class UndoController
             if (creatureNode == null || creatureVisuals == null)
                 continue;
 
-            float scale = monsterState.VisualDefaultScale ?? creatureVisuals.DefaultScale;
-            float hue = monsterState.VisualHue
+            float scale = creatureVisualState.VisualDefaultScale ?? creatureVisuals.DefaultScale;
+            float hue = creatureVisualState.VisualHue
                 ?? (FindField(creatureVisuals.GetType(), "_hue")?.GetValue(creatureVisuals) is float currentHue ? currentHue : 0f);
-            creatureNode.SetScaleAndHue(scale, hue);
+            RestoreCreatureVisualStateInstantly(creatureNode, scale, hue, creatureVisualState.TempScale);
         }
 
         RelayoutEnemyCreatureNodes(combatRoom, combatState);
+    }
+
+    private static void RestoreCreatureVisualStateInstantly(NCreature creatureNode, float defaultScale, float hue, float? tempScale)
+    {
+        GetPrivateFieldValue<Tween>(creatureNode, "_scaleTween")?.Kill();
+        SetPrivateFieldValue(creatureNode, "_scaleTween", null);
+
+        creatureNode.SetScaleAndHue(defaultScale, hue);
+        if (!tempScale.HasValue)
+            return;
+
+        float resolvedTempScale = tempScale.Value;
+        SetPrivateFieldValue(creatureNode, "_tempScale", resolvedTempScale);
+        creatureNode.Visuals.Scale = Vector2.One * resolvedTempScale * defaultScale;
+        InvokePrivateMethod(creatureNode, "SetOrbManagerPosition");
+        InvokePrivateMethod(creatureNode, "UpdateBounds", [typeof(Node)], creatureNode.Visuals);
     }
 
     private static void RelayoutEnemyCreatureNodes(NCombatRoom combatRoom, CombatState combatState)

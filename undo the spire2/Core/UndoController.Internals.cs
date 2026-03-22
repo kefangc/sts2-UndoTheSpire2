@@ -194,6 +194,11 @@ public sealed partial class UndoController
         return FindMethod(instance.GetType(), methodName)?.Invoke(instance, args);
     }
 
+    private static object? InvokePrivateMethod(object instance, string methodName, Type[] parameterTypes, params object?[]? args)
+    {
+        return FindMethod(instance.GetType(), methodName, parameterTypes)?.Invoke(instance, args);
+    }
+
     private static string DescribeException(Exception ex)
     {
         List<string> parts = [];
@@ -248,6 +253,20 @@ public sealed partial class UndoController
         return null;
     }
 
+    private static MethodInfo? FindMethod(Type? type, string name, Type[] parameterTypes)
+    {
+        while (type != null)
+        {
+            MethodInfo? method = type.GetMethod(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, parameterTypes, null);
+            if (method != null)
+                return method;
+
+            type = type.BaseType;
+        }
+
+        return null;
+    }
+
     private static UndoCombatFullState CreateDerivedCombatState(
         UndoCombatFullState source,
         NetFullCombatState fullState,
@@ -285,6 +304,7 @@ public sealed partial class UndoController
             },
             source.CreatureTopologyStates,
             source.CreatureStatusRuntimeStates,
+            source.CreatureVisualStates,
             source.CombatCardDbState,
             source.PlayerOrbStates,
             source.PlayerDeckStates,

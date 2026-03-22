@@ -86,6 +86,7 @@ public sealed partial class UndoController
             CaptureFirstInSeriesPlayCounts(combatState),
             creatureTopologyStates: UndoCreatureTopologyCodecRegistry.Capture(combatState.Creatures),
             creatureStatusRuntimeStates: UndoCreatureStatusCodecRegistry.Capture(combatState.Creatures),
+            creatureVisualStates: CaptureCreatureVisualStates(combatState.Creatures),
             combatCardDbState: CaptureCombatCardDbState(runState),
             playerOrbStates: CapturePlayerOrbStates(runState),
             playerDeckStates: CapturePlayerDeckStates(runState));
@@ -178,6 +179,39 @@ public sealed partial class UndoController
                     : null,
                 CallForBackupCount = monster is TwoTailedRat twoTailedRatWithBackup ? twoTailedRatWithBackup.CallForBackupCount : null,
                 StateLogIds = [.. moveStateMachine.StateLog.Select(static state => state.Id)]
+            });
+        }
+
+        return states;
+    }
+
+    private static IReadOnlyList<UndoCreatureVisualState> CaptureCreatureVisualStates(IReadOnlyList<Creature> creatures)
+    {
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatRoom == null)
+            return [];
+
+        List<UndoCreatureVisualState> states = [];
+        for (int i = 0; i < creatures.Count; i++)
+        {
+            Creature creature = creatures[i];
+            NCreature? creatureNode = combatRoom.GetCreatureNode(creature);
+            NCreatureVisuals? creatureVisuals = creatureNode?.Visuals;
+            if (creatureNode == null || creatureVisuals == null)
+                continue;
+
+            float? visualHue = FindField(creatureVisuals.GetType(), "_hue")?.GetValue(creatureVisuals) is float hue
+                ? hue
+                : null;
+            float? tempScale = FindField(creatureNode.GetType(), "_tempScale")?.GetValue(creatureNode) is float scale
+                ? scale
+                : null;
+            states.Add(new UndoCreatureVisualState
+            {
+                CreatureKey = BuildCreatureKey(creature, i),
+                VisualDefaultScale = creatureVisuals.DefaultScale,
+                VisualHue = visualHue,
+                TempScale = tempScale
             });
         }
 
