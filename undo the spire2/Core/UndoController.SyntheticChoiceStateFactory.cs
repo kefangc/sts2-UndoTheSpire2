@@ -112,14 +112,19 @@ public sealed partial class UndoController
         combatState = CreateDerivedCombatState(templateSnapshot.CombatState, anchorSnapshot.CombatState, fullState);
         if (combatState != null && selectedOptionIndex >= 0)
         {
-            // Choose-a-card potions and similar effects often apply extra runtime state
-            // (for example SetToFreeThisTurn) after the choice resolves. When we swap the
-            // generated card to a different option, packet matching falls back to the
-            // default card state and drops those supplemental overrides unless we carry
-            // them over from the template-generated slot explicitly.
-            combatState = ApplyTemplateGeneratedCardSupplementalOverrides(
+            // For generated choose-a-card effects, the selected option can have its own
+            // card cost/runtime state before the choice resolves, while the chosen card
+            // may also receive extra post-choice cost changes (for example SetToFreeThisTurn).
+            // Rebuilding from the selected option's packet alone drops both classes of
+            // state; blindly copying the template-generated slot leaks the template
+            // option's own cost onto the newly selected card. Rebuild from the selected
+            // option snapshot and only overlay the template's post-choice cost delta.
+            combatState = ApplyChooseACardOptionSupplementalOverrides(
                 combatState,
                 templateSnapshot.CombatState,
+                choiceSpec,
+                selectedOptionIndex,
+                templateOptionIndex,
                 branchPlayerState.playerId,
                 branchPileState.pileType,
                 cardIndex);
@@ -683,9 +688,12 @@ public sealed partial class UndoController
         return CreateDerivedCombatState(derivedCombatState, derivedCombatState.FullState, updatedCostStates, updatedRuntimeStates);
     }
 
-    private static UndoCombatFullState ApplyTemplateGeneratedCardSupplementalOverrides(
+    private static UndoCombatFullState ApplyChooseACardOptionSupplementalOverrides(
         UndoCombatFullState derivedCombatState,
         UndoCombatFullState templateCombatState,
+        UndoChoiceSpec choiceSpec,
+        int selectedOptionIndex,
+        int templateOptionIndex,
         ulong playerNetId,
         PileType pileType,
         int cardIndex)
@@ -697,20 +705,35 @@ public sealed partial class UndoController
         templateCostStatesByPile?.TryGetValue(pileType, out templatePileCostStates);
         templateRuntimeStatesByPile?.TryGetValue(pileType, out templatePileRuntimeStates);
 
-        UndoCardCostState? templateCostState = templatePileCostStates != null && cardIndex >= 0 && cardIndex < templatePileCostStates.Count
+        UndoCardCostState? templateGeneratedCostState = templatePileCostStates != null && cardIndex >= 0 && cardIndex < templatePileCostStates.Count
             ? templatePileCostStates[cardIndex]
             : null;
-        UndoCardRuntimeState? templateRuntimeState = templatePileRuntimeStates != null && cardIndex >= 0 && cardIndex < templatePileRuntimeStates.Count
+        UndoCardRuntimeState? templateGeneratedRuntimeState = templatePileRuntimeStates != null && cardIndex >= 0 && cardIndex < templatePileRuntimeStates.Count
             ? templatePileRuntimeStates[cardIndex]
             : null;
-        if (templateCostState == null && templateRuntimeState == null)
+        UndoCardCostState? selectedOptionCostState = selectedOptionIndex >= 0 && selectedOptionIndex < choiceSpec.OptionCardCostStates.Count
+            ? choiceSpec.OptionCardCostStates[selectedOptionIndex]
+            : null;
+        UndoCardCostState? templateOptionCostState = templateOptionIndex >= 0 && templateOptionIndex < choiceSpec.OptionCardCostStates.Count
+            ? choiceSpec.OptionCardCostStates[templateOptionIndex]
+            : null;
+        UndoCardRuntimeState? selectedOptionRuntimeState = selectedOptionIndex >= 0 && selectedOptionIndex < choiceSpec.OptionCardRuntimeStates.Count
+            ? choiceSpec.OptionCardRuntimeStates[selectedOptionIndex]
+            : null;
+
+        UndoCardCostState? mergedCostState = MergeChooseACardCostState(
+            selectedOptionCostState,
+            templateOptionCostState,
+            templateGeneratedCostState);
+        UndoCardRuntimeState? mergedRuntimeState = selectedOptionRuntimeState ?? templateGeneratedRuntimeState;
+        if (mergedCostState == null && mergedRuntimeState == null)
             return derivedCombatState;
 
         bool costUpdated = false;
         List<UndoPlayerPileCardCostState> updatedCostStates = [];
         foreach (UndoPlayerPileCardCostState pileState in derivedCombatState.CardCostStates)
         {
-            if (templateCostState == null
+            if (mergedCostState == null
                 || pileState.PlayerNetId != playerNetId
                 || pileState.PileType != pileType
                 || cardIndex < 0
@@ -721,7 +744,7 @@ public sealed partial class UndoController
             }
 
             List<UndoCardCostState> cards = [.. pileState.Cards];
-            cards[cardIndex] = templateCostState;
+            cards[cardIndex] = mergedCostState;
             updatedCostStates.Add(new UndoPlayerPileCardCostState
             {
                 PlayerNetId = pileState.PlayerNetId,
@@ -735,7 +758,7 @@ public sealed partial class UndoController
         List<UndoPlayerPileCardRuntimeState> updatedRuntimeStates = [];
         foreach (UndoPlayerPileCardRuntimeState pileState in derivedCombatState.CardRuntimeStates)
         {
-            if (templateRuntimeState == null
+            if (mergedRuntimeState == null
                 || pileState.PlayerNetId != playerNetId
                 || pileState.PileType != pileType
                 || cardIndex < 0
@@ -746,7 +769,7 @@ public sealed partial class UndoController
             }
 
             List<UndoCardRuntimeState> cards = [.. pileState.Cards];
-            cards[cardIndex] = templateRuntimeState;
+            cards[cardIndex] = mergedRuntimeState;
             updatedRuntimeStates.Add(new UndoPlayerPileCardRuntimeState
             {
                 PlayerNetId = pileState.PlayerNetId,
@@ -764,6 +787,119 @@ public sealed partial class UndoController
             derivedCombatState.FullState,
             costUpdated ? updatedCostStates : derivedCombatState.CardCostStates,
             runtimeUpdated ? updatedRuntimeStates : derivedCombatState.CardRuntimeStates);
+    }
+
+    private static UndoCardCostState? MergeChooseACardCostState(
+        UndoCardCostState? selectedOptionCostState,
+        UndoCardCostState? templateOptionCostState,
+        UndoCardCostState? templateGeneratedCostState)
+    {
+        if (selectedOptionCostState == null)
+            return templateGeneratedCostState;
+
+        if (templateOptionCostState == null || templateGeneratedCostState == null)
+            return selectedOptionCostState;
+
+        return new UndoCardCostState
+        {
+            EnergyBaseCost = ChooseGeneratedDelta(
+                selectedOptionCostState.EnergyBaseCost,
+                templateOptionCostState.EnergyBaseCost,
+                templateGeneratedCostState.EnergyBaseCost),
+            CapturedXValue = ChooseGeneratedDelta(
+                selectedOptionCostState.CapturedXValue,
+                templateOptionCostState.CapturedXValue,
+                templateGeneratedCostState.CapturedXValue),
+            EnergyWasJustUpgraded = ChooseGeneratedDelta(
+                selectedOptionCostState.EnergyWasJustUpgraded,
+                templateOptionCostState.EnergyWasJustUpgraded,
+                templateGeneratedCostState.EnergyWasJustUpgraded),
+            EnergyLocalModifiers = ChooseGeneratedDelta(
+                selectedOptionCostState.EnergyLocalModifiers,
+                templateOptionCostState.EnergyLocalModifiers,
+                templateGeneratedCostState.EnergyLocalModifiers,
+                AreLocalCostModifierListsEquivalent),
+            StarCostSet = ChooseGeneratedDelta(
+                selectedOptionCostState.StarCostSet,
+                templateOptionCostState.StarCostSet,
+                templateGeneratedCostState.StarCostSet),
+            BaseStarCost = ChooseGeneratedDelta(
+                selectedOptionCostState.BaseStarCost,
+                templateOptionCostState.BaseStarCost,
+                templateGeneratedCostState.BaseStarCost),
+            StarWasJustUpgraded = ChooseGeneratedDelta(
+                selectedOptionCostState.StarWasJustUpgraded,
+                templateOptionCostState.StarWasJustUpgraded,
+                templateGeneratedCostState.StarWasJustUpgraded),
+            TemporaryStarCosts = ChooseGeneratedDelta(
+                selectedOptionCostState.TemporaryStarCosts,
+                templateOptionCostState.TemporaryStarCosts,
+                templateGeneratedCostState.TemporaryStarCosts,
+                AreTemporaryStarCostListsEquivalent)
+        };
+    }
+
+    private static T ChooseGeneratedDelta<T>(T selectedValue, T templateOptionValue, T templateGeneratedValue) where T : IEquatable<T>
+    {
+        return templateGeneratedValue.Equals(templateOptionValue) ? selectedValue : templateGeneratedValue;
+    }
+
+    private static T ChooseGeneratedDelta<T>(
+        T selectedValue,
+        T templateOptionValue,
+        T templateGeneratedValue,
+        Func<T, T, bool> comparer)
+    {
+        return comparer(templateGeneratedValue, templateOptionValue) ? selectedValue : templateGeneratedValue;
+    }
+
+    private static bool AreLocalCostModifierListsEquivalent(
+        IReadOnlyList<UndoLocalCostModifierState> left,
+        IReadOnlyList<UndoLocalCostModifierState> right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+        if (left.Count != right.Count)
+            return false;
+
+        for (int i = 0; i < left.Count; i++)
+        {
+            UndoLocalCostModifierState leftEntry = left[i];
+            UndoLocalCostModifierState rightEntry = right[i];
+            if (leftEntry.Amount != rightEntry.Amount
+                || leftEntry.Type != rightEntry.Type
+                || leftEntry.Expiration != rightEntry.Expiration
+                || leftEntry.IsReduceOnly != rightEntry.IsReduceOnly)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool AreTemporaryStarCostListsEquivalent(
+        IReadOnlyList<UndoTemporaryStarCostState> left,
+        IReadOnlyList<UndoTemporaryStarCostState> right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+        if (left.Count != right.Count)
+            return false;
+
+        for (int i = 0; i < left.Count; i++)
+        {
+            UndoTemporaryStarCostState leftEntry = left[i];
+            UndoTemporaryStarCostState rightEntry = right[i];
+            if (leftEntry.Cost != rightEntry.Cost
+                || leftEntry.ClearsWhenTurnEnds != rightEntry.ClearsWhenTurnEnds
+                || leftEntry.ClearsWhenCardIsPlayed != rightEntry.ClearsWhenCardIsPlayed)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static bool TryApplyVariableCountSourceSelectionDestinationPattern(

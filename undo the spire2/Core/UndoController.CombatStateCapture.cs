@@ -337,17 +337,41 @@ public sealed partial class UndoController
         return CreateCardRuntimeState(
             card,
             CaptureEnchantmentRuntimeState(card.Enchantment),
+            CaptureAfflictionRuntimeState(card.Affliction),
             UndoRuntimeStateCodecRegistry.CaptureCardStates(card, context));
     }
 
     private static UndoCardRuntimeState CaptureDefaultCardRuntimeState(CardModel card)
     {
-        return CreateCardRuntimeState(card, CaptureEnchantmentRuntimeState(card.Enchantment), []);
+        return CreateCardRuntimeState(card, CaptureEnchantmentRuntimeState(card.Enchantment), CaptureAfflictionRuntimeState(card.Affliction), []);
+    }
+
+    internal static UndoCardCostState CaptureChoiceOptionCostState(CardModel card)
+    {
+        return CaptureCardCostState(card);
+    }
+
+    internal static UndoCardRuntimeState CaptureChoiceOptionRuntimeState(CardModel card)
+    {
+        RunState? runState = RunManager.Instance.DebugOnlyGetState();
+        CombatState? combatState = card.Owner?.Creature?.CombatState ?? CombatManager.Instance.DebugOnlyGetState();
+        if (runState != null && combatState != null)
+        {
+            UndoRuntimeCaptureContext context = new()
+            {
+                RunState = runState,
+                CombatState = combatState
+            };
+            return CaptureCardRuntimeState(card, context);
+        }
+
+        return CaptureDefaultCardRuntimeState(card);
     }
 
     private static UndoCardRuntimeState CreateCardRuntimeState(
         CardModel card,
         UndoEnchantmentRuntimeState? enchantmentState,
+        UndoAfflictionRuntimeState? afflictionState,
         IReadOnlyList<UndoComplexRuntimeState> complexStates)
     {
         RunState? runState = RunManager.Instance.DebugOnlyGetState();
@@ -361,6 +385,7 @@ public sealed partial class UndoController
                 ? UndoStableRefs.CaptureCardRef(runState, card.DeckVersion)
                 : null,
             EnchantmentState = enchantmentState,
+            AfflictionState = afflictionState,
             ComplexStates = complexStates
         };
     }
@@ -376,6 +401,19 @@ public sealed partial class UndoController
             BoolProperties = CaptureRuntimeBoolProperties(enchantment),
             IntProperties = CaptureRuntimeIntProperties(enchantment, "Amount"),
             EnumProperties = CaptureRuntimeEnumProperties(enchantment)
+        };
+    }
+
+    private static UndoAfflictionRuntimeState? CaptureAfflictionRuntimeState(AfflictionModel? affliction)
+    {
+        if (affliction == null)
+            return null;
+
+        return new UndoAfflictionRuntimeState
+        {
+            BoolProperties = CaptureRuntimeBoolProperties(affliction, "Card"),
+            IntProperties = CaptureRuntimeIntProperties(affliction, "Amount"),
+            EnumProperties = CaptureRuntimeEnumProperties(affliction)
         };
     }
 

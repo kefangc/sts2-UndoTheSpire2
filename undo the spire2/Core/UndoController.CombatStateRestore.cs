@@ -380,6 +380,7 @@ public sealed partial class UndoController
                 cardState.afflictionCount);
         }
 
+        RestoreAfflictionRuntimeState(card.Affliction, runtimeState?.AfflictionState);
         RestoreCardCostState(card, costState);
         RestoreCardRuntimeState(runState, combatState, card, runtimeState);
     }
@@ -446,6 +447,29 @@ public sealed partial class UndoController
             CombatState = combatState
         };
         UndoRuntimeStateCodecRegistry.RestoreCardStates(card, runtimeState.ComplexStates, context);
+    }
+
+    internal static void RestoreChoiceOptionState(Player player, CardModel card, UndoCardCostState? costState, UndoCardRuntimeState? runtimeState)
+    {
+        RestoreCardCostState(card, costState);
+
+        RunState? runState = RunManager.Instance.DebugOnlyGetState();
+        CombatState? combatState = player.Creature.CombatState ?? CombatManager.Instance.DebugOnlyGetState();
+        if (runState == null || combatState == null || runtimeState == null)
+            return;
+
+        RestoreAfflictionRuntimeState(card.Affliction, runtimeState.AfflictionState);
+        RestoreCardRuntimeState(runState, combatState, card, runtimeState);
+    }
+
+    private static void RestoreAfflictionRuntimeState(AfflictionModel? affliction, UndoAfflictionRuntimeState? runtimeState)
+    {
+        if (affliction == null || runtimeState == null)
+            return;
+
+        RestoreRuntimeBoolProperties(affliction, runtimeState.BoolProperties);
+        RestoreRuntimeIntProperties(affliction, runtimeState.IntProperties);
+        RestoreRuntimeEnumProperties(affliction, runtimeState.EnumProperties);
     }
 
     private static void RestoreEnchantmentRuntimeState(CardModel card, UndoEnchantmentRuntimeState? enchantmentState)
@@ -1432,23 +1456,33 @@ public sealed partial class UndoController
 
     private static void RestoreCreaturePowers(Creature creature, NetFullCombatState.CreatureState saved)
     {
+        if (FindField(typeof(Creature), "_powers")?.GetValue(creature) is not System.Collections.IList powerList)
+            throw new InvalidOperationException("Could not access Creature._powers.");
+
         List<PowerModel> remainingCurrentPowers = creature.Powers.ToList();
+        List<PowerModel> restoredPowers = [];
         foreach (NetFullCombatState.PowerState powerState in saved.powers)
         {
             PowerModel? existingPower = remainingCurrentPowers.FirstOrDefault(power => power.Id == powerState.id);
             if (existingPower != null)
             {
                 remainingCurrentPowers.Remove(existingPower);
-                existingPower.SetAmount(powerState.amount, true);
-                existingPower.AmountOnTurnStart = existingPower.Amount;
+                SetPrivateFieldValue(existingPower, "_amount", powerState.amount);
+                existingPower.AmountOnTurnStart = powerState.amount;
+                restoredPowers.Add(existingPower);
                 continue;
             }
+
             PowerModel power = ModelDb.GetById<PowerModel>(powerState.id).ToMutable();
-            power.ApplyInternal(creature, powerState.amount, true);
-            power.AmountOnTurnStart = power.Amount;
+            SetPrivateFieldValue(power, "_owner", creature);
+            SetPrivateFieldValue(power, "_amount", powerState.amount);
+            power.AmountOnTurnStart = powerState.amount;
+            restoredPowers.Add(power);
         }
-        foreach (PowerModel power in remainingCurrentPowers)
-            power.RemoveInternal();
+
+        powerList.Clear();
+        foreach (PowerModel power in restoredPowers)
+            powerList.Add(power);
     }
 }
 

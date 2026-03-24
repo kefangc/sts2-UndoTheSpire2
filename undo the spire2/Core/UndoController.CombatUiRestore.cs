@@ -63,12 +63,12 @@ public sealed partial class UndoController
         RunState? runState = RunManager.Instance.DebugOnlyGetState();
         foreach (Player player in combatState.Players)
             player.PlayerCombatState?.RecalculateCardValues();
-        UndoRuntimeStateCodecRegistry.RefreshPowerDisplays(combatState);
         if (NCombatRoom.Instance != null)
             UndoSpecialCreatureVisualNormalizer.DetachStateDisplayTracking(NCombatRoom.Instance);
         ClearTransientCardVisuals();
         NormalizeCombatInteractionState(combatState);
         RebuildCombatCreatureNodesIfNeeded(combatState);
+        RefreshCreaturePowerDisplays(combatState);
         ApplySnapshotCreatureNodeVisuals(combatState, snapshotState);
         RefreshPlayerOrbManagers(combatState);
         RestoreThievingHopperDisplayCards(combatState);
@@ -118,7 +118,7 @@ public sealed partial class UndoController
         if (combatRoom == null)
             return;
 
-        UndoRuntimeStateCodecRegistry.RefreshPowerDisplays(combatState);
+        RefreshCreaturePowerDisplays(combatState);
         Player? me = LocalContext.GetMe(combatState);
         if (me != null)
         {
@@ -233,6 +233,43 @@ public sealed partial class UndoController
                 continue;
 
             RebuildOrbManagerNodes(orbManager, player.PlayerCombatState.OrbQueue);
+        }
+    }
+
+    private static void RefreshCreaturePowerDisplays(CombatState combatState)
+    {
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatRoom == null)
+            return;
+
+        foreach (Creature creature in combatState.Creatures)
+        {
+            NCreature? creatureNode = combatRoom.GetCreatureNode(creature);
+            NCreatureStateDisplay? stateDisplay = GetPrivateFieldValue<NCreatureStateDisplay>(creatureNode, "_stateDisplay");
+            NPowerContainer? powerContainer = stateDisplay == null
+                ? null
+                : GetPrivateFieldValue<NPowerContainer>(stateDisplay, "_powerContainer");
+            System.Collections.IList? powerNodes = powerContainer == null
+                ? null
+                : GetPrivateFieldValue<System.Collections.IList>(powerContainer, "_powerNodes");
+            if (powerContainer == null || powerNodes == null)
+                continue;
+
+            ClearNodeChildren(powerContainer);
+            powerNodes.Clear();
+
+            foreach (PowerModel power in creature.Powers)
+            {
+                if (!power.IsVisible)
+                    continue;
+
+                NPower powerNode = NPower.Create(power);
+                powerNode.Container = powerContainer;
+                powerNodes.Add(powerNode);
+                powerContainer.AddChildSafely(powerNode);
+            }
+
+            InvokePrivateMethod(powerContainer, "UpdatePositions");
         }
     }
 
@@ -575,7 +612,7 @@ public sealed partial class UndoController
         SetPrivateFieldValue(creatureNode, "_tempScale", resolvedTempScale);
         creatureNode.Visuals.Scale = Vector2.One * resolvedTempScale * defaultScale;
         InvokePrivateMethod(creatureNode, "SetOrbManagerPosition");
-        InvokePrivateMethod(creatureNode, "UpdateBounds", [typeof(Node)], creatureNode.Visuals);
+        InvokePrivateMethodExact(creatureNode, "UpdateBounds", [typeof(Node)], creatureNode.Visuals);
     }
 
     private static void RelayoutEnemyCreatureNodes(NCombatRoom combatRoom, CombatState combatState)
@@ -1016,7 +1053,8 @@ public sealed partial class UndoController
         NCombatRoom? combatRoom = NCombatRoom.Instance;
         if (combatRoom != null)
         {
-            RemoveCardFlyVfxNodes(combatRoom.CombatVfxContainer);
+            ClearNodeChildren(combatRoom.BackCombatVfxContainer);
+            ClearNodeChildren(combatRoom.CombatVfxContainer);
             ClearNodeChildren(combatRoom.Ui.CardPreviewContainer);
             ClearNodeChildren(combatRoom.Ui.MessyCardPreviewContainer);
         }

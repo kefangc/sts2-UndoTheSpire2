@@ -82,14 +82,16 @@
     <Content Include="UndoTheSpire2\**" />
   </ItemGroup>
 
-  <Target Name="DeployModArtifactsToModsFolder" AfterTargets="Build" Condition="'$(Sts2Path)' != ''">
-    <Message Text="Deploying mod DLL and manifest to mods folder." Importance="high" />
+  <Target Name="DeployModArtifactsToGameFolder" AfterTargets="Build" Condition="'$(Sts2Path)' != ''">
+    <Message Text="Deploying mod DLL and manifest to game folder and mods folder." Importance="high" />
     <MakeDir Directories="$(Sts2Path)/mods" />
     <ItemGroup>
       <ModDeployFiles Include="$(TargetPath)" />
       <ModDeployFiles Include="$(ModManifestPath)" Condition="Exists('$(ModManifestPath)')" />
     </ItemGroup>
+    <Copy SourceFiles="@(ModDeployFiles)" DestinationFolder="$(Sts2Path)/" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(ModDeployFiles)" DestinationFolder="$(Sts2Path)/mods/" SkipUnchangedFiles="true" />
+    <Delete Files="$(Sts2Path)/$(AssemblyName).pck" Condition="Exists('$(Sts2Path)/$(AssemblyName).pck')" />
     <Delete Files="$(Sts2Path)/mods/$(AssemblyName).pck" Condition="Exists('$(Sts2Path)/mods/$(AssemblyName).pck')" />
   </Target>
 </Project>

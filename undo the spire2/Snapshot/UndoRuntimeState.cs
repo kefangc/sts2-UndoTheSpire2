@@ -32,6 +32,8 @@ internal sealed class UndoCardRuntimeState
 
     public UndoEnchantmentRuntimeState? EnchantmentState { get; init; }
 
+    public UndoAfflictionRuntimeState? AfflictionState { get; init; }
+
     public IReadOnlyList<UndoComplexRuntimeState> ComplexStates { get; init; } = [];
 }
 
@@ -41,6 +43,15 @@ internal sealed class UndoEnchantmentRuntimeState
 
     public EnchantmentStatus Status { get; init; }
 
+    public IReadOnlyList<UndoNamedBoolState> BoolProperties { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedIntState> IntProperties { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedEnumState> EnumProperties { get; init; } = [];
+}
+
+internal sealed class UndoAfflictionRuntimeState
+{
     public IReadOnlyList<UndoNamedBoolState> BoolProperties { get; init; } = [];
 
     public IReadOnlyList<UndoNamedIntState> IntProperties { get; init; } = [];
