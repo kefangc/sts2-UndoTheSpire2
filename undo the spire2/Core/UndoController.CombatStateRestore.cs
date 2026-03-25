@@ -100,7 +100,7 @@ public sealed partial class UndoController
                 player.BaseOrbSlotCount = playerOrbState.BaseOrbSlotCount;
 
             RestoreRelics(runState, combatState, player, playerState, GetRelicRuntimeStatesForPlayer(snapshotState, player.NetId));
-            RestorePotions(player, playerState);
+            RestorePotions(player, playerState, GetPlayerPotionState(snapshotState, player.NetId));
             RestorePlayerDeck(runState, player, GetPlayerDeckState(snapshotState, player.NetId));
             RestorePlayerCombatState(
                 player,
@@ -265,7 +265,7 @@ public sealed partial class UndoController
         }
     }
 
-    private static void RestorePotions(Player player, NetFullCombatState.PlayerState playerState)
+    private static void RestorePotions(Player player, NetFullCombatState.PlayerState playerState, UndoPlayerPotionState? playerPotionState)
     {
         int maxPotionDelta = playerState.maxPotionCount - player.MaxPotionCount;
         if (maxPotionDelta > 0)
@@ -278,6 +278,21 @@ public sealed partial class UndoController
             PotionModel? potion = player.GetPotionAtSlotIndex(i);
             if (potion != null)
                 player.DiscardPotionInternal(potion, true);
+        }
+
+        if (playerPotionState != null && playerPotionState.Slots.Count > 0)
+        {
+            foreach (UndoPotionSlotState slotState in playerPotionState.Slots.OrderBy(static slot => slot.SlotIndex))
+            {
+                if (slotState.SlotIndex < 0 || slotState.SlotIndex >= player.MaxPotionCount || slotState.Potion == null)
+                    continue;
+
+                SerializablePotion serializablePotion = ClonePacketSerializable(slotState.Potion);
+                serializablePotion.SlotIndex = slotState.SlotIndex;
+                player.AddPotionInternal(PotionModel.FromSerializable(serializablePotion), slotState.SlotIndex, true);
+            }
+
+            return;
         }
 
         for (int i = 0; i < playerState.potions.Count; i++)
@@ -380,6 +395,7 @@ public sealed partial class UndoController
                 cardState.afflictionCount);
         }
 
+        RestoreAfflictionRuntimeState(card.Affliction, runtimeState?.AfflictionState);
         RestoreCardCostState(card, costState);
         RestoreCardRuntimeState(runState, combatState, card, runtimeState);
     }
@@ -402,6 +418,11 @@ public sealed partial class UndoController
     private static UndoPlayerDeckState? GetPlayerDeckState(UndoCombatFullState snapshotState, ulong playerNetId)
     {
         return snapshotState.PlayerDeckStates.FirstOrDefault(state => state.PlayerNetId == playerNetId);
+    }
+
+    private static UndoPlayerPotionState? GetPlayerPotionState(UndoCombatFullState snapshotState, ulong playerNetId)
+    {
+        return snapshotState.PlayerPotionStates.FirstOrDefault(state => state.PlayerNetId == playerNetId);
     }
 
     private static IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardRuntimeState>>? GetCardRuntimeStatesForPlayer(UndoCombatFullState snapshotState, ulong playerNetId)
@@ -446,6 +467,29 @@ public sealed partial class UndoController
             CombatState = combatState
         };
         UndoRuntimeStateCodecRegistry.RestoreCardStates(card, runtimeState.ComplexStates, context);
+    }
+
+    internal static void RestoreChoiceOptionState(Player player, CardModel card, UndoCardCostState? costState, UndoCardRuntimeState? runtimeState)
+    {
+        RestoreCardCostState(card, costState);
+
+        RunState? runState = RunManager.Instance.DebugOnlyGetState();
+        CombatState? combatState = player.Creature.CombatState ?? CombatManager.Instance.DebugOnlyGetState();
+        if (runState == null || combatState == null || runtimeState == null)
+            return;
+
+        RestoreAfflictionRuntimeState(card.Affliction, runtimeState.AfflictionState);
+        RestoreCardRuntimeState(runState, combatState, card, runtimeState);
+    }
+
+    private static void RestoreAfflictionRuntimeState(AfflictionModel? affliction, UndoAfflictionRuntimeState? runtimeState)
+    {
+        if (affliction == null || runtimeState == null)
+            return;
+
+        RestoreRuntimeBoolProperties(affliction, runtimeState.BoolProperties);
+        RestoreRuntimeIntProperties(affliction, runtimeState.IntProperties);
+        RestoreRuntimeEnumProperties(affliction, runtimeState.EnumProperties);
     }
 
     private static void RestoreEnchantmentRuntimeState(CardModel card, UndoEnchantmentRuntimeState? enchantmentState)
@@ -882,35 +926,42 @@ public sealed partial class UndoController
         if (potionContainer == null)
             return;
 
-        if (GetPrivateFieldValue<System.Collections.IList>(potionContainer, "_holders") is { } holders)
+        RunManager.Instance.HoveredModelTracker.OnLocalPotionUnhovered();
+        Control? potionHolders = GetPrivateFieldValue<Control>(potionContainer, "_potionHolders");
+        Vector2 potionHolderBasePosition = potionHolders?.Position ?? Vector2.Zero;
+        if (GetPrivateFieldValue<Tween>(potionContainer, "_potionsFullTween") is { } potionsFullTween)
         {
-            foreach (object holderObject in holders)
+            if (potionsFullTween.IsRunning())
             {
-                if (holderObject is not NPotionHolder holder)
-                    continue;
-
-                if (holder.Potion is { } potionNode && GodotObject.IsInstanceValid(potionNode))
-                {
-                    potionNode.GetParent()?.RemoveChild(potionNode);
-                    potionNode.QueueFree();
-                }
-
-                Node? popup = GetPrivateFieldValue<Node>(holder, "_popup");
-                if (popup != null && GodotObject.IsInstanceValid(popup))
-                {
-                    popup.GetParent()?.RemoveChild(popup);
-                    popup.QueueFree();
-                }
-
-                SetPrivatePropertyValue(holder, "Potion", null);
-                SetPrivateFieldValue(holder, "_popup", null);
-                SetPrivateFieldValue(holder, "_disabledUntilPotionRemoved", false);
-                holder.Modulate = Colors.White;
+                object? holderInitPos = FindField(potionContainer.GetType(), "_potionHolderInitPos")?.GetValue(potionContainer);
+                if (holderInitPos is Vector2 initPosition)
+                    potionHolderBasePosition = initPosition;
             }
+
+            potionsFullTween.Kill();
         }
 
+        if (potionHolders != null)
+        {
+            foreach (Node child in potionHolders.GetChildren().Cast<Node>().ToList())
+            {
+                child.GetParent()?.RemoveChild(child);
+                child.QueueFree();
+            }
+
+            potionHolders.Position = potionHolderBasePosition;
+        }
+
+        if (GetPrivateFieldValue<System.Collections.IList>(potionContainer, "_holders") is { } holders)
+            holders.Clear();
+
+        if (GetPrivateFieldValue<Control>(potionContainer, "_potionErrorBg") is { } potionErrorBg)
+            potionErrorBg.Modulate = Colors.Transparent;
+
         SetPrivateFieldValue(potionContainer, "_focusedHolder", null);
+        SetPrivateFieldValue(potionContainer, "_potionsFullTween", null);
         potionContainer.Initialize(runState);
+        InvokePrivateMethod(potionContainer, "UpdateNavigation");
     }
     private static void NormalizeRelicInventoryUi(RunState runState)
     {
@@ -1432,23 +1483,33 @@ public sealed partial class UndoController
 
     private static void RestoreCreaturePowers(Creature creature, NetFullCombatState.CreatureState saved)
     {
+        if (FindField(typeof(Creature), "_powers")?.GetValue(creature) is not System.Collections.IList powerList)
+            throw new InvalidOperationException("Could not access Creature._powers.");
+
         List<PowerModel> remainingCurrentPowers = creature.Powers.ToList();
+        List<PowerModel> restoredPowers = [];
         foreach (NetFullCombatState.PowerState powerState in saved.powers)
         {
             PowerModel? existingPower = remainingCurrentPowers.FirstOrDefault(power => power.Id == powerState.id);
             if (existingPower != null)
             {
                 remainingCurrentPowers.Remove(existingPower);
-                existingPower.SetAmount(powerState.amount, true);
-                existingPower.AmountOnTurnStart = existingPower.Amount;
+                SetPrivateFieldValue(existingPower, "_amount", powerState.amount);
+                existingPower.AmountOnTurnStart = powerState.amount;
+                restoredPowers.Add(existingPower);
                 continue;
             }
+
             PowerModel power = ModelDb.GetById<PowerModel>(powerState.id).ToMutable();
-            power.ApplyInternal(creature, powerState.amount, true);
-            power.AmountOnTurnStart = power.Amount;
+            SetPrivateFieldValue(power, "_owner", creature);
+            SetPrivateFieldValue(power, "_amount", powerState.amount);
+            power.AmountOnTurnStart = powerState.amount;
+            restoredPowers.Add(power);
         }
-        foreach (PowerModel power in remainingCurrentPowers)
-            power.RemoveInternal();
+
+        powerList.Clear();
+        foreach (PowerModel power in restoredPowers)
+            powerList.Add(power);
     }
 }
 

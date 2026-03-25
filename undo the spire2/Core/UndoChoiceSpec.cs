@@ -16,6 +16,8 @@ internal sealed class UndoChoiceSpec
         UndoChoiceKind kind,
         CardSelectorPrefs selectionPrefs,
         IReadOnlyList<SerializableCard> optionCards,
+        IReadOnlyList<UndoCardCostState> optionCardCostStates,
+        IReadOnlyList<UndoCardRuntimeState> optionCardRuntimeStates,
         PileType? sourcePileType,
         IReadOnlyList<int> sourcePileOptionIndexes,
         IReadOnlyList<NetCombatCard> sourcePileCombatCards,
@@ -27,6 +29,8 @@ internal sealed class UndoChoiceSpec
         Kind = kind;
         SelectionPrefs = selectionPrefs;
         OptionCards = optionCards;
+        OptionCardCostStates = optionCardCostStates;
+        OptionCardRuntimeStates = optionCardRuntimeStates;
         SourcePileType = sourcePileType;
         SourcePileOptionIndexes = sourcePileOptionIndexes;
         SourcePileCombatCards = sourcePileCombatCards;
@@ -41,6 +45,10 @@ internal sealed class UndoChoiceSpec
     public CardSelectorPrefs SelectionPrefs { get; }
 
     public IReadOnlyList<SerializableCard> OptionCards { get; }
+
+    public IReadOnlyList<UndoCardCostState> OptionCardCostStates { get; }
+
+    public IReadOnlyList<UndoCardRuntimeState> OptionCardRuntimeStates { get; }
 
     public PileType? SourcePileType { get; }
 
@@ -62,6 +70,8 @@ internal sealed class UndoChoiceSpec
             UndoChoiceKind.ChooseACard,
             default,
             [.. cards.Select(static card => card.ToSerializable())],
+            [.. cards.Select(UndoController.CaptureChoiceOptionCostState)],
+            [.. cards.Select(UndoController.CaptureChoiceOptionRuntimeState)],
             null,
             [],
             [],
@@ -89,6 +99,8 @@ internal sealed class UndoChoiceSpec
         return new UndoChoiceSpec(
             UndoChoiceKind.HandSelection,
             prefs,
+            [],
+            [],
             [],
             PileType.Hand,
             eligibleIndexes,
@@ -127,6 +139,8 @@ internal sealed class UndoChoiceSpec
             UndoChoiceKind.SimpleGridSelection,
             prefs,
             [.. cards.Select(static card => card.ToSerializable())],
+            [.. cards.Select(UndoController.CaptureChoiceOptionCostState)],
+            [.. cards.Select(UndoController.CaptureChoiceOptionRuntimeState)],
             sourcePileType,
             sourcePileIndexes,
             sourcePileCombatCards,
@@ -166,12 +180,16 @@ internal sealed class UndoChoiceSpec
         }
 
         List<CardModel> options = [];
-        foreach (SerializableCard optionCard in OptionCards)
+        for (int i = 0; i < OptionCards.Count; i++)
         {
+            SerializableCard optionCard = OptionCards[i];
             CardModel card = CardModel.FromSerializable(optionCard);
             if (card.Owner == null)
                 card.Owner = player;
 
+            UndoCardCostState? optionCostState = i < OptionCardCostStates.Count ? OptionCardCostStates[i] : null;
+            UndoCardRuntimeState? optionRuntimeState = i < OptionCardRuntimeStates.Count ? OptionCardRuntimeStates[i] : null;
+            UndoController.RestoreChoiceOptionState(player, card, optionCostState, optionRuntimeState);
             options.Add(card);
         }
 

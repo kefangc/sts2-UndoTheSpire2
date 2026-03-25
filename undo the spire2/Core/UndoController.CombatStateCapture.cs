@@ -3,6 +3,7 @@
 // Capture/restore details should live in dedicated services; this type is the orchestrator.
 using System.Reflection;
 using Godot;
+using MegaCrit.Sts2.Core.Bindings.MegaSpine;
 using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Combat.History.Entries;
@@ -89,7 +90,8 @@ public sealed partial class UndoController
             creatureVisualStates: CaptureCreatureVisualStates(combatState.Creatures),
             combatCardDbState: CaptureCombatCardDbState(runState),
             playerOrbStates: CapturePlayerOrbStates(runState),
-            playerDeckStates: CapturePlayerDeckStates(runState));
+            playerDeckStates: CapturePlayerDeckStates(runState),
+            playerPotionStates: CapturePlayerPotionStates(runState));
     }
 
     private static IReadOnlyList<UndoPlayerOrbState> CapturePlayerOrbStates(RunState runState)
@@ -125,6 +127,24 @@ public sealed partial class UndoController
         {
             PlayerNetId = player.NetId,
             Cards = [.. player.Deck.Cards.Select(card => ClonePacketSerializable(card.ToSerializable()))]
+        })];
+    }
+
+    private static IReadOnlyList<UndoPlayerPotionState> CapturePlayerPotionStates(RunState runState)
+    {
+        return [.. runState.Players.Select(player => new UndoPlayerPotionState
+        {
+            PlayerNetId = player.NetId,
+            Slots =
+            [
+                .. Enumerable.Range(0, player.MaxPotionCount).Select(slotIndex => new UndoPotionSlotState
+                {
+                    SlotIndex = slotIndex,
+                    Potion = player.GetPotionAtSlotIndex(slotIndex) is { } potion
+                        ? ClonePacketSerializable(potion.ToSerializable(slotIndex))
+                        : null
+                })
+            ]
         })];
     }
 
@@ -211,11 +231,276 @@ public sealed partial class UndoController
                 CreatureKey = BuildCreatureKey(creature, i),
                 VisualDefaultScale = creatureVisuals.DefaultScale,
                 VisualHue = visualHue,
-                TempScale = tempScale
+                TempScale = tempScale,
+                TrackStates = CaptureCreatureTrackStates(creatureVisuals),
+                CanvasStates = CaptureCreatureCanvasStates(creatureVisuals),
+                ParticleStates = CaptureCreatureParticleStates(creatureVisuals),
+                ShaderParamStates = CaptureCreatureShaderParamStates(creatureVisuals),
+                StateDisplayState = CaptureCreatureStateDisplayState(creatureNode)
             });
         }
 
         return states;
+    }
+
+    private static UndoCreatureStateDisplayState? CaptureCreatureStateDisplayState(NCreature creatureNode)
+    {
+        NCreatureStateDisplay? stateDisplay = GetPrivateFieldValue<NCreatureStateDisplay>(creatureNode, "_stateDisplay");
+        if (stateDisplay == null)
+            return null;
+
+        NHealthBar? healthBar = GetPrivateFieldValue<NHealthBar>(stateDisplay, "_healthBar");
+        Control? blockContainer = healthBar == null ? null : GetPrivateFieldValue<Control>(healthBar, "_blockContainer");
+        Control? blockOutline = healthBar == null ? null : GetPrivateFieldValue<Control>(healthBar, "_blockOutline");
+        return new UndoCreatureStateDisplayState
+        {
+            OriginalPosition = UndoReflectionUtil.FindField(stateDisplay.GetType(), "_originalPosition")?.GetValue(stateDisplay) is Vector2 originalPosition
+                ? originalPosition
+                : null,
+            CurrentPosition = stateDisplay.Position,
+            Visible = stateDisplay.Visible,
+            Modulate = stateDisplay.Modulate,
+            HealthBarState = healthBar == null
+                ? null
+                : new UndoCreatureHealthBarState
+                {
+                    OriginalBlockPosition = UndoReflectionUtil.FindField(healthBar.GetType(), "_originalBlockPosition")?.GetValue(healthBar) is Vector2 originalBlockPosition
+                        ? originalBlockPosition
+                        : null,
+                    CurrentBlockPosition = blockContainer?.Position,
+                    BlockVisible = blockContainer?.Visible,
+                    BlockOutlineVisible = blockOutline?.Visible,
+                    BlockModulate = blockContainer?.Modulate
+                }
+        };
+    }
+
+    private static IReadOnlyList<UndoCreatureTrackState> CaptureCreatureTrackStates(Node root)
+    {
+        List<UndoCreatureTrackState> states = [];
+        foreach (Node node in EnumerateCreatureVisualNodes(root))
+        {
+            if (node is not Node2D node2D || !string.Equals(node2D.GetClass(), "SpineSprite", StringComparison.Ordinal))
+                continue;
+
+            MegaAnimationState animationState = new MegaSprite(node2D).GetAnimationState();
+            string relativePath = BuildCreatureVisualRelativePath(root, node);
+            for (int trackIndex = 1; trackIndex < 4; trackIndex++)
+            {
+                UndoCreatureTrackState? trackState = TryCaptureCreatureTrackState(animationState, relativePath, trackIndex);
+                if (trackState != null)
+                    states.Add(trackState);
+            }
+        }
+
+        return states;
+    }
+
+    private static UndoCreatureTrackState? TryCaptureCreatureTrackState(MegaAnimationState animationState, string relativePath, int trackIndex)
+    {
+        try
+        {
+            MegaTrackEntry? trackEntry = UndoReflectionUtil.FindMethod(animationState.GetType(), "GetCurrent")?.Invoke(animationState, [trackIndex]) as MegaTrackEntry;
+            if (trackEntry == null)
+                return null;
+
+            MegaAnimation? animation = UndoReflectionUtil.FindMethod(trackEntry.GetType(), "GetAnimation")?.Invoke(trackEntry, null) as MegaAnimation;
+            string? animationName = animation?.GetName();
+            if (string.IsNullOrWhiteSpace(animationName))
+                return null;
+
+            bool? loop = TryReadTrackEntryLoop(trackEntry);
+            float? trackTime = UndoReflectionUtil.FindMethod(trackEntry.GetType(), "GetTrackTime")?.Invoke(trackEntry, null) is float resolvedTrackTime
+                ? resolvedTrackTime
+                : null;
+            return new UndoCreatureTrackState
+            {
+                RelativePath = relativePath,
+                TrackIndex = trackIndex,
+                AnimationName = animationName,
+                Loop = loop,
+                TrackTime = trackTime
+            };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool? TryReadTrackEntryLoop(MegaTrackEntry trackEntry)
+    {
+        try
+        {
+            if (UndoReflectionUtil.FindProperty(trackEntry.GetType(), "BoundObject")?.GetValue(trackEntry) is not GodotObject boundObject)
+                return null;
+
+            Variant loopValue = boundObject.Get("loop");
+            return loopValue.VariantType == Variant.Type.Bool ? loopValue.AsBool() : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static IReadOnlyList<UndoCreatureCanvasState> CaptureCreatureCanvasStates(Node root)
+    {
+        return EnumerateCreatureVisualNodes(root)
+            .OfType<CanvasItem>()
+            .Select(node => new UndoCreatureCanvasState
+            {
+                RelativePath = BuildCreatureVisualRelativePath(root, node),
+                Visible = node.Visible
+            })
+            .ToList();
+    }
+
+    private static IReadOnlyList<UndoCreatureParticleState> CaptureCreatureParticleStates(Node root)
+    {
+        List<UndoCreatureParticleState> states = [];
+        foreach (Node node in EnumerateCreatureVisualNodes(root))
+        {
+            switch (node)
+            {
+                case GpuParticles2D gpuParticles:
+                    states.Add(new UndoCreatureParticleState
+                    {
+                        RelativePath = BuildCreatureVisualRelativePath(root, gpuParticles),
+                        Emitting = gpuParticles.Emitting
+                    });
+                    break;
+                case CpuParticles2D cpuParticles:
+                    states.Add(new UndoCreatureParticleState
+                    {
+                        RelativePath = BuildCreatureVisualRelativePath(root, cpuParticles),
+                        Emitting = cpuParticles.Emitting
+                    });
+                    break;
+            }
+        }
+
+        return states;
+    }
+
+    private static IReadOnlyList<UndoCreatureShaderParamState> CaptureCreatureShaderParamStates(Node root)
+    {
+        List<UndoCreatureShaderParamState> states = [];
+        foreach (Node node in EnumerateCreatureVisualNodes(root))
+        {
+            string relativePath = BuildCreatureVisualRelativePath(root, node);
+
+            if (node is CanvasItem canvasItem
+                && canvasItem.Material is ShaderMaterial canvasShaderMaterial
+                && !string.Equals(node.GetClass(), "SpineSprite", StringComparison.Ordinal))
+            {
+                CaptureShaderMaterialStates(states, relativePath, UndoCreatureShaderMaterialBindingKind.CanvasItemMaterial, canvasShaderMaterial);
+            }
+
+            if (node is Node2D node2D && string.Equals(node2D.GetClass(), "SpineSprite", StringComparison.Ordinal))
+            {
+                if (new MegaSprite(node2D).GetNormalMaterial() is ShaderMaterial spineShaderMaterial)
+                {
+                    CaptureShaderMaterialStates(states, relativePath, UndoCreatureShaderMaterialBindingKind.SpineNormalMaterial, spineShaderMaterial);
+                }
+            }
+
+            if (string.Equals(node.GetClass(), "SpineSlotNode", StringComparison.Ordinal)
+                && new MegaSlotNode(node).GetNormalMaterial() is ShaderMaterial slotShaderMaterial)
+            {
+                CaptureShaderMaterialStates(states, relativePath, UndoCreatureShaderMaterialBindingKind.SpineSlotNormalMaterial, slotShaderMaterial);
+            }
+        }
+
+        return states;
+    }
+
+    private static void CaptureShaderMaterialStates(
+        ICollection<UndoCreatureShaderParamState> states,
+        string relativePath,
+        UndoCreatureShaderMaterialBindingKind bindingKind,
+        ShaderMaterial material)
+    {
+        foreach (Godot.Collections.Dictionary property in material.GetPropertyList())
+        {
+            string? propertyName = property.ContainsKey("name") ? property["name"].ToString() : null;
+            if (string.IsNullOrWhiteSpace(propertyName)
+                || !propertyName.StartsWith("shader_parameter/", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            string paramName = propertyName["shader_parameter/".Length..];
+            Variant value = material.Get(propertyName);
+            switch (value.VariantType)
+            {
+                case Variant.Type.Bool:
+                    states.Add(new UndoCreatureShaderParamState
+                    {
+                        RelativePath = relativePath,
+                        ParamName = paramName,
+                        BindingKind = bindingKind,
+                        ValueKind = UndoCreatureShaderParamValueKind.Bool,
+                        BoolValue = value.AsBool()
+                    });
+                    break;
+                case Variant.Type.Int:
+                    states.Add(new UndoCreatureShaderParamState
+                    {
+                        RelativePath = relativePath,
+                        ParamName = paramName,
+                        BindingKind = bindingKind,
+                        ValueKind = UndoCreatureShaderParamValueKind.Int,
+                        IntValue = value.AsInt32()
+                    });
+                    break;
+                case Variant.Type.Float:
+                    states.Add(new UndoCreatureShaderParamState
+                    {
+                        RelativePath = relativePath,
+                        ParamName = paramName,
+                        BindingKind = bindingKind,
+                        ValueKind = UndoCreatureShaderParamValueKind.Float,
+                        FloatValue = value.AsSingle()
+                    });
+                    break;
+                case Variant.Type.Vector2:
+                    states.Add(new UndoCreatureShaderParamState
+                    {
+                        RelativePath = relativePath,
+                        ParamName = paramName,
+                        BindingKind = bindingKind,
+                        ValueKind = UndoCreatureShaderParamValueKind.Vector2,
+                        Vector2Value = value.AsVector2()
+                    });
+                    break;
+                case Variant.Type.Color:
+                    states.Add(new UndoCreatureShaderParamState
+                    {
+                        RelativePath = relativePath,
+                        ParamName = paramName,
+                        BindingKind = bindingKind,
+                        ValueKind = UndoCreatureShaderParamValueKind.Color,
+                        ColorValue = value.AsColor()
+                    });
+                    break;
+            }
+        }
+    }
+
+    private static IEnumerable<Node> EnumerateCreatureVisualNodes(Node root)
+    {
+        yield return root;
+        foreach (Node child in root.GetChildren())
+        {
+            foreach (Node descendant in EnumerateCreatureVisualNodes(child))
+                yield return descendant;
+        }
+    }
+
+    private static string BuildCreatureVisualRelativePath(Node root, Node node)
+    {
+        return ReferenceEquals(root, node) ? "." : root.GetPathTo(node).ToString();
     }
 
     private static string BuildCreatureKey(Creature creature, int index)
@@ -337,17 +622,41 @@ public sealed partial class UndoController
         return CreateCardRuntimeState(
             card,
             CaptureEnchantmentRuntimeState(card.Enchantment),
+            CaptureAfflictionRuntimeState(card.Affliction),
             UndoRuntimeStateCodecRegistry.CaptureCardStates(card, context));
     }
 
     private static UndoCardRuntimeState CaptureDefaultCardRuntimeState(CardModel card)
     {
-        return CreateCardRuntimeState(card, CaptureEnchantmentRuntimeState(card.Enchantment), []);
+        return CreateCardRuntimeState(card, CaptureEnchantmentRuntimeState(card.Enchantment), CaptureAfflictionRuntimeState(card.Affliction), []);
+    }
+
+    internal static UndoCardCostState CaptureChoiceOptionCostState(CardModel card)
+    {
+        return CaptureCardCostState(card);
+    }
+
+    internal static UndoCardRuntimeState CaptureChoiceOptionRuntimeState(CardModel card)
+    {
+        RunState? runState = RunManager.Instance.DebugOnlyGetState();
+        CombatState? combatState = card.Owner?.Creature?.CombatState ?? CombatManager.Instance.DebugOnlyGetState();
+        if (runState != null && combatState != null)
+        {
+            UndoRuntimeCaptureContext context = new()
+            {
+                RunState = runState,
+                CombatState = combatState
+            };
+            return CaptureCardRuntimeState(card, context);
+        }
+
+        return CaptureDefaultCardRuntimeState(card);
     }
 
     private static UndoCardRuntimeState CreateCardRuntimeState(
         CardModel card,
         UndoEnchantmentRuntimeState? enchantmentState,
+        UndoAfflictionRuntimeState? afflictionState,
         IReadOnlyList<UndoComplexRuntimeState> complexStates)
     {
         RunState? runState = RunManager.Instance.DebugOnlyGetState();
@@ -361,6 +670,7 @@ public sealed partial class UndoController
                 ? UndoStableRefs.CaptureCardRef(runState, card.DeckVersion)
                 : null,
             EnchantmentState = enchantmentState,
+            AfflictionState = afflictionState,
             ComplexStates = complexStates
         };
     }
@@ -376,6 +686,19 @@ public sealed partial class UndoController
             BoolProperties = CaptureRuntimeBoolProperties(enchantment),
             IntProperties = CaptureRuntimeIntProperties(enchantment, "Amount"),
             EnumProperties = CaptureRuntimeEnumProperties(enchantment)
+        };
+    }
+
+    private static UndoAfflictionRuntimeState? CaptureAfflictionRuntimeState(AfflictionModel? affliction)
+    {
+        if (affliction == null)
+            return null;
+
+        return new UndoAfflictionRuntimeState
+        {
+            BoolProperties = CaptureRuntimeBoolProperties(affliction, "Card"),
+            IntProperties = CaptureRuntimeIntProperties(affliction, "Amount"),
+            EnumProperties = CaptureRuntimeEnumProperties(affliction)
         };
     }
 

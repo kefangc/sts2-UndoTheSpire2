@@ -593,7 +593,7 @@ internal static class UndoSpecialCreatureVisualNormalizer
         string? expectedTrack = pressureBuildupIdx <= 0
             ? null
             : $"_tracks/buildup{Math.Clamp((int)MathF.Floor(pressureBuildupIdx * 0.5f), 1, 3)}";
-        string? currentTrack = animationState.GetCurrent(1)?.GetAnimation()?.GetName();
+        string? currentTrack = TryGetTrackAnimationName(animationState, 1);
         if (string.Equals(currentTrack, expectedTrack, StringComparison.Ordinal))
             return;
 
@@ -731,12 +731,12 @@ internal static class UndoSpecialCreatureVisualNormalizer
     {
         if (TryInvokePrivateMethod(creatureNode, "ImmediatelySetIdle"))
         {
-            string? currentAnimation = creatureNode.SpineController.GetAnimationState().GetCurrent(0)?.GetAnimation()?.GetName();
+            string? currentAnimation = TryGetTrackAnimationName(creatureNode.SpineController?.GetAnimationState(), 0);
             if (string.Equals(currentAnimation, "idle_loop", StringComparison.Ordinal))
                 return;
         }
 
-        if (string.Equals(creatureNode.SpineController.GetAnimationState().GetCurrent(0)?.GetAnimation()?.GetName(), "idle_loop", StringComparison.Ordinal))
+        if (string.Equals(TryGetTrackAnimationName(creatureNode.SpineController?.GetAnimationState(), 0), "idle_loop", StringComparison.Ordinal))
             return;
         EnsureBaseAnimation(creatureNode, "idle_loop", loop: true);
     }
@@ -768,11 +768,38 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
     private static void EnsureBaseAnimation(NCreature creatureNode, string animationName, bool loop)
     {
-        string? currentAnimation = creatureNode.SpineController.GetAnimationState().GetCurrent(0)?.GetAnimation()?.GetName();
+        var animationState = creatureNode.SpineController?.GetAnimationState();
+        if (animationState == null)
+            return;
+
+        string? currentAnimation = TryGetTrackAnimationName(animationState, 0);
         if (string.Equals(currentAnimation, animationName, StringComparison.Ordinal))
             return;
 
-        creatureNode.SpineController.GetAnimationState().SetAnimation(animationName, loop, 0);
+        animationState.SetAnimation(animationName, loop, 0);
+    }
+
+    private static string? TryGetTrackAnimationName(object? animationState, int trackIndex)
+    {
+        if (animationState == null)
+            return null;
+
+        try
+        {
+            object? trackEntry = UndoReflectionUtil.FindMethod(animationState.GetType(), "GetCurrent")?.Invoke(animationState, [trackIndex]);
+            if (trackEntry == null)
+                return null;
+
+            object? animation = UndoReflectionUtil.FindMethod(trackEntry.GetType(), "GetAnimation")?.Invoke(trackEntry, null);
+            if (animation == null)
+                return null;
+
+            return UndoReflectionUtil.FindMethod(animation.GetType(), "GetName")?.Invoke(animation, null) as string;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static void ResetSpecialNodePosition(Node2D? specialNode)

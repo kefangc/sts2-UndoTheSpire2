@@ -1197,7 +1197,8 @@ public sealed partial class UndoController
         catch (Exception ex)
         {
             _lastRestoreFailureReason = DescribeException(ex);
-            MainFile.Logger.Warn($"Full-state restore failed. {DescribeException(ex)}");
+            MainFile.Logger.Warn($"Full-state restore failed. {ex}");
+            UndoDebugLog.Write($"restore_full_state_failed:{ex}");
             return false;
         }
         finally

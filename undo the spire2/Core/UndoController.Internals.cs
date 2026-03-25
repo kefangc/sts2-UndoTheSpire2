@@ -194,7 +194,7 @@ public sealed partial class UndoController
         return FindMethod(instance.GetType(), methodName)?.Invoke(instance, args);
     }
 
-    private static object? InvokePrivateMethod(object instance, string methodName, Type[] parameterTypes, params object?[]? args)
+    private static object? InvokePrivateMethodExact(object instance, string methodName, Type[] parameterTypes, params object?[]? args)
     {
         return FindMethod(instance.GetType(), methodName, parameterTypes)?.Invoke(instance, args);
     }
@@ -308,6 +308,7 @@ public sealed partial class UndoController
             source.CombatCardDbState,
             source.PlayerOrbStates,
             source.PlayerDeckStates,
+            source.PlayerPotionStates,
             source.SchemaVersion, source.ChoiceBranchStates);
     }
 
