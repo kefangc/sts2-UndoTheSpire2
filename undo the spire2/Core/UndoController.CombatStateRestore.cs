@@ -100,7 +100,7 @@ public sealed partial class UndoController
                 player.BaseOrbSlotCount = playerOrbState.BaseOrbSlotCount;
 
             RestoreRelics(runState, combatState, player, playerState, GetRelicRuntimeStatesForPlayer(snapshotState, player.NetId));
-            RestorePotions(player, playerState);
+            RestorePotions(player, playerState, GetPlayerPotionState(snapshotState, player.NetId));
             RestorePlayerDeck(runState, player, GetPlayerDeckState(snapshotState, player.NetId));
             RestorePlayerCombatState(
                 player,
@@ -265,7 +265,7 @@ public sealed partial class UndoController
         }
     }
 
-    private static void RestorePotions(Player player, NetFullCombatState.PlayerState playerState)
+    private static void RestorePotions(Player player, NetFullCombatState.PlayerState playerState, UndoPlayerPotionState? playerPotionState)
     {
         int maxPotionDelta = playerState.maxPotionCount - player.MaxPotionCount;
         if (maxPotionDelta > 0)
@@ -278,6 +278,21 @@ public sealed partial class UndoController
             PotionModel? potion = player.GetPotionAtSlotIndex(i);
             if (potion != null)
                 player.DiscardPotionInternal(potion, true);
+        }
+
+        if (playerPotionState != null && playerPotionState.Slots.Count > 0)
+        {
+            foreach (UndoPotionSlotState slotState in playerPotionState.Slots.OrderBy(static slot => slot.SlotIndex))
+            {
+                if (slotState.SlotIndex < 0 || slotState.SlotIndex >= player.MaxPotionCount || slotState.Potion == null)
+                    continue;
+
+                SerializablePotion serializablePotion = ClonePacketSerializable(slotState.Potion);
+                serializablePotion.SlotIndex = slotState.SlotIndex;
+                player.AddPotionInternal(PotionModel.FromSerializable(serializablePotion), slotState.SlotIndex, true);
+            }
+
+            return;
         }
 
         for (int i = 0; i < playerState.potions.Count; i++)
@@ -403,6 +418,11 @@ public sealed partial class UndoController
     private static UndoPlayerDeckState? GetPlayerDeckState(UndoCombatFullState snapshotState, ulong playerNetId)
     {
         return snapshotState.PlayerDeckStates.FirstOrDefault(state => state.PlayerNetId == playerNetId);
+    }
+
+    private static UndoPlayerPotionState? GetPlayerPotionState(UndoCombatFullState snapshotState, ulong playerNetId)
+    {
+        return snapshotState.PlayerPotionStates.FirstOrDefault(state => state.PlayerNetId == playerNetId);
     }
 
     private static IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardRuntimeState>>? GetCardRuntimeStatesForPlayer(UndoCombatFullState snapshotState, ulong playerNetId)
@@ -906,35 +926,42 @@ public sealed partial class UndoController
         if (potionContainer == null)
             return;
 
-        if (GetPrivateFieldValue<System.Collections.IList>(potionContainer, "_holders") is { } holders)
+        RunManager.Instance.HoveredModelTracker.OnLocalPotionUnhovered();
+        Control? potionHolders = GetPrivateFieldValue<Control>(potionContainer, "_potionHolders");
+        Vector2 potionHolderBasePosition = potionHolders?.Position ?? Vector2.Zero;
+        if (GetPrivateFieldValue<Tween>(potionContainer, "_potionsFullTween") is { } potionsFullTween)
         {
-            foreach (object holderObject in holders)
+            if (potionsFullTween.IsRunning())
             {
-                if (holderObject is not NPotionHolder holder)
-                    continue;
-
-                if (holder.Potion is { } potionNode && GodotObject.IsInstanceValid(potionNode))
-                {
-                    potionNode.GetParent()?.RemoveChild(potionNode);
-                    potionNode.QueueFree();
-                }
-
-                Node? popup = GetPrivateFieldValue<Node>(holder, "_popup");
-                if (popup != null && GodotObject.IsInstanceValid(popup))
-                {
-                    popup.GetParent()?.RemoveChild(popup);
-                    popup.QueueFree();
-                }
-
-                SetPrivatePropertyValue(holder, "Potion", null);
-                SetPrivateFieldValue(holder, "_popup", null);
-                SetPrivateFieldValue(holder, "_disabledUntilPotionRemoved", false);
-                holder.Modulate = Colors.White;
+                object? holderInitPos = FindField(potionContainer.GetType(), "_potionHolderInitPos")?.GetValue(potionContainer);
+                if (holderInitPos is Vector2 initPosition)
+                    potionHolderBasePosition = initPosition;
             }
+
+            potionsFullTween.Kill();
         }
 
+        if (potionHolders != null)
+        {
+            foreach (Node child in potionHolders.GetChildren().Cast<Node>().ToList())
+            {
+                child.GetParent()?.RemoveChild(child);
+                child.QueueFree();
+            }
+
+            potionHolders.Position = potionHolderBasePosition;
+        }
+
+        if (GetPrivateFieldValue<System.Collections.IList>(potionContainer, "_holders") is { } holders)
+            holders.Clear();
+
+        if (GetPrivateFieldValue<Control>(potionContainer, "_potionErrorBg") is { } potionErrorBg)
+            potionErrorBg.Modulate = Colors.Transparent;
+
         SetPrivateFieldValue(potionContainer, "_focusedHolder", null);
+        SetPrivateFieldValue(potionContainer, "_potionsFullTween", null);
         potionContainer.Initialize(runState);
+        InvokePrivateMethod(potionContainer, "UpdateNavigation");
     }
     private static void NormalizeRelicInventoryUi(RunState runState)
     {

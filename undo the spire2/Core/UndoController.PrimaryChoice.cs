@@ -1153,6 +1153,7 @@ public sealed partial class UndoController
             source.CombatCardDbState,
             source.PlayerOrbStates,
             source.PlayerDeckStates,
+            source.PlayerPotionStates,
             source.SchemaVersion,
             choiceBranchStates);
     }

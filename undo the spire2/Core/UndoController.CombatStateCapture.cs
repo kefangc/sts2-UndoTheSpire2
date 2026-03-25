@@ -90,7 +90,8 @@ public sealed partial class UndoController
             creatureVisualStates: CaptureCreatureVisualStates(combatState.Creatures),
             combatCardDbState: CaptureCombatCardDbState(runState),
             playerOrbStates: CapturePlayerOrbStates(runState),
-            playerDeckStates: CapturePlayerDeckStates(runState));
+            playerDeckStates: CapturePlayerDeckStates(runState),
+            playerPotionStates: CapturePlayerPotionStates(runState));
     }
 
     private static IReadOnlyList<UndoPlayerOrbState> CapturePlayerOrbStates(RunState runState)
@@ -126,6 +127,24 @@ public sealed partial class UndoController
         {
             PlayerNetId = player.NetId,
             Cards = [.. player.Deck.Cards.Select(card => ClonePacketSerializable(card.ToSerializable()))]
+        })];
+    }
+
+    private static IReadOnlyList<UndoPlayerPotionState> CapturePlayerPotionStates(RunState runState)
+    {
+        return [.. runState.Players.Select(player => new UndoPlayerPotionState
+        {
+            PlayerNetId = player.NetId,
+            Slots =
+            [
+                .. Enumerable.Range(0, player.MaxPotionCount).Select(slotIndex => new UndoPotionSlotState
+                {
+                    SlotIndex = slotIndex,
+                    Potion = player.GetPotionAtSlotIndex(slotIndex) is { } potion
+                        ? ClonePacketSerializable(potion.ToSerializable(slotIndex))
+                        : null
+                })
+            ]
         })];
     }
 

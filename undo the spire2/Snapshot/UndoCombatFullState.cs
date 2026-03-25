@@ -13,7 +13,7 @@ namespace UndoTheSpire2;
 
 internal sealed class UndoCombatFullState
 {
-    public const int CurrentSchemaVersion = 12;
+    public const int CurrentSchemaVersion = 13;
 
     public UndoCombatFullState(
         NetFullCombatState fullState,
@@ -40,6 +40,7 @@ internal sealed class UndoCombatFullState
         UndoCombatCardDbState? combatCardDbState = null,
         IReadOnlyList<UndoPlayerOrbState>? playerOrbStates = null,
         IReadOnlyList<UndoPlayerDeckState>? playerDeckStates = null,
+        IReadOnlyList<UndoPlayerPotionState>? playerPotionStates = null,
         int schemaVersion = CurrentSchemaVersion,
         IReadOnlyList<UndoChoiceBranchState>? choiceBranchStates = null)
     {
@@ -60,6 +61,7 @@ internal sealed class UndoCombatFullState
         CombatCardDbState = combatCardDbState ?? new UndoCombatCardDbState();
         PlayerOrbStates = playerOrbStates ?? [];
         PlayerDeckStates = playerDeckStates ?? [];
+        PlayerPotionStates = playerPotionStates ?? [];
         ChoiceBranchStates = choiceBranchStates ?? [];
         CardCostStates = cardCostStates;
         CardRuntimeStates = cardRuntimeStates ?? [];
@@ -112,6 +114,8 @@ internal sealed class UndoCombatFullState
     public IReadOnlyList<UndoPlayerOrbState> PlayerOrbStates { get; }
 
     public IReadOnlyList<UndoPlayerDeckState> PlayerDeckStates { get; }
+
+    public IReadOnlyList<UndoPlayerPotionState> PlayerPotionStates { get; }
 
     public IReadOnlyList<UndoChoiceBranchState> ChoiceBranchStates { get; }
 
@@ -166,6 +170,20 @@ internal sealed class UndoPlayerDeckState
     public required ulong PlayerNetId { get; init; }
 
     public required IReadOnlyList<SerializableCard> Cards { get; init; }
+}
+
+internal sealed class UndoPlayerPotionState
+{
+    public required ulong PlayerNetId { get; init; }
+
+    public required IReadOnlyList<UndoPotionSlotState> Slots { get; init; }
+}
+
+internal sealed class UndoPotionSlotState
+{
+    public required int SlotIndex { get; init; }
+
+    public SerializablePotion? Potion { get; init; }
 }
 
 internal sealed class UndoChoiceBranchState
