@@ -3,6 +3,7 @@
 // Capture/restore details should live in dedicated services; this type is the orchestrator.
 using System.Reflection;
 using Godot;
+using MegaCrit.Sts2.Core.Bindings.MegaSpine;
 using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Combat.History.Entries;
@@ -70,6 +71,7 @@ public sealed partial class UndoController
         RebuildCombatCreatureNodesIfNeeded(combatState);
         RefreshCreaturePowerDisplays(combatState);
         ApplySnapshotCreatureNodeVisuals(combatState, snapshotState);
+        RefreshCreatureStateDisplays(combatState, snapshotState);
         RefreshPlayerOrbManagers(combatState);
         RestoreThievingHopperDisplayCards(combatState);
         RebuildCombatUiCards(combatState);
@@ -95,6 +97,7 @@ public sealed partial class UndoController
 
             SnapEnemyCreatureNodesToSlots(combatState);
             UndoSpecialCreatureVisualNormalizer.Refresh(combatState, combatRoom);
+            RefreshCreatureStateDisplays(combatState, snapshotState);
         }
         await WaitOneFrameAsync();
         if (NCombatRoom.Instance != null)
@@ -104,6 +107,7 @@ public sealed partial class UndoController
             ForceCombatUiInteractiveState(NCombatRoom.Instance.Ui, combatState, LocalContext.GetMe(combatState));
             SnapEnemyCreatureNodesToSlots(combatState);
             UndoSpecialCreatureVisualNormalizer.Refresh(combatState, NCombatRoom.Instance);
+            RefreshCreatureStateDisplays(combatState, snapshotState);
         }
 
         if (runState != null)
@@ -560,7 +564,14 @@ public sealed partial class UndoController
             return;
 
         Dictionary<string, UndoCreatureVisualState> creatureVisualStatesByKey = snapshotState.CreatureVisualStates
-            .Where(static state => state.VisualDefaultScale.HasValue || state.VisualHue.HasValue || state.TempScale.HasValue)
+            .Where(static state => state.VisualDefaultScale.HasValue
+                || state.VisualHue.HasValue
+                || state.TempScale.HasValue
+                || state.TrackStates.Count > 0
+                || state.CanvasStates.Count > 0
+                || state.ParticleStates.Count > 0
+                || state.ShaderParamStates.Count > 0
+                || state.StateDisplayState != null)
             .ToDictionary(static state => state.CreatureKey, static state => state);
         if (creatureVisualStatesByKey.Count == 0 && snapshotState.MonsterStates.Count > 0)
         {
@@ -594,6 +605,7 @@ public sealed partial class UndoController
             float hue = creatureVisualState.VisualHue
                 ?? (FindField(creatureVisuals.GetType(), "_hue")?.GetValue(creatureVisuals) is float currentHue ? currentHue : 0f);
             RestoreCreatureVisualStateInstantly(creatureNode, scale, hue, creatureVisualState.TempScale);
+            RestoreCreatureSceneVisualState(creatureVisuals, creatureVisualState);
         }
 
         RelayoutEnemyCreatureNodes(combatRoom, combatState);
@@ -613,6 +625,236 @@ public sealed partial class UndoController
         creatureNode.Visuals.Scale = Vector2.One * resolvedTempScale * defaultScale;
         InvokePrivateMethod(creatureNode, "SetOrbManagerPosition");
         InvokePrivateMethodExact(creatureNode, "UpdateBounds", [typeof(Node)], creatureNode.Visuals);
+    }
+
+    private static void RestoreCreatureSceneVisualState(NCreatureVisuals root, UndoCreatureVisualState state)
+    {
+        RestoreCreatureCanvasStates(root, state.CanvasStates);
+        RestoreCreatureParticleStates(root, state.ParticleStates);
+        RestoreCreatureShaderParams(root, state.ShaderParamStates);
+        RestoreCreatureTrackStates(root, state.TrackStates);
+    }
+
+    private static void RestoreCreatureCanvasStates(Node root, IReadOnlyList<UndoCreatureCanvasState> states)
+    {
+        foreach (UndoCreatureCanvasState state in states)
+        {
+            if (ResolveCreatureVisualNode(root, state.RelativePath) is CanvasItem canvasItem)
+                canvasItem.Visible = state.Visible;
+        }
+    }
+
+    private static void RestoreCreatureParticleStates(Node root, IReadOnlyList<UndoCreatureParticleState> states)
+    {
+        foreach (UndoCreatureParticleState state in states)
+        {
+            switch (ResolveCreatureVisualNode(root, state.RelativePath))
+            {
+                case GpuParticles2D gpuParticles:
+                    gpuParticles.Emitting = state.Emitting;
+                    break;
+                case CpuParticles2D cpuParticles:
+                    cpuParticles.Emitting = state.Emitting;
+                    break;
+            }
+        }
+    }
+
+    private static void RestoreCreatureShaderParams(Node root, IReadOnlyList<UndoCreatureShaderParamState> states)
+    {
+        foreach (UndoCreatureShaderParamState state in states)
+        {
+            if (ResolveCreatureShaderMaterial(root, state) is not ShaderMaterial material)
+                continue;
+
+            switch (state.ValueKind)
+            {
+                case UndoCreatureShaderParamValueKind.Bool:
+                    material.SetShaderParameter(state.ParamName, state.BoolValue);
+                    break;
+                case UndoCreatureShaderParamValueKind.Int:
+                    material.SetShaderParameter(state.ParamName, state.IntValue);
+                    break;
+                case UndoCreatureShaderParamValueKind.Float:
+                    material.SetShaderParameter(state.ParamName, state.FloatValue);
+                    break;
+                case UndoCreatureShaderParamValueKind.Vector2:
+                    material.SetShaderParameter(state.ParamName, state.Vector2Value);
+                    break;
+                case UndoCreatureShaderParamValueKind.Color:
+                    material.SetShaderParameter(state.ParamName, state.ColorValue);
+                    break;
+            }
+        }
+    }
+
+    private static ShaderMaterial? ResolveCreatureShaderMaterial(Node root, UndoCreatureShaderParamState state)
+    {
+        Node? node = ResolveCreatureVisualNode(root, state.RelativePath);
+        if (node == null)
+            return null;
+
+        return state.BindingKind switch
+        {
+            UndoCreatureShaderMaterialBindingKind.CanvasItemMaterial => node is CanvasItem canvasItem ? canvasItem.Material as ShaderMaterial : null,
+            UndoCreatureShaderMaterialBindingKind.SpineNormalMaterial => node is Node2D node2D && string.Equals(node2D.GetClass(), "SpineSprite", StringComparison.Ordinal)
+                ? new MegaSprite(node2D).GetNormalMaterial() as ShaderMaterial
+                : null,
+            UndoCreatureShaderMaterialBindingKind.SpineSlotNormalMaterial => string.Equals(node.GetClass(), "SpineSlotNode", StringComparison.Ordinal)
+                ? new MegaSlotNode(node).GetNormalMaterial() as ShaderMaterial
+                : null,
+            _ => null
+        };
+    }
+
+    private static void RestoreCreatureTrackStates(Node root, IReadOnlyList<UndoCreatureTrackState> states)
+    {
+        Dictionary<string, List<UndoCreatureTrackState>> statesByPath = states
+            .Where(static state => state.TrackIndex > 0)
+            .GroupBy(static state => state.RelativePath, StringComparer.Ordinal)
+            .ToDictionary(static group => group.Key, static group => group.OrderBy(track => track.TrackIndex).ToList(), StringComparer.Ordinal);
+
+        foreach (Node node in EnumerateCreatureVisualNodes(root))
+        {
+            if (node is not Node2D node2D || !string.Equals(node2D.GetClass(), "SpineSprite", StringComparison.Ordinal))
+                continue;
+
+            string relativePath = ReferenceEquals(root, node) ? "." : root.GetPathTo(node).ToString();
+            MegaAnimationState animationState = new MegaSprite(node2D).GetAnimationState();
+            statesByPath.TryGetValue(relativePath, out List<UndoCreatureTrackState>? pathStates);
+            HashSet<int> trackIndexes = pathStates == null
+                ? []
+                : [.. pathStates.Select(static state => state.TrackIndex)];
+            for (int trackIndex = 1; trackIndex < 4; trackIndex++)
+            {
+                if (!trackIndexes.Contains(trackIndex))
+                    TryClearCreatureTrack(animationState, trackIndex);
+            }
+
+            if (pathStates == null)
+                continue;
+
+            foreach (UndoCreatureTrackState trackState in pathStates)
+            {
+                MegaTrackEntry? trackEntry = animationState.SetAnimation(trackState.AnimationName, trackState.Loop ?? true, trackState.TrackIndex);
+                if (trackEntry == null)
+                    continue;
+
+                if (trackState.Loop.HasValue)
+                    trackEntry.SetLoop(trackState.Loop.Value);
+                if (trackState.TrackTime.HasValue)
+                    trackEntry.SetTrackTime(trackState.TrackTime.Value);
+            }
+        }
+    }
+
+    private static void TryClearCreatureTrack(MegaAnimationState animationState, int trackIndex)
+    {
+        try
+        {
+            animationState.AddEmptyAnimation(trackIndex);
+        }
+        catch
+        {
+            try
+            {
+                if (UndoReflectionUtil.FindProperty(animationState.GetType(), "BoundObject")?.GetValue(animationState) is GodotObject boundObject
+                    && boundObject.HasMethod("clear_track"))
+                {
+                    boundObject.Call("clear_track", trackIndex);
+                }
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private static Node? ResolveCreatureVisualNode(Node root, string relativePath)
+    {
+        return relativePath == "." ? root : root.GetNodeOrNull(relativePath);
+    }
+
+    private static void RefreshCreatureStateDisplays(CombatState combatState, UndoCombatFullState? snapshotState = null)
+    {
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatRoom == null)
+            return;
+
+        Dictionary<string, UndoCreatureStateDisplayState> stateDisplaysByKey = snapshotState?.CreatureVisualStates
+            .Where(static state => state.StateDisplayState != null)
+            .ToDictionary(static state => state.CreatureKey, static state => state.StateDisplayState!, StringComparer.Ordinal)
+            ?? [];
+
+        for (int creatureIndex = 0; creatureIndex < combatState.Creatures.Count; creatureIndex++)
+        {
+            Creature creature = combatState.Creatures[creatureIndex];
+            NCreature? creatureNode = combatRoom.GetCreatureNode(creature);
+            if (creatureNode == null)
+                continue;
+
+            string creatureKey = BuildCreatureKey(creature, creatureIndex);
+            stateDisplaysByKey.TryGetValue(creatureKey, out UndoCreatureStateDisplayState? stateDisplayState);
+            NormalizeCreatureStateDisplayLayout(creatureNode, stateDisplayState);
+        }
+    }
+
+    private static void NormalizeCreatureStateDisplayLayout(NCreature creatureNode, UndoCreatureStateDisplayState? snapshotState)
+    {
+        NCreatureStateDisplay? stateDisplay = GetPrivateFieldValue<NCreatureStateDisplay>(creatureNode, "_stateDisplay");
+        if (stateDisplay == null)
+            return;
+
+        GetPrivateFieldValue<Tween>(stateDisplay, "_showHideTween")?.Kill();
+        SetPrivateFieldValue(stateDisplay, "_showHideTween", null);
+
+        if (snapshotState?.OriginalPosition is Vector2 snapshotOriginalPosition)
+            SetPrivateFieldValue(stateDisplay, "_originalPosition", snapshotOriginalPosition);
+
+        if (snapshotState?.CurrentPosition is Vector2 snapshotCurrentPosition)
+            stateDisplay.Position = snapshotCurrentPosition;
+        else if (UndoReflectionUtil.FindField(stateDisplay.GetType(), "_originalPosition")?.GetValue(stateDisplay) is Vector2 originalPosition)
+            stateDisplay.Position = originalPosition;
+
+        if (snapshotState?.Visible is bool visible)
+            stateDisplay.Visible = visible;
+        if (snapshotState?.Modulate is Color modulate)
+            stateDisplay.Modulate = modulate;
+
+        NHealthBar? healthBar = GetPrivateFieldValue<NHealthBar>(stateDisplay, "_healthBar");
+        if (healthBar != null)
+            NormalizeHealthBarLayout(healthBar, snapshotState?.HealthBarState);
+
+        InvokePrivateMethodExact(stateDisplay, "SetCreatureBounds", [typeof(Control)], creatureNode.Hitbox);
+        InvokePrivateMethod(stateDisplay, "RefreshValues");
+    }
+
+    private static void NormalizeHealthBarLayout(NHealthBar healthBar, UndoCreatureHealthBarState? snapshotState)
+    {
+        GetPrivateFieldValue<Tween>(healthBar, "_blockTween")?.Kill();
+        SetPrivateFieldValue(healthBar, "_blockTween", null);
+
+        Control? blockContainer = GetPrivateFieldValue<Control>(healthBar, "_blockContainer");
+        if (snapshotState?.OriginalBlockPosition is Vector2 snapshotOriginalBlockPosition)
+            SetPrivateFieldValue(healthBar, "_originalBlockPosition", snapshotOriginalBlockPosition);
+
+        if (blockContainer != null)
+        {
+            if (snapshotState?.CurrentBlockPosition is Vector2 snapshotCurrentBlockPosition)
+                blockContainer.Position = snapshotCurrentBlockPosition;
+            else if (UndoReflectionUtil.FindField(healthBar.GetType(), "_originalBlockPosition")?.GetValue(healthBar) is Vector2 originalBlockPosition)
+                blockContainer.Position = originalBlockPosition;
+
+            if (snapshotState?.BlockVisible is bool blockVisible)
+                blockContainer.Visible = blockVisible;
+            if (snapshotState?.BlockModulate is Color blockModulate)
+                blockContainer.Modulate = blockModulate;
+            else
+                blockContainer.Modulate = Colors.White;
+        }
+
+        if (GetPrivateFieldValue<Control>(healthBar, "_blockOutline") is { } blockOutline && snapshotState?.BlockOutlineVisible is bool blockOutlineVisible)
+            blockOutline.Visible = blockOutlineVisible;
     }
 
     private static void RelayoutEnemyCreatureNodes(NCombatRoom combatRoom, CombatState combatState)

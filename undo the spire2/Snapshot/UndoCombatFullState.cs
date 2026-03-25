@@ -13,7 +13,7 @@ namespace UndoTheSpire2;
 
 internal sealed class UndoCombatFullState
 {
-    public const int CurrentSchemaVersion = 9;
+    public const int CurrentSchemaVersion = 12;
 
     public UndoCombatFullState(
         NetFullCombatState fullState,
