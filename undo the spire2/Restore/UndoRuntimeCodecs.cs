@@ -420,6 +420,14 @@ internal static class UndoRuntimeStateCodecRegistry
         return states;
     }
 
+    public static bool? CaptureRelicIsActivatingForSavestate(RelicModel relic)
+    {
+        if (!TryGetRelicIsActivating(relic, out bool isActivating))
+            return null;
+
+        return HasTransientActivationDisplayState(relic) ? false : isActivating;
+    }
+
     public static void RestoreRelicStates(RelicModel relic, IReadOnlyList<UndoComplexRuntimeState> states, UndoRuntimeRestoreContext context)
     {
         foreach (UndoComplexRuntimeState state in states)
@@ -427,6 +435,19 @@ internal static class UndoRuntimeStateCodecRegistry
             IUndoRelicRuntimeCodec? codec = RelicCodecs.FirstOrDefault(candidate => candidate.CodecId == state.CodecId && candidate.CanHandle(relic));
             codec?.Restore(relic, state, context);
         }
+    }
+
+    public static bool ShouldNormalizeRelicActivationForSavestate(RelicModel relic)
+    {
+        return HasTransientActivationDisplayState(relic);
+    }
+
+    public static void NormalizeRelicDisplayForSavestateRestore(RelicModel relic)
+    {
+        if (HasTransientActivationDisplayState(relic))
+            TrySetRelicIsActivating(relic, false);
+
+        RefreshRelicCounterDisplay(relic);
     }
 
     public static void RefreshPowerDisplays(CombatState combatState)
@@ -726,6 +747,41 @@ internal static class UndoRuntimeStateCodecRegistry
         }
 
         UndoReflectionUtil.TrySetFieldValue(relic, "_cardsPlayedThisTurn", value);
+    }
+
+    private static bool HasTransientActivationDisplayState(RelicModel relic)
+    {
+        return UndoReflectionUtil.FindProperty(relic.GetType(), "IsActivating")?.PropertyType == typeof(bool)
+            && UndoReflectionUtil.FindMethod(relic.GetType(), "DoActivateVisuals") != null;
+    }
+
+    private static bool TryGetRelicIsActivating(RelicModel relic, out bool value)
+    {
+        if (UndoReflectionUtil.FindProperty(relic.GetType(), "IsActivating")?.GetValue(relic) is bool propertyValue)
+        {
+            value = propertyValue;
+            return true;
+        }
+
+        if (UndoReflectionUtil.FindField(relic.GetType(), "_isActivating")?.GetValue(relic) is bool fieldValue)
+        {
+            value = fieldValue;
+            return true;
+        }
+
+        value = false;
+        return false;
+    }
+
+    private static bool TrySetRelicIsActivating(RelicModel relic, bool value)
+    {
+        if (UndoReflectionUtil.FindProperty(relic.GetType(), "IsActivating")?.PropertyType == typeof(bool)
+            && UndoReflectionUtil.TrySetPropertyValue(relic, "IsActivating", value))
+        {
+            return true;
+        }
+
+        return UndoReflectionUtil.TrySetFieldValue(relic, "_isActivating", value);
     }
 
     private static void RefreshRelicCounterDisplay(RelicModel relic)

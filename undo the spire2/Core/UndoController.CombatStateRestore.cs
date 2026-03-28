@@ -159,17 +159,22 @@ public sealed partial class UndoController
             if (runtimeState == null)
                 continue;
 
+            bool normalizeTransientActivation = UndoRuntimeStateCodecRegistry.ShouldNormalizeRelicActivationForSavestate(relic);
             relic.Status = runtimeState.Status;
-            if (runtimeState.IsActivating.HasValue)
+            bool? isActivating = normalizeTransientActivation && runtimeState.IsActivating.HasValue
+                ? false
+                : runtimeState.IsActivating;
+            if (isActivating.HasValue)
             {
-                if (!TrySetPrivateAutoPropertyBackingField(relic, "IsActivating", runtimeState.IsActivating.Value))
-                    SetPrivatePropertyValue(relic, "IsActivating", runtimeState.IsActivating.Value);
+                if (!TrySetPrivateAutoPropertyBackingField(relic, "IsActivating", isActivating.Value))
+                    SetPrivatePropertyValue(relic, "IsActivating", isActivating.Value);
             }
 
             RestoreRuntimeBoolProperties(relic, runtimeState.BoolProperties);
             RestoreRuntimeIntProperties(relic, runtimeState.IntProperties);
             RestoreRuntimeEnumProperties(relic, runtimeState.EnumProperties);
             UndoRuntimeStateCodecRegistry.RestoreRelicStates(relic, runtimeState.ComplexStates, context);
+            UndoRuntimeStateCodecRegistry.NormalizeRelicDisplayForSavestateRestore(relic);
         }
     }
 
