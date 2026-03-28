@@ -23,6 +23,15 @@ internal sealed class UndoCreatureVisualState
     public IReadOnlyList<UndoCreatureShaderParamState> ShaderParamStates { get; init; } = [];
 
     public UndoCreatureStateDisplayState? StateDisplayState { get; init; }
+
+    public UndoCreatureAnimatorState? AnimatorState { get; init; }
+}
+
+internal sealed class UndoCreatureAnimatorState
+{
+    public required string StateId { get; init; }
+
+    public bool? HasLooped { get; init; }
 }
 
 internal sealed class UndoCreatureStateDisplayState

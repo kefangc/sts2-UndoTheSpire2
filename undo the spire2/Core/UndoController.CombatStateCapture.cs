@@ -3,6 +3,7 @@
 // Capture/restore details should live in dedicated services; this type is the orchestrator.
 using System.Reflection;
 using Godot;
+using MegaCrit.Sts2.Core.Animation;
 using MegaCrit.Sts2.Core.Bindings.MegaSpine;
 using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Combat;
@@ -91,7 +92,8 @@ public sealed partial class UndoController
             combatCardDbState: CaptureCombatCardDbState(runState),
             playerOrbStates: CapturePlayerOrbStates(runState),
             playerDeckStates: CapturePlayerDeckStates(runState),
-            playerPotionStates: CapturePlayerPotionStates(runState));
+            playerPotionStates: CapturePlayerPotionStates(runState),
+            audioLoopStates: UndoAudioLoopTracker.CaptureSnapshot());
     }
 
     private static IReadOnlyList<UndoPlayerOrbState> CapturePlayerOrbStates(RunState runState)
@@ -236,7 +238,8 @@ public sealed partial class UndoController
                 CanvasStates = CaptureCreatureCanvasStates(creatureVisuals),
                 ParticleStates = CaptureCreatureParticleStates(creatureVisuals),
                 ShaderParamStates = CaptureCreatureShaderParamStates(creatureVisuals),
-                StateDisplayState = CaptureCreatureStateDisplayState(creatureNode)
+                StateDisplayState = CaptureCreatureStateDisplayState(creatureNode),
+                AnimatorState = CaptureCreatureAnimatorState(creatureNode)
             });
         }
 
@@ -285,7 +288,7 @@ public sealed partial class UndoController
 
             MegaAnimationState animationState = new MegaSprite(node2D).GetAnimationState();
             string relativePath = BuildCreatureVisualRelativePath(root, node);
-            for (int trackIndex = 1; trackIndex < 4; trackIndex++)
+            for (int trackIndex = 0; trackIndex < 4; trackIndex++)
             {
                 UndoCreatureTrackState? trackState = TryCaptureCreatureTrackState(animationState, relativePath, trackIndex);
                 if (trackState != null)
@@ -294,6 +297,24 @@ public sealed partial class UndoController
         }
 
         return states;
+    }
+
+    private static UndoCreatureAnimatorState? CaptureCreatureAnimatorState(NCreature creatureNode)
+    {
+        if (GetPrivateFieldValue<CreatureAnimator>(creatureNode, "_spineAnimator") is not CreatureAnimator animator)
+            return null;
+
+        if (FindField(animator.GetType(), "_currentState")?.GetValue(animator) is not AnimState currentState
+            || string.IsNullOrWhiteSpace(currentState.Id))
+        {
+            return null;
+        }
+
+        return new UndoCreatureAnimatorState
+        {
+            StateId = currentState.Id,
+            HasLooped = currentState.HasLooped
+        };
     }
 
     private static UndoCreatureTrackState? TryCaptureCreatureTrackState(MegaAnimationState animationState, string relativePath, int trackIndex)

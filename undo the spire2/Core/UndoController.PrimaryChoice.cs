@@ -1635,6 +1635,7 @@ public sealed partial class UndoController
             source.PlayerOrbStates,
             source.PlayerDeckStates,
             source.PlayerPotionStates,
+            source.AudioLoopStates,
             source.SchemaVersion,
             choiceBranchStates);
     }

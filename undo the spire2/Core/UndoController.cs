@@ -2688,6 +2688,7 @@ public sealed partial class UndoController
         _lastResolvedChoiceSpec = null;
         ClearPendingHandChoiceSourceTracking(canceled: true);
         DiscardPendingPlayActionSnapshots("history_cleared");
+        UndoAudioLoopTracker.Clear();
         _lastResolvedChoiceResultKey = null;
         _syntheticChoiceSession = null;
         ClearTurnTransitionBlock();

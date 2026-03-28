@@ -3,6 +3,7 @@
 // Capture/restore details should live in dedicated services; this type is the orchestrator.
 using System.Reflection;
 using Godot;
+using MegaCrit.Sts2.Core.Animation;
 using MegaCrit.Sts2.Core.Bindings.MegaSpine;
 using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Combat;
@@ -97,6 +98,7 @@ public sealed partial class UndoController
 
             SnapEnemyCreatureNodesToSlots(combatState);
             UndoSpecialCreatureVisualNormalizer.Refresh(combatState, combatRoom);
+            ApplySnapshotPresentationState(combatState, snapshotState);
             RefreshCreatureStateDisplays(combatState, snapshotState);
         }
         await WaitOneFrameAsync();
@@ -107,6 +109,7 @@ public sealed partial class UndoController
             ForceCombatUiInteractiveState(NCombatRoom.Instance.Ui, combatState, LocalContext.GetMe(combatState));
             SnapEnemyCreatureNodesToSlots(combatState);
             UndoSpecialCreatureVisualNormalizer.Refresh(combatState, NCombatRoom.Instance);
+            ApplySnapshotPresentationState(combatState, snapshotState);
             RefreshCreatureStateDisplays(combatState, snapshotState);
         }
 
@@ -858,9 +861,19 @@ public sealed partial class UndoController
                 ?? (FindField(creatureVisuals.GetType(), "_hue")?.GetValue(creatureVisuals) is float currentHue ? currentHue : 0f);
             RestoreCreatureVisualStateInstantly(creatureNode, scale, hue, creatureVisualState.TempScale);
             RestoreCreatureSceneVisualState(creatureVisuals, creatureVisualState);
+            RestoreCreatureAnimatorState(creatureNode, creatureVisualState.AnimatorState);
         }
 
         RelayoutEnemyCreatureNodes(combatRoom, combatState);
+    }
+
+    private static void ApplySnapshotPresentationState(CombatState combatState, UndoCombatFullState? snapshotState)
+    {
+        if (snapshotState == null)
+            return;
+
+        ApplySnapshotCreatureNodeVisuals(combatState, snapshotState);
+        UndoAudioLoopTracker.ApplySnapshot(snapshotState.AudioLoopStates);
     }
 
     private static void RestoreCreatureVisualStateInstantly(NCreature creatureNode, float defaultScale, float hue, float? tempScale)
@@ -962,7 +975,7 @@ public sealed partial class UndoController
     private static void RestoreCreatureTrackStates(Node root, IReadOnlyList<UndoCreatureTrackState> states)
     {
         Dictionary<string, List<UndoCreatureTrackState>> statesByPath = states
-            .Where(static state => state.TrackIndex > 0)
+            .Where(static state => state.TrackIndex >= 0)
             .GroupBy(static state => state.RelativePath, StringComparer.Ordinal)
             .ToDictionary(static group => group.Key, static group => group.OrderBy(track => track.TrackIndex).ToList(), StringComparer.Ordinal);
 
@@ -996,6 +1009,76 @@ public sealed partial class UndoController
                     trackEntry.SetLoop(trackState.Loop.Value);
                 if (trackState.TrackTime.HasValue)
                     trackEntry.SetTrackTime(trackState.TrackTime.Value);
+            }
+        }
+    }
+
+    private static void RestoreCreatureAnimatorState(NCreature creatureNode, UndoCreatureAnimatorState? state)
+    {
+        if (state == null
+            || GetPrivateFieldValue<CreatureAnimator>(creatureNode, "_spineAnimator") is not CreatureAnimator animator)
+        {
+            return;
+        }
+
+        AnimState? targetState = FindCreatureAnimatorState(animator, state.StateId);
+        if (targetState == null)
+            return;
+
+        SetPrivateFieldValue(animator, "_currentState", targetState);
+        if (state.HasLooped.HasValue)
+            UndoReflectionUtil.TrySetFieldValue(targetState, "<HasLooped>k__BackingField", state.HasLooped.Value);
+
+        if (!string.IsNullOrWhiteSpace(targetState.BoundsContainer))
+            InvokePrivateMethodExact(creatureNode, "UpdateBounds", [typeof(string)], targetState.BoundsContainer);
+    }
+
+    private static AnimState? FindCreatureAnimatorState(CreatureAnimator animator, string stateId)
+    {
+        Queue<AnimState> pending = new();
+        HashSet<AnimState> visited = [];
+
+        if (FindField(animator.GetType(), "_currentState")?.GetValue(animator) is AnimState currentState)
+            pending.Enqueue(currentState);
+        if (FindField(animator.GetType(), "_anyState")?.GetValue(animator) is AnimState anyState)
+            pending.Enqueue(anyState);
+
+        while (pending.Count > 0)
+        {
+            AnimState state = pending.Dequeue();
+            if (!visited.Add(state))
+                continue;
+
+            if (string.Equals(state.Id, stateId, StringComparison.Ordinal))
+                return state;
+
+            if (state.NextState != null)
+                pending.Enqueue(state.NextState);
+
+            foreach (AnimState branchState in EnumerateAnimStateBranches(state))
+                pending.Enqueue(branchState);
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<AnimState> EnumerateAnimStateBranches(AnimState state)
+    {
+        if (FindField(state.GetType(), "_branchedStates")?.GetValue(state) is not System.Collections.IDictionary branchMap)
+            yield break;
+
+        foreach (object? branchList in branchMap.Values)
+        {
+            if (branchList is not System.Collections.IEnumerable branches)
+                continue;
+
+            foreach (object? branch in branches)
+            {
+                if (branch != null
+                    && FindField(branch.GetType(), "state")?.GetValue(branch) is AnimState branchState)
+                {
+                    yield return branchState;
+                }
             }
         }
     }

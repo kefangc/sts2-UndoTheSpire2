@@ -13,7 +13,7 @@ namespace UndoTheSpire2;
 
 internal sealed class UndoCombatFullState
 {
-    public const int CurrentSchemaVersion = 13;
+    public const int CurrentSchemaVersion = 14;
 
     public UndoCombatFullState(
         NetFullCombatState fullState,
@@ -41,6 +41,7 @@ internal sealed class UndoCombatFullState
         IReadOnlyList<UndoPlayerOrbState>? playerOrbStates = null,
         IReadOnlyList<UndoPlayerDeckState>? playerDeckStates = null,
         IReadOnlyList<UndoPlayerPotionState>? playerPotionStates = null,
+        IReadOnlyList<UndoAudioLoopState>? audioLoopStates = null,
         int schemaVersion = CurrentSchemaVersion,
         IReadOnlyList<UndoChoiceBranchState>? choiceBranchStates = null)
     {
@@ -62,6 +63,7 @@ internal sealed class UndoCombatFullState
         PlayerOrbStates = playerOrbStates ?? [];
         PlayerDeckStates = playerDeckStates ?? [];
         PlayerPotionStates = playerPotionStates ?? [];
+        AudioLoopStates = audioLoopStates ?? [];
         ChoiceBranchStates = choiceBranchStates ?? [];
         CardCostStates = cardCostStates;
         CardRuntimeStates = cardRuntimeStates ?? [];
@@ -116,6 +118,8 @@ internal sealed class UndoCombatFullState
     public IReadOnlyList<UndoPlayerDeckState> PlayerDeckStates { get; }
 
     public IReadOnlyList<UndoPlayerPotionState> PlayerPotionStates { get; }
+
+    public IReadOnlyList<UndoAudioLoopState> AudioLoopStates { get; }
 
     public IReadOnlyList<UndoChoiceBranchState> ChoiceBranchStates { get; }
 
