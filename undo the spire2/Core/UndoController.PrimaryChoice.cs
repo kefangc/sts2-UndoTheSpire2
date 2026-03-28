@@ -90,7 +90,22 @@ public sealed partial class UndoController
 
         await WaitOneFrameAsync();
 
-        UndoSyntheticChoiceSession primarySession = new(snapshot, choiceSpec, branchSnapshot);
+        if (pausedChoiceState != null
+            && IsTrackedOfficialFromHandDiscardChoice(pausedChoiceState, choiceSpec)
+            && !CanResumeTrackedOfficialHandDiscardLive(pausedChoiceState, choiceSpec, out string? liveUnavailableReason))
+        {
+            UndoDebugLog.Write(
+                $"official_hand_choice_primary_restore_unavailable source={choiceSpec.SourceModelTypeName ?? "unknown"}"
+                + $" reason={liveUnavailableReason ?? "missing_live_choice_state"}"
+                + $" replayEvents={snapshot.ReplayEventCount}->{GetCurrentReplayEventCount()}");
+            return false;
+        }
+
+        UndoSyntheticChoiceSession primarySession = new(
+            snapshot,
+            choiceSpec,
+            branchSnapshot,
+            requiresAuthoritativeBranchExecution: ShouldRequireAuthoritativeSyntheticChoiceExecution(choiceSpec));
         _syntheticChoiceSession = primarySession;
         _lastResolvedChoiceSpec = choiceSpec;
         _lastResolvedChoiceResultKey = null;
@@ -120,6 +135,8 @@ public sealed partial class UndoController
 
             if (combatUi == null || !IsSupportedChoiceUiActive(combatUi))
             {
+                if (IsOfficialFromHandDiscardChoice(primarySession.ChoiceSpec))
+                    DiscardDeferredActionSnapshots("choice_anchor_reopen_failed");
                 _syntheticChoiceSession = null;
                 UndoDebugLog.Write($"primary_choice_restore_selected_key:null replayEvents={snapshot.ReplayEventCount} label={snapshot.ActionLabel} codec={pausedChoiceState?.SourceActionCodecId ?? "action:choose-a-card"} stage=anchor_reopen_failed");
                 return false;
@@ -152,6 +169,8 @@ public sealed partial class UndoController
 
         if (selectedKey == null)
         {
+            if (IsOfficialFromHandDiscardChoice(primarySession.ChoiceSpec))
+                DiscardDeferredActionSnapshots("primary_choice_selected_key_null");
             _syntheticChoiceSession = null;
             UndoDebugLog.Write($"primary_choice_restore_selected_key:null replayEvents={snapshot.ReplayEventCount} label={snapshot.ActionLabel} codec={pausedChoiceState?.SourceActionCodecId ?? "action:choose-a-card"}");
             return false;
@@ -165,6 +184,17 @@ public sealed partial class UndoController
         if (ShouldPreferCustomChoiceBeforeCached(primarySession)
             && await TryCommitCustomChoiceBranchAsync(primarySession, selectedKey))
             return true;
+
+        if (primarySession.RequiresAuthoritativeBranchExecution)
+        {
+            UndoDebugLog.Write(
+                $"authoritative_choice_branch_unavailable choice={selectedKey}"
+                + $" label={snapshot.ActionLabel}"
+                + $" replayEvents={snapshot.ReplayEventCount}"
+                + $" source={primarySession.ChoiceSpec.SourceModelTypeName ?? "unknown"}"
+                + " stage=primary_sync");
+            return false;
+        }
 
         if (primarySession.CachedBranches.TryGetValue(selectedKey, out UndoSnapshot? cachedBranchSnapshot))
         {
@@ -228,12 +258,7 @@ public sealed partial class UndoController
         if (string.Equals(pausedChoiceState.SourceActionCodecId, "action:choose-a-card", StringComparison.Ordinal))
             return false;
 
-        // 官方的 from-hand 弃牌选择嵌在 live PlayCardAction 内部，主日志已经证明 replay/resume
-        // 可能把前台 action 留在非法 Executing 状态。对这类来源一律改走 detached choice + custom branch。
         UndoChoiceSpec? choiceSpec = pausedChoiceState.ChoiceSpec;
-        if (choiceSpec != null && ShouldAvoidLiveFromHandDiscardRestore(pausedChoiceState, choiceSpec))
-            return false;
-
         // 其他 from-hand 选择依然尽量复用 live paused action，避免 full-state restore 时
         // 命中手牌 holder/PlayCardAction 的中间态。
         if (string.Equals(pausedChoiceState.SourceActionCodecId, "action:from-hand", StringComparison.Ordinal))
@@ -242,7 +267,7 @@ public sealed partial class UndoController
                 && choiceSpec.SourcePileType == PileType.Hand
                 && IsDiscardSelection(choiceSpec.SelectionPrefs))
             {
-                return true;
+                return false;
             }
 
             return false;
@@ -286,12 +311,14 @@ public sealed partial class UndoController
         try
         {
             UndoChoiceResultKey? selectedKey = await selectionTask;
-            if (_syntheticChoiceSession != null && _syntheticChoiceSession != session)
+            if (ShouldAbortStaleSyntheticChoiceSession(session, "selection_completed"))
                 return;
 
             if (selectedKey == null)
             {
                 UndoDebugLog.Write($"primary_choice_restore_selected_key:null replayEvents={session.AnchorSnapshot.ReplayEventCount} label={session.AnchorSnapshot.ActionLabel} codec={session.ChoiceSpec.Kind}");
+                if (IsOfficialFromHandDiscardChoice(session.ChoiceSpec))
+                    DiscardDeferredActionSnapshots("primary_choice_selected_key_null");
                 if (ReferenceEquals(_syntheticChoiceSession, session))
                     _syntheticChoiceSession = null;
                 NotifyStateChanged();
@@ -299,16 +326,40 @@ public sealed partial class UndoController
             }
 
             UndoDebugLog.Write($"primary_choice_restore_selected_key:{selectedKey} replayEvents={session.AnchorSnapshot.ReplayEventCount} label={session.AnchorSnapshot.ActionLabel} codec={session.ChoiceSpec.Kind}");
-            if (preferLiveBranchCommit && await TryCommitLiveChoiceBranchAsync(session, selectedKey))
+            if (preferLiveBranchCommit)
             {
-                WriteInteractionLog("branch_commit_after_reselect", $"choice={selectedKey} label={session.AnchorSnapshot.ActionLabel} replayEvents={session.AnchorSnapshot.ReplayEventCount} source=live");
-                return;
+                if (ShouldAbortStaleSyntheticChoiceSession(session, "before_live_commit"))
+                    return;
+
+                if (await TryCommitLiveChoiceBranchAsync(session, selectedKey))
+                {
+                    WriteInteractionLog("branch_commit_after_reselect", $"choice={selectedKey} label={session.AnchorSnapshot.ActionLabel} replayEvents={session.AnchorSnapshot.ReplayEventCount} source=live");
+                    return;
+                }
+
+                if (ShouldAbortStaleSyntheticChoiceSession(session, "after_live_commit"))
+                    return;
             }
 
             if (ShouldPreferCustomChoiceBeforeCached(session)
                 && await TryCommitCustomChoiceBranchAsync(session, selectedKey))
             {
                 WriteInteractionLog("branch_commit_after_reselect", $"choice={selectedKey} label={session.AnchorSnapshot.ActionLabel} replayEvents={session.AnchorSnapshot.ReplayEventCount} source=custom");
+                return;
+            }
+
+            if (ShouldAbortStaleSyntheticChoiceSession(session, "after_preferred_custom_commit"))
+                return;
+
+            if (session.RequiresAuthoritativeBranchExecution)
+            {
+                UndoDebugLog.Write(
+                    $"authoritative_choice_branch_unavailable choice={selectedKey}"
+                    + $" label={session.AnchorSnapshot.ActionLabel}"
+                    + $" replayEvents={session.AnchorSnapshot.ReplayEventCount}"
+                    + $" source={session.ChoiceSpec.SourceModelTypeName ?? "unknown"}"
+                    + " stage=primary");
+                OpenSyntheticChoiceSession(session.AnchorSnapshot, session.TemplateSnapshot ?? _futureSnapshots.First?.Value);
                 return;
             }
 
@@ -320,6 +371,9 @@ public sealed partial class UndoController
                 return;
             }
 
+            if (ShouldAbortStaleSyntheticChoiceSession(session, "before_final_custom_commit"))
+                return;
+
             if (await TryCommitCustomChoiceBranchAsync(session, selectedKey))
             {
                 WriteInteractionLog("branch_commit_after_reselect", $"choice={selectedKey} label={session.AnchorSnapshot.ActionLabel} replayEvents={session.AnchorSnapshot.ReplayEventCount} source=custom");
@@ -330,6 +384,8 @@ public sealed partial class UndoController
             if (!TryCreateSyntheticChoiceBranchSnapshot(session, selectedKey, out UndoSnapshot? synthesizedBranch))
             {
                 MainFile.Logger.Warn($"Could not synthesize primary branch for restored choice {selectedKey}.");
+                if (IsOfficialFromHandDiscardChoice(session.ChoiceSpec))
+                    DiscardDeferredActionSnapshots("primary_choice_branch_synthesis_failed");
                 if (ReferenceEquals(_syntheticChoiceSession, session))
                     _syntheticChoiceSession = null;
                 NotifyStateChanged();
@@ -337,13 +393,18 @@ public sealed partial class UndoController
             }
 
             SyntheticChoiceVfxRequest? synthesizedVfxRequest = CaptureSyntheticChoiceVfxRequest(session, synthesizedBranch!, selectedKey);
-            if (await TryApplySynthesizedChoiceBranchAsync(session, synthesizedBranch!, selectedKey, synthesizedVfxRequest))
+            if (!ShouldAbortStaleSyntheticChoiceSession(session, "before_synthesized_commit")
+                && await TryApplySynthesizedChoiceBranchAsync(session, synthesizedBranch!, selectedKey, synthesizedVfxRequest))
+            {
                 WriteInteractionLog("branch_commit_after_reselect", $"choice={selectedKey} label={session.AnchorSnapshot.ActionLabel} replayEvents={session.AnchorSnapshot.ReplayEventCount} source=synthesized");
+            }
         }
         catch (TaskCanceledException)
         {
             if (_syntheticChoiceSession == null || _syntheticChoiceSession == session)
             {
+                if (IsOfficialFromHandDiscardChoice(session.ChoiceSpec))
+                    DiscardDeferredActionSnapshots("primary_choice_selection_canceled");
                 if (ReferenceEquals(_syntheticChoiceSession, session))
                     _syntheticChoiceSession = null;
                 UndoDebugLog.Write($"primary_choice_restore_selected_key:canceled replayEvents={session.AnchorSnapshot.ReplayEventCount} label={session.AnchorSnapshot.ActionLabel}");
@@ -352,27 +413,69 @@ public sealed partial class UndoController
         }
     }
 
+    private bool ShouldAbortStaleSyntheticChoiceSession(UndoSyntheticChoiceSession session, string stage)
+    {
+        if (ReferenceEquals(_syntheticChoiceSession, session))
+            return false;
+
+        UndoDebugLog.Write(
+            $"primary_choice_session_stale stage={stage}"
+            + $" anchorReplayEvents={session.AnchorSnapshot.ReplayEventCount}"
+            + $" currentReplayEvents={_syntheticChoiceSession?.AnchorSnapshot.ReplayEventCount.ToString() ?? "null"}"
+            + $" currentLabel={_syntheticChoiceSession?.AnchorSnapshot.ActionLabel ?? "null"}");
+        return true;
+    }
+
     private async Task<bool> TryCommitLiveChoiceBranchAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey)
     {
         if (_combatReplay == null || !CombatManager.Instance.IsInProgress)
             return false;
 
-        await WaitForReplayBranchAdvanceAsync(session.AnchorSnapshot.ReplayEventCount);
-        await WaitForReplayToSettleAsync();
-        if (RunManager.Instance.ActionExecutor.IsPaused
-            && RunManager.Instance.ActionExecutor.CurrentlyRunningAction == null
-            && RunManager.Instance.ActionQueueSet.IsEmpty
-            && !IsChoiceUiReady())
+        if (ShouldAbortStaleSyntheticChoiceSession(session, "live_commit_start"))
+            return false;
+
+        bool isTrackedOfficialHandDiscard = IsTrackedOfficialFromHandDiscardChoice(
+            session.AnchorSnapshot.CombatState.ActionKernelState.PausedChoiceState,
+            session.ChoiceSpec);
+        if (isTrackedOfficialHandDiscard)
         {
-            RunManager.Instance.ActionExecutor.Unpause();
-            await WaitOneFrameAsync();
+            if (!CanResumeTrackedOfficialHandDiscardLive(session, out string? reason))
+            {
+                UndoDebugLog.Write(
+                    $"official_hand_choice_live_unavailable source={session.ChoiceSpec.SourceModelTypeName ?? "unknown"}"
+                    + $" reason={reason ?? "missing_live_choice_state"}"
+                    + $" replayEvents={session.AnchorSnapshot.ReplayEventCount}->{GetCurrentReplayEventCount()}");
+                return false;
+            }
+
+            if (!await WaitForOfficialHandDiscardLiveResumeAsync(session))
+                return false;
         }
+        else
+        {
+            await WaitForReplayBranchAdvanceAsync(session.AnchorSnapshot.ReplayEventCount);
+            await WaitForReplayToSettleAsync();
+            if (RunManager.Instance.ActionExecutor.IsPaused
+                && RunManager.Instance.ActionExecutor.CurrentlyRunningAction == null
+                && RunManager.Instance.ActionQueueSet.IsEmpty
+                && !IsChoiceUiReady())
+            {
+                RunManager.Instance.ActionExecutor.Unpause();
+                await WaitOneFrameAsync();
+            }
+        }
+
+        if (ShouldAbortStaleSyntheticChoiceSession(session, "live_commit_after_wait"))
+            return false;
 
         int replayEventCount = GetCurrentReplayEventCount();
         if (replayEventCount <= session.AnchorSnapshot.ReplayEventCount)
             return false;
 
         if (!DidLiveBranchResumePastChoice(session, replayEventCount))
+            return false;
+
+        if (ShouldAbortStaleSyntheticChoiceSession(session, "live_commit_before_capture"))
             return false;
 
         UndoSnapshot branchSnapshot = new(
@@ -412,9 +515,129 @@ public sealed partial class UndoController
 
         _pastSnapshots.AddFirst(rearmedAnchor);
         TrimSnapshots(_pastSnapshots);
+        FlushDeferredActionSnapshots(branchSnapshot.ReplayEventCount);
+        if (isTrackedOfficialHandDiscard && CombatManager.Instance.DebugOnlyGetState() is CombatState liveCombatState)
+            await RefreshCombatUiAfterHandDiscardChoiceAsync(liveCombatState, officialHandChoiceUiSettled: true);
         MainFile.Logger.Info($"Re-armed player choice undo anchor. ReplayEvents={rearmedAnchor.ReplayEventCount}, UndoCount={_pastSnapshots.Count}, ChoiceKind={session.ChoiceSpec.Kind} forceRefresh=True");
         NotifyStateChanged();
         return true;
+    }
+
+    private static bool CanResumeTrackedOfficialHandDiscardLive(PausedChoiceState? pausedChoiceState, UndoChoiceSpec choiceSpec, out string? reason)
+    {
+        reason = null;
+        if (!IsTrackedOfficialFromHandDiscardChoice(pausedChoiceState, choiceSpec))
+            return false;
+
+        GameAction? sourceAction = FindTrackedAction(pausedChoiceState!.SourceActionRef?.ActionId);
+        if (sourceAction == null)
+        {
+            reason = "source_action_missing";
+            return false;
+        }
+
+        if (sourceAction.State != GameActionState.GatheringPlayerChoice)
+        {
+            reason = $"state_{sourceAction.State}";
+            return false;
+        }
+
+        if (FindField(sourceAction.GetType(), "_executeAfterResumptionTaskSource")?.GetValue(sourceAction) == null)
+        {
+            reason = "missing_resume_task_source";
+            return false;
+        }
+
+        object? executionTaskObject = FindField(sourceAction.GetType(), "_executionTask")?.GetValue(sourceAction);
+        if (executionTaskObject is not Task executionTask || executionTask.IsCompleted)
+        {
+            reason = executionTaskObject == null ? "missing_execution_task" : "execution_task_completed";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool CanResumeTrackedOfficialHandDiscardLive(UndoSyntheticChoiceSession session, out string? reason)
+    {
+        return CanResumeTrackedOfficialHandDiscardLive(
+            session.AnchorSnapshot.CombatState.ActionKernelState.PausedChoiceState,
+            session.ChoiceSpec,
+            out reason);
+    }
+
+    private async Task<bool> WaitForOfficialHandDiscardLiveResumeAsync(UndoSyntheticChoiceSession session, int maxFrames = 180)
+    {
+        PausedChoiceState? pausedChoiceState = session.AnchorSnapshot.CombatState.ActionKernelState.PausedChoiceState;
+        if (!IsTrackedOfficialFromHandDiscardChoice(pausedChoiceState, session.ChoiceSpec))
+            return false;
+
+        if (!CanResumeTrackedOfficialHandDiscardLive(session, out string? unavailableReason))
+        {
+            UndoDebugLog.Write(
+                $"official_hand_choice_live_unavailable source={session.ChoiceSpec.SourceModelTypeName ?? "unknown"}"
+                + $" reason={unavailableReason ?? "missing_live_choice_state"}"
+                + $" replayEvents={session.AnchorSnapshot.ReplayEventCount}->{GetCurrentReplayEventCount()}");
+            return false;
+        }
+
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        Player? player = combatState == null ? null : LocalContext.GetMe(combatState);
+        string sourceName = session.ChoiceSpec.SourceModelTypeName ?? "unknown";
+        for (int frame = 0; frame < maxFrames; frame++)
+        {
+            if (ShouldAbortStaleSyntheticChoiceSession(session, "live_resume_wait"))
+                return false;
+
+            if (!IsChoiceUiReady())
+            {
+                ActionSynchronizerCombatState targetSynchronizerState = combatState?.CurrentSide == CombatSide.Player
+                    ? ActionSynchronizerCombatState.PlayPhase
+                    : ActionSynchronizerCombatState.NotPlayPhase;
+                RestoreActionSynchronizationState(targetSynchronizerState, ActionKernelBoundaryKind.StableBoundary, out _);
+                RunManager.Instance.ActionQueueSet.UnpauseAllPlayerQueues();
+                RunManager.Instance.ActionExecutor.Unpause();
+            }
+
+            int replayEventCount = GetCurrentReplayEventCount();
+            if (replayEventCount > session.AnchorSnapshot.ReplayEventCount)
+            {
+                await WaitForReplayToSettleAsync();
+                if (ShouldAbortStaleSyntheticChoiceSession(session, "live_resume_after_replay_settle"))
+                    return false;
+
+                replayEventCount = GetCurrentReplayEventCount();
+                NPlayerHand? hand = NCombatRoom.Instance?.Ui?.Hand;
+                bool officialHandChoiceUiSettled = hand == null || await WaitForOfficialHandChoiceUiSettleAsync(hand, player, maxFrames: 4);
+                if (ShouldAbortStaleSyntheticChoiceSession(session, "live_resume_after_ui_settle"))
+                    return false;
+
+                if (DidLiveBranchResumePastChoice(session, replayEventCount) && officialHandChoiceUiSettled)
+                {
+                    if (hand != null)
+                        TryCompletePendingHandChoiceUiInstantly(hand, player);
+
+                    UndoDebugLog.Write(
+                        $"official_hand_choice_live_resume source={sourceName}"
+                        + $" replayEvents={session.AnchorSnapshot.ReplayEventCount}->{replayEventCount}"
+                        + $" sourceActionId={pausedChoiceState!.SourceActionRef?.ActionId?.ToString() ?? "null"}"
+                        + $" resumeActionId={pausedChoiceState.ResumeActionId?.ToString() ?? "null"}");
+                    return true;
+                }
+            }
+
+            await WaitOneFrameAsync();
+        }
+
+        UndoDebugLog.Write(
+            $"official_hand_choice_resume_timeout source={sourceName}"
+            + $" replayEvents={session.AnchorSnapshot.ReplayEventCount}->{GetCurrentReplayEventCount()}"
+            + $" sourceActionPresent={IsTrackedActionPresent(pausedChoiceState!.SourceActionRef?.ActionId)}"
+            + $" resumeActionPresent={IsTrackedActionPresent(pausedChoiceState.ResumeActionId)}"
+            + $" resumePending={IsResumeActionPending(pausedChoiceState)}"
+            + $" callbackObserved={_pendingHandChoiceUiSettle?.CallbackObserved.ToString() ?? "null"}"
+            + $" handSelecting={(NCombatRoom.Instance?.Ui?.Hand.IsInCardSelection == true)}");
+        return false;
     }
 
     private bool DidLiveBranchResumePastChoice(UndoSyntheticChoiceSession session, int replayEventCount)
@@ -423,22 +646,20 @@ public sealed partial class UndoController
             return false;
 
         PausedChoiceState? pausedChoiceState = session.AnchorSnapshot.CombatState.ActionKernelState.PausedChoiceState;
-        if (!string.Equals(pausedChoiceState?.SourceActionCodecId, "action:from-hand", StringComparison.Ordinal)
-            || !IsOfficialFromHandDiscardChoice(session.ChoiceSpec))
+        if (!IsTrackedOfficialFromHandDiscardChoice(pausedChoiceState, session.ChoiceSpec))
         {
             return true;
         }
 
-        int startIndex = Math.Max(0, session.AnchorSnapshot.ReplayEventCount);
-        int endIndex = Math.Min(replayEventCount, _combatReplay.Events.Count);
-        for (int i = startIndex; i < endIndex; i++)
-        {
-            if (_combatReplay.Events[i].eventType == CombatReplayEventType.ResumeAction)
-                return true;
-        }
-
-        UndoDebugLog.Write($"primary_choice_live_resume_missing:{session.ChoiceSpec.SourceModelTypeName ?? "unknown"} replayEvents={session.AnchorSnapshot.ReplayEventCount}->{replayEventCount}");
-        return false;
+        bool replayAdvanced = replayEventCount > session.AnchorSnapshot.ReplayEventCount;
+        bool resumeEventObserved = HasReplayResumeEvent(session, replayEventCount, pausedChoiceState.ResumeActionId);
+        bool resumePending = IsResumeActionPending(pausedChoiceState);
+        return replayAdvanced
+            && (resumeEventObserved || pausedChoiceState.ResumeActionId == null)
+            && !resumePending
+            && !IsChoiceUiReady()
+            && !IsTrackedActionExecuting(pausedChoiceState.SourceActionRef?.ActionId)
+            && !IsTrackedActionExecuting(pausedChoiceState.ResumeActionId);
     }
 
     private async Task<bool> TryCommitCustomChoiceBranchAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey)
@@ -446,32 +667,57 @@ public sealed partial class UndoController
         if (!CombatManager.Instance.IsInProgress)
             return false;
 
+        if (ShouldAbortStaleSyntheticChoiceSession(session, "custom_commit_start"))
+            return false;
+
         if (await TryExecuteRetainChoiceAsync(session, selectedKey))
         {
+            if (ShouldAbortStaleSyntheticChoiceSession(session, "custom_commit_after_retain"))
+                return false;
+
             await FinalizeCustomChoiceBranchAsync(session, selectedKey, stabilizeQueues: false);
             return true;
         }
 
         if (await TryExecuteHandDiscardChoiceAsync(session, selectedKey))
         {
-            await FinalizeCustomChoiceBranchAsync(session, selectedKey);
-            return true;
+            try
+            {
+                if (ShouldAbortStaleSyntheticChoiceSession(session, "custom_commit_after_hand_discard"))
+                    return false;
+
+                await FinalizeCustomChoiceBranchAsync(session, selectedKey, stabilizeQueues: false);
+                return true;
+            }
+            finally
+            {
+                ReleaseDetachedHandDiscardExecutionGuard("custom_commit_after_hand_discard");
+            }
         }
 
         if (await TryExecuteSelectedCardMutationChoiceAsync(session, selectedKey))
         {
+            if (ShouldAbortStaleSyntheticChoiceSession(session, "custom_commit_after_card_mutation"))
+                return false;
+
             await FinalizeCustomChoiceBranchAsync(session, selectedKey);
             return true;
         }
 
         if (await TryExecuteDecisionsDecisionsChoiceAsync(session, selectedKey))
         {
+            if (ShouldAbortStaleSyntheticChoiceSession(session, "custom_commit_after_decisions"))
+                return false;
+
             await FinalizeCustomChoiceBranchAsync(session, selectedKey);
             return true;
         }
 
         if (await TryExecuteEntropyChoiceAsync(session, selectedKey))
         {
+            if (ShouldAbortStaleSyntheticChoiceSession(session, "custom_commit_after_entropy"))
+                return false;
+
             await FinalizeCustomChoiceBranchAsync(session, selectedKey);
             return true;
         }
@@ -484,15 +730,74 @@ public sealed partial class UndoController
     // 导致 Sly、AfterCardDiscarded 等效果在切换目标后漂移。
     private static bool ShouldPreferCustomChoiceBeforeCached(UndoSyntheticChoiceSession session)
     {
-        UndoChoiceSpec choiceSpec = session.ChoiceSpec;
-        return IsSourceChoice(choiceSpec, "MegaCrit.Sts2.Core.Models.Cards.DecisionsDecisions");
+        return session.RequiresAuthoritativeBranchExecution;
+    }
+
+    private static bool ShouldRequireAuthoritativeSyntheticChoiceExecution(UndoChoiceSpec choiceSpec)
+    {
+        return IsRetainChoiceSource(choiceSpec)
+            || IsOfficialFromHandDiscardChoice(choiceSpec)
+            || IsSelectedCardMutationSource(choiceSpec)
+            || IsSourceChoice(choiceSpec, "MegaCrit.Sts2.Core.Models.Cards.DecisionsDecisions")
+            || IsSourceChoice(choiceSpec, typeof(EntropyPower));
     }
 
     private async Task FinalizeCustomChoiceBranchAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey, bool stabilizeQueues = true)
     {
+        if (ShouldAbortStaleSyntheticChoiceSession(session, "custom_finalize_start"))
+            return;
+
+        bool isOfficialHandDiscardChoice = IsOfficialFromHandDiscardChoice(session.ChoiceSpec);
+        bool officialHandChoiceUiSettled = true;
         if (stabilizeQueues)
         {
             await StabilizeAfterCustomChoiceExecutionAsync(session);
+        }
+        else if (isOfficialHandDiscardChoice)
+        {
+            CombatState? liveCombatState = CombatManager.Instance.DebugOnlyGetState();
+            Player? livePlayer = liveCombatState == null ? null : LocalContext.GetMe(liveCombatState);
+            NPlayerHand? hand = NCombatRoom.Instance?.Ui?.Hand;
+            officialHandChoiceUiSettled = await WaitForOfficialHandChoiceUiSettleAsync(hand, livePlayer);
+            if (!officialHandChoiceUiSettled && hand != null && TryCompletePendingHandDiscardChoiceUiViaOfficialPath(hand))
+            {
+                await WaitOneFrameAsync();
+                hand = NCombatRoom.Instance?.Ui?.Hand ?? hand;
+                officialHandChoiceUiSettled = await WaitForOfficialHandChoiceUiSettleAsync(hand, livePlayer, maxFrames: 60);
+            }
+
+            if (!officialHandChoiceUiSettled && liveCombatState != null)
+            {
+                RecoverHandDiscardChoiceUiIfNeeded(liveCombatState);
+                hand = NCombatRoom.Instance?.Ui?.Hand ?? hand;
+                officialHandChoiceUiSettled = await WaitForOfficialHandChoiceUiSettleAsync(hand, livePlayer, maxFrames: 30);
+            }
+
+            if (!officialHandChoiceUiSettled && hand != null)
+            {
+                TryCompletePendingHandChoiceUiInstantly(hand, livePlayer);
+                await WaitOneFrameAsync();
+                hand = NCombatRoom.Instance?.Ui?.Hand ?? hand;
+                officialHandChoiceUiSettled = await WaitForOfficialHandChoiceUiSettleAsync(hand, livePlayer, maxFrames: 15);
+            }
+
+            if (!officialHandChoiceUiSettled && hand != null && livePlayer != null)
+            {
+                bool forcedSynchronized = TrySyncExistingHandUi(hand, livePlayer, normalizeLayout: true);
+                if (forcedSynchronized)
+                {
+                    string sourceName = _pendingHandChoiceUiSettle?.Source.GetType().Name
+                        ?? _pendingHandChoiceSource?.GetType().Name
+                        ?? session.ChoiceSpec.SourceModelTypeName
+                        ?? "unknown";
+                    UndoDebugLog.Write(
+                        $"official_hand_choice_ui_forced_settle source={sourceName}"
+                        + $" expectedHand={PileType.Hand.GetPile(livePlayer).Cards.Count}"
+                        + $" holders={hand.CardHolderContainer.GetChildCount()}");
+                    ClearPendingHandChoiceSourceTracking();
+                    officialHandChoiceUiSettled = true;
+                }
+            }
         }
         else
         {
@@ -502,9 +807,15 @@ public sealed partial class UndoController
             await WaitOneFrameAsync();
         }
 
+        if (ShouldAbortStaleSyntheticChoiceSession(session, "custom_finalize_after_waits"))
+            return;
+
+        int branchReplayEventCount = isOfficialHandDiscardChoice
+            ? Math.Max(GetCurrentReplayEventCount(), session.AnchorSnapshot.ReplayEventCount)
+            : session.TemplateSnapshot?.ReplayEventCount ?? session.AnchorSnapshot.ReplayEventCount;
         UndoSnapshot branchSnapshot = new(
             CaptureCurrentCombatFullState(),
-            session.TemplateSnapshot?.ReplayEventCount ?? session.AnchorSnapshot.ReplayEventCount,
+            branchReplayEventCount,
             session.TemplateSnapshot?.ActionKind ?? session.AnchorSnapshot.ActionKind,
             _nextSequenceId++,
             session.TemplateSnapshot?.ActionLabel ?? session.AnchorSnapshot.ActionLabel,
@@ -528,8 +839,8 @@ public sealed partial class UndoController
             CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
             if (combatState != null)
             {
-                if (IsOfficialFromHandDiscardChoice(session.ChoiceSpec))
-                    await RefreshCombatUiAfterHandDiscardChoiceAsync(combatState);
+                if (isOfficialHandDiscardChoice)
+                    await RefreshCombatUiAfterHandDiscardChoiceAsync(combatState, officialHandChoiceUiSettled);
                 else
                     await RefreshCombatUiAsync(combatState);
             }
@@ -540,6 +851,7 @@ public sealed partial class UndoController
             session.ChoiceSpec,
             forceRefresh: true,
             anchorCombatStateOverride: WithChoiceBranchStates(session.AnchorSnapshot.CombatState, CaptureSavedChoiceBranchStates(session)));
+        FlushDeferredActionSnapshots(branchSnapshot.ReplayEventCount);
         NotifyStateChanged();
         await WaitOneFrameAsync();
     }
@@ -556,7 +868,10 @@ public sealed partial class UndoController
         if (pausedChoiceState == null)
             return false;
 
-        if (ShouldAvoidLiveFromHandDiscardRestore(pausedChoiceState, choiceSpec))
+        if (IsTrackedOfficialFromHandDiscardChoice(pausedChoiceState, choiceSpec))
+            return true;
+
+        if (IsOfficialFromHandDiscardChoice(choiceSpec))
             return false;
 
         if (stateAlreadyApplied)
@@ -736,46 +1051,66 @@ public sealed partial class UndoController
             return false;
         }
 
-        DisableReplayChecksumComparison(session.AnchorSnapshot.CombatState.NextChecksumId);
-
-        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
-        Player? player = combatState == null ? null : LocalContext.GetMe(combatState);
-        if (player == null)
-            return false;
-
-        if (!TryResolveSelectedHandCards(choiceSpec, selectedKey, player, out List<CardModel> selectedCards))
-            return false;
-
-        BlockingPlayerChoiceContext choiceContext = new();
-        if (IsSourceChoice(choiceSpec, typeof(GamblingChip))
-            || IsSourceChoice(choiceSpec, typeof(GamblersBrew)))
+        if (!TryDetachOfficialHandDiscardSourceAction(session))
         {
-            await CardCmd.DiscardAndDraw(choiceContext, selectedCards, selectedCards.Count);
-        }
-        else
-        {
-            await CardCmd.Discard(choiceContext, selectedCards);
+            UndoDebugLog.Write(
+                $"official_hand_choice_detached_fallback_failed source={choiceSpec.SourceModelTypeName ?? "unknown"}"
+                + $" sourceActionId={session.AnchorSnapshot.CombatState.ActionKernelState.PausedChoiceState?.SourceActionRef?.ActionId?.ToString() ?? "null"}"
+                + $" resumeActionId={session.AnchorSnapshot.CombatState.ActionKernelState.PausedChoiceState?.ResumeActionId?.ToString() ?? "null"}");
+            return false;
         }
 
-        if (IsSourceChoice(choiceSpec, typeof(HiddenDaggers)))
+        bool completed = false;
+        try
         {
-            CardModel? sourceCard = ResolveSourceCardFromPlayPile(player, choiceSpec);
-            CombatState? shivCombatState = sourceCard?.CombatState ?? player.Creature.CombatState;
-            if (shivCombatState == null)
+            DisableReplayChecksumComparison(session.AnchorSnapshot.CombatState.NextChecksumId);
+
+            CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+            Player? player = combatState == null ? null : LocalContext.GetMe(combatState);
+            if (player == null)
                 return false;
 
-            int shivCount = sourceCard?.DynamicVars["Shivs"].IntValue ?? 0;
-            IEnumerable<CardModel> shivs = await Shiv.CreateInHand(player, shivCount, shivCombatState);
-            if (sourceCard?.IsUpgraded == true)
-            {
-                foreach (CardModel shiv in shivs)
-                    CardCmd.Upgrade(shiv, CardPreviewStyle.HorizontalLayout);
-            }
-        }
+            if (!TryResolveSelectedHandCards(choiceSpec, selectedKey, player, out List<CardModel> selectedCards))
+                return false;
 
-        if (choiceSpec.SourceCombatCard != null)
-            await FinalizeDetachedPlayedCardAsync(player, choiceContext, choiceSpec);
-        return true;
+            BlockingPlayerChoiceContext choiceContext = new();
+            if (IsSourceChoice(choiceSpec, typeof(GamblingChip))
+                || IsSourceChoice(choiceSpec, typeof(GamblersBrew)))
+            {
+                await CardCmd.DiscardAndDraw(choiceContext, selectedCards, selectedCards.Count);
+            }
+            else
+            {
+                await CardCmd.Discard(choiceContext, selectedCards);
+            }
+
+            if (IsSourceChoice(choiceSpec, typeof(HiddenDaggers)))
+            {
+                CardModel? sourceCard = ResolveSourceCardFromPlayPile(player, choiceSpec);
+                CombatState? shivCombatState = sourceCard?.CombatState ?? player.Creature.CombatState;
+                if (shivCombatState == null)
+                    return false;
+
+                int shivCount = sourceCard?.DynamicVars["Shivs"].IntValue ?? 0;
+                IEnumerable<CardModel> shivs = await Shiv.CreateInHand(player, shivCount, shivCombatState);
+                if (sourceCard?.IsUpgraded == true)
+                {
+                    foreach (CardModel shiv in shivs)
+                        CardCmd.Upgrade(shiv, CardPreviewStyle.HorizontalLayout);
+                }
+            }
+
+            if (choiceSpec.SourceCombatCard != null)
+                await FinalizeDetachedPlayedCardAsync(player, choiceContext, choiceSpec, sourceActionDetached: true);
+
+            completed = true;
+            return true;
+        }
+        finally
+        {
+            if (!completed)
+                ReleaseDetachedHandDiscardExecutionGuard("hand_discard_execute_failed");
+        }
     }
 
     private async Task<bool> TryExecuteSelectedCardMutationChoiceAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey)
@@ -872,15 +1207,14 @@ public sealed partial class UndoController
         return playCards.LastOrDefault();
     }
 
-    private static async Task FinalizeDetachedPlayedCardAsync(Player player, PlayerChoiceContext choiceContext, UndoChoiceSpec choiceSpec)
+    private static async Task FinalizeDetachedPlayedCardAsync(Player player, PlayerChoiceContext choiceContext, UndoChoiceSpec choiceSpec, bool sourceActionDetached = true)
     {
+        if (!sourceActionDetached)
+            return;
+
         CardModel? playedCard = ResolveSourceCardFromPlayPile(player, choiceSpec);
         if (playedCard == null)
             return;
-
-        NPlayerHand? hand = NCombatRoom.Instance?.Ui?.Hand;
-        if (hand != null)
-            MainFile.Controller.DetachPendingHandSelectionSource(hand);
 
         playedCard.InvokeExecutionFinished();
         await playedCard.MoveToResultPileWithoutPlaying(choiceContext);
@@ -1010,22 +1344,209 @@ public sealed partial class UndoController
     {
         return choiceSpec.Kind == UndoChoiceKind.HandSelection
             && choiceSpec.SourcePileType == PileType.Hand
-            && IsDiscardSelection(choiceSpec.SelectionPrefs)
-            && (
-                IsSourceChoice(choiceSpec, typeof(Acrobatics))
-                || IsSourceChoice(choiceSpec, typeof(DaggerThrow))
-                || IsSourceChoice(choiceSpec, typeof(HiddenDaggers))
-                || IsSourceChoice(choiceSpec, typeof(Prepared))
-                || IsSourceChoice(choiceSpec, typeof(Survivor))
-                || IsSourceChoice(choiceSpec, typeof(GamblingChip))
-                || IsSourceChoice(choiceSpec, typeof(GamblersBrew))
-                || IsSourceChoice(choiceSpec, typeof(ToolsOfTheTradePower)));
+            && IsDiscardSelection(choiceSpec.SelectionPrefs);
     }
 
-    private static bool ShouldAvoidLiveFromHandDiscardRestore(PausedChoiceState pausedChoiceState, UndoChoiceSpec choiceSpec)
+    private static bool IsTrackedOfficialFromHandDiscardChoice(PausedChoiceState? pausedChoiceState, UndoChoiceSpec choiceSpec)
     {
-        return string.Equals(pausedChoiceState.SourceActionCodecId, "action:from-hand", StringComparison.Ordinal)
+        return pausedChoiceState?.SourceActionRef?.ActionId != null
+            && string.Equals(pausedChoiceState.SourceActionCodecId, "action:from-hand", StringComparison.Ordinal)
             && IsOfficialFromHandDiscardChoice(choiceSpec);
+    }
+
+    private bool TryDetachOfficialHandDiscardSourceAction(UndoSyntheticChoiceSession session)
+    {
+        PausedChoiceState? pausedChoiceState = session.AnchorSnapshot.CombatState.ActionKernelState.PausedChoiceState;
+        if (!IsTrackedOfficialFromHandDiscardChoice(pausedChoiceState, session.ChoiceSpec))
+            return false;
+
+        uint? sourceActionId = pausedChoiceState!.SourceActionRef?.ActionId;
+        uint? resumeActionId = pausedChoiceState.ResumeActionId;
+        bool removedAny = false;
+        ActionExecutor actionExecutor = RunManager.Instance.ActionExecutor;
+        if (actionExecutor.CurrentlyRunningAction is { } currentAction
+            && MatchesTrackedAction(currentAction, sourceActionId, resumeActionId))
+        {
+            QuarantineActionForRestore(currentAction);
+            UndoReflectionUtil.TrySetPropertyValue(actionExecutor, "CurrentlyRunningAction", null);
+            removedAny = true;
+        }
+
+        if (FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionQueues")?.GetValue(RunManager.Instance.ActionQueueSet) is System.Collections.IEnumerable rawQueues)
+        {
+            foreach (object rawQueue in rawQueues)
+            {
+                if (FindField(rawQueue.GetType(), "actions")?.GetValue(rawQueue) is not System.Collections.IList actions)
+                    continue;
+
+                for (int i = actions.Count - 1; i >= 0; i--)
+                {
+                    if (actions[i] is not GameAction action
+                        || !MatchesTrackedAction(action, sourceActionId, resumeActionId))
+                    {
+                        continue;
+                    }
+
+                    QuarantineActionForRestore(action);
+                    actions.RemoveAt(i);
+                    removedAny = true;
+                }
+            }
+        }
+
+        if (FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionsWaitingForResumption")?.GetValue(RunManager.Instance.ActionQueueSet) is System.Collections.IList waitingForResumption)
+        {
+            for (int i = waitingForResumption.Count - 1; i >= 0; i--)
+            {
+                object waiting = waitingForResumption[i];
+                object? oldIdValue = FindField(waiting.GetType(), "oldId")?.GetValue(waiting);
+                object? newIdValue = FindField(waiting.GetType(), "newId")?.GetValue(waiting);
+                uint? oldId = oldIdValue is uint oldIdTyped ? oldIdTyped : null;
+                uint? newId = newIdValue is uint newIdTyped ? newIdTyped : null;
+                if ((sourceActionId != null && (oldId == sourceActionId || newId == sourceActionId))
+                    || (resumeActionId != null && (oldId == resumeActionId || newId == resumeActionId)))
+                {
+                    waitingForResumption.RemoveAt(i);
+                    removedAny = true;
+                }
+            }
+        }
+
+        bool detached = removedAny
+            || (!IsTrackedActionPresent(sourceActionId)
+                && !IsTrackedActionPresent(resumeActionId)
+                && !IsResumeActionPending(pausedChoiceState));
+        if (!detached)
+            return false;
+
+        ActionSynchronizerCombatState targetSynchronizerState = CombatManager.Instance.DebugOnlyGetState()?.CurrentSide == CombatSide.Player
+            ? ActionSynchronizerCombatState.PlayPhase
+            : ActionSynchronizerCombatState.NotPlayPhase;
+        RestoreActionSynchronizationState(targetSynchronizerState, ActionKernelBoundaryKind.StableBoundary, out _);
+        EnterDetachedHandDiscardExecutionGuard(session.ChoiceSpec);
+        ClearPendingHandChoiceSourceTracking(canceled: true);
+        UndoDebugLog.Write(
+            $"official_hand_choice_detached_fallback source={session.ChoiceSpec.SourceModelTypeName ?? "unknown"}"
+            + $" sourceActionId={sourceActionId?.ToString() ?? "null"}"
+            + $" resumeActionId={resumeActionId?.ToString() ?? "null"}");
+        return true;
+    }
+
+    private void EnterDetachedHandDiscardExecutionGuard(UndoChoiceSpec choiceSpec)
+    {
+        _detachedHandDiscardExecutionGuardDepth++;
+        if (_detachedHandDiscardExecutionGuardDepth != 1)
+            return;
+
+        RunManager.Instance.ActionQueueSet.PauseAllPlayerQueues();
+        RunManager.Instance.ActionExecutor.Unpause();
+        UndoDebugLog.Write(
+            $"official_hand_choice_queue_guard_enter source={choiceSpec.SourceModelTypeName ?? "unknown"}"
+            + $" replayEvents={GetCurrentReplayEventCount()}");
+    }
+
+    private void ReleaseDetachedHandDiscardExecutionGuard(string stage)
+    {
+        if (_detachedHandDiscardExecutionGuardDepth <= 0)
+            return;
+
+        _detachedHandDiscardExecutionGuardDepth--;
+        if (_detachedHandDiscardExecutionGuardDepth != 0)
+            return;
+
+        RunManager.Instance.ActionQueueSet.UnpauseAllPlayerQueues();
+        RunManager.Instance.ActionExecutor.Unpause();
+        UndoDebugLog.Write(
+            $"official_hand_choice_queue_guard_exit stage={stage}"
+            + $" replayEvents={GetCurrentReplayEventCount()}");
+    }
+
+    private bool HasReplayResumeEvent(UndoSyntheticChoiceSession session, int replayEventCount, uint? expectedResumeActionId)
+    {
+        if (_combatReplay == null)
+            return false;
+
+        int startIndex = Math.Max(0, session.AnchorSnapshot.ReplayEventCount);
+        int endIndex = Math.Min(replayEventCount, _combatReplay.Events.Count);
+        for (int i = startIndex; i < endIndex; i++)
+        {
+            CombatReplayEvent replayEvent = _combatReplay.Events[i];
+            if (replayEvent.eventType != CombatReplayEventType.ResumeAction)
+                continue;
+
+            if (expectedResumeActionId == null || replayEvent.actionId == expectedResumeActionId.Value)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool MatchesTrackedAction(GameAction action, uint? sourceActionId, uint? resumeActionId)
+    {
+        uint? actionId = action.Id;
+        return actionId != null && (actionId == sourceActionId || actionId == resumeActionId);
+    }
+
+    private static GameAction? FindTrackedAction(uint? actionId)
+    {
+        if (actionId == null)
+            return null;
+
+        if (RunManager.Instance.ActionExecutor.CurrentlyRunningAction?.Id == actionId.Value)
+            return RunManager.Instance.ActionExecutor.CurrentlyRunningAction;
+
+        if (FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionQueues")?.GetValue(RunManager.Instance.ActionQueueSet) is not System.Collections.IEnumerable rawQueues)
+            return null;
+
+        foreach (object rawQueue in rawQueues)
+        {
+            if (FindField(rawQueue.GetType(), "actions")?.GetValue(rawQueue) is not System.Collections.IEnumerable actions)
+                continue;
+
+            foreach (GameAction action in actions.OfType<GameAction>())
+            {
+                if (action.Id == actionId.Value)
+                    return action;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsTrackedActionPresent(uint? actionId)
+    {
+        return FindTrackedAction(actionId) != null;
+    }
+
+    private static bool IsTrackedActionExecuting(uint? actionId)
+    {
+        if (actionId == null)
+            return false;
+
+        return RunManager.Instance.ActionExecutor.CurrentlyRunningAction?.Id == actionId.Value;
+    }
+
+    private static bool IsResumeActionPending(PausedChoiceState pausedChoiceState)
+    {
+        if (FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionsWaitingForResumption")?.GetValue(RunManager.Instance.ActionQueueSet) is not System.Collections.IEnumerable rawWaiting)
+            return false;
+
+        uint? sourceActionId = pausedChoiceState.SourceActionRef?.ActionId;
+        uint? resumeActionId = pausedChoiceState.ResumeActionId;
+        foreach (object waiting in rawWaiting)
+        {
+            object? oldIdValue = FindField(waiting.GetType(), "oldId")?.GetValue(waiting);
+            object? newIdValue = FindField(waiting.GetType(), "newId")?.GetValue(waiting);
+            uint? oldId = oldIdValue is uint oldIdTyped ? oldIdTyped : null;
+            uint? newId = newIdValue is uint newIdTyped ? newIdTyped : null;
+            if ((sourceActionId != null && (oldId == sourceActionId || newId == sourceActionId))
+                || (resumeActionId != null && (oldId == resumeActionId || newId == resumeActionId)))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool TryResolveSelectedHandCards(UndoChoiceSpec choiceSpec, UndoChoiceResultKey selectedKey, Player player, out List<CardModel> selectedCards)
@@ -1154,6 +1675,7 @@ public sealed partial class UndoController
             source.PlayerOrbStates,
             source.PlayerDeckStates,
             source.PlayerPotionStates,
+            source.AudioLoopStates,
             source.SchemaVersion,
             choiceBranchStates);
     }

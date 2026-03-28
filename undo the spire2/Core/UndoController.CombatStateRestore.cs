@@ -594,14 +594,304 @@ public sealed partial class UndoController
             SetPrivateFieldValue(orb, "_passiveVal", glassPassiveValue);
     }
 
-    private static void ResetActionExecutorForRestore()
+    private static void ResetActionExecutorForRestore(bool quarantineOutstandingActions = true)
     {
         ActionExecutor actionExecutor = RunManager.Instance.ActionExecutor;
         actionExecutor.Pause();
         actionExecutor.Cancel();
+        if (quarantineOutstandingActions)
+            QuarantineOutstandingActionsForRestore(actionExecutor);
         UndoReflectionUtil.TrySetPropertyValue(actionExecutor, "CurrentlyRunningAction", null);
         UndoReflectionUtil.TrySetFieldValue(actionExecutor, "_actionCancelToken", null);
         UndoReflectionUtil.TrySetFieldValue(actionExecutor, "_queueTaskCompletionSource", null);
+    }
+
+    private static void QuarantineOutstandingActionsForRestore(ActionExecutor actionExecutor)
+    {
+        if (actionExecutor.CurrentlyRunningAction is { } currentAction)
+            QuarantineActionForRestore(currentAction);
+
+        if (UndoReflectionUtil.FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionQueues")?.GetValue(RunManager.Instance.ActionQueueSet) is not System.Collections.IEnumerable rawQueues)
+            return;
+
+        foreach (object rawQueue in rawQueues)
+        {
+            if (UndoReflectionUtil.FindField(rawQueue.GetType(), "actions")?.GetValue(rawQueue) is not System.Collections.IEnumerable actions)
+                continue;
+
+            foreach (GameAction action in actions.OfType<GameAction>().ToList())
+                QuarantineActionForRestore(action);
+        }
+    }
+
+    private static void QuarantineActionForRestore(GameAction action)
+    {
+        try
+        {
+            action.Cancel();
+        }
+        catch
+        {
+        }
+
+        foreach (string eventFieldName in new[]
+        {
+            "AfterFinished",
+            "BeforeExecuted",
+            "BeforeCancelled",
+            "BeforePausedForPlayerChoice",
+            "BeforeReadyToResumeAfterPlayerChoice",
+            "BeforeResumedAfterPlayerChoice"
+        })
+        {
+            UndoReflectionUtil.TrySetFieldValue(action, eventFieldName, null);
+        }
+
+        if (UndoReflectionUtil.FindField(typeof(GameAction), "_pauseForPlayerChoiceTaskSource")?.GetValue(action) is TaskCompletionSource pauseSource)
+            pauseSource.TrySetCanceled();
+        if (UndoReflectionUtil.FindField(typeof(GameAction), "_executeAfterResumptionTaskSource")?.GetValue(action) is TaskCompletionSource resumeSource)
+            resumeSource.TrySetCanceled();
+        if (UndoReflectionUtil.FindField(typeof(GameAction), "_completionSource")?.GetValue(action) is TaskCompletionSource completionSource)
+            completionSource.TrySetCanceled();
+
+        UndoReflectionUtil.TrySetFieldValue(action, "_pauseForPlayerChoiceTaskSource", null);
+        UndoReflectionUtil.TrySetFieldValue(action, "_executeAfterResumptionTaskSource", null);
+        UndoReflectionUtil.TrySetFieldValue(action, "_completionSource", null);
+    }
+
+    private static bool RemoveRestoreTailQueuedActions(GameAction currentAction, uint? actionId)
+    {
+        bool removedAny = false;
+        if (UndoReflectionUtil.FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionQueues")?.GetValue(RunManager.Instance.ActionQueueSet) is not System.Collections.IEnumerable rawQueues)
+            return false;
+
+        foreach (object rawQueue in rawQueues)
+        {
+            if (UndoReflectionUtil.FindField(rawQueue.GetType(), "actions")?.GetValue(rawQueue) is not System.Collections.IList actions)
+                continue;
+
+            for (int i = actions.Count - 1; i >= 0; i--)
+            {
+                if (actions[i] is not GameAction queuedAction)
+                    continue;
+
+                if (!ReferenceEquals(queuedAction, currentAction)
+                    && (actionId == null || queuedAction.Id != actionId))
+                {
+                    continue;
+                }
+
+                QuarantineActionForRestore(queuedAction);
+                actions.RemoveAt(i);
+                removedAny = true;
+            }
+        }
+
+        return removedAny;
+    }
+
+    private static int RemoveRestoreTailWaitingEntries(uint? actionId = null)
+    {
+        if (UndoReflectionUtil.FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionsWaitingForResumption")?.GetValue(RunManager.Instance.ActionQueueSet) is not System.Collections.IList waitingForResumption)
+            return 0;
+
+        int removedCount = 0;
+        for (int i = waitingForResumption.Count - 1; i >= 0; i--)
+        {
+            object waiting = waitingForResumption[i];
+            object? oldIdValue = FindField(waiting.GetType(), "oldId")?.GetValue(waiting);
+            object? newIdValue = FindField(waiting.GetType(), "newId")?.GetValue(waiting);
+            uint? oldId = oldIdValue is uint oldIdTyped ? oldIdTyped : null;
+            uint? newId = newIdValue is uint newIdTyped ? newIdTyped : null;
+            if (actionId != null && oldId != actionId && newId != actionId)
+                continue;
+
+            waitingForResumption.RemoveAt(i);
+            removedCount++;
+        }
+
+        return removedCount;
+    }
+
+    private static bool TryQuarantineRestoreTailAction()
+    {
+        ActionExecutor actionExecutor = RunManager.Instance.ActionExecutor;
+        GameAction? currentAction = actionExecutor.CurrentlyRunningAction;
+        uint? actionId = currentAction?.Id;
+        bool removedWaiting = false;
+        bool removedQueued = false;
+        bool quarantinedCurrent = false;
+
+        if (currentAction is PlayCardAction || currentAction != null && actionId != null)
+        {
+            removedQueued = currentAction != null && RemoveRestoreTailQueuedActions(currentAction, actionId);
+            removedWaiting = RemoveRestoreTailWaitingEntries(actionId) > 0;
+            if (currentAction != null)
+            {
+                QuarantineActionForRestore(currentAction);
+                UndoReflectionUtil.TrySetPropertyValue(actionExecutor, "CurrentlyRunningAction", null);
+                quarantinedCurrent = true;
+            }
+        }
+        else if (currentAction == null)
+        {
+            removedWaiting = RemoveRestoreTailWaitingEntries() > 0;
+        }
+
+        if (!quarantinedCurrent && !removedWaiting && !removedQueued)
+            return false;
+
+        UndoDebugLog.Write(
+            $"restore_tail_quarantined action={(currentAction == null ? "null" : currentAction.GetType().Name)}"
+            + $" actionId={actionId?.ToString() ?? "null"}"
+            + $" state={(currentAction == null ? "null" : currentAction.State.ToString())}"
+            + $" queuedRemoved={removedQueued}"
+            + $" waitingRemoved={removedWaiting}");
+        return true;
+    }
+
+    private static bool HasTransientRestoreTailActivity()
+    {
+        ActionExecutor actionExecutor = RunManager.Instance.ActionExecutor;
+        if (actionExecutor.CurrentlyRunningAction != null || actionExecutor.IsRunning)
+            return true;
+
+        if (UndoReflectionUtil.FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionsWaitingForResumption")?.GetValue(RunManager.Instance.ActionQueueSet) is System.Collections.ICollection waitingForResumption
+            && waitingForResumption.Count > 0)
+        {
+            return true;
+        }
+
+        if (UndoReflectionUtil.FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionQueues")?.GetValue(RunManager.Instance.ActionQueueSet) is not System.Collections.IEnumerable rawQueues)
+            return false;
+
+        foreach (object rawQueue in rawQueues)
+        {
+            if (UndoReflectionUtil.FindField(rawQueue.GetType(), "actions")?.GetValue(rawQueue) is System.Collections.ICollection actions
+                && actions.Count > 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static async Task WaitForRestoreTailToSettleAsync(int maxFrames = 90, int requiredStableFrames = 3)
+    {
+        int stableFrames = 0;
+        for (int frame = 0; frame < maxFrames; frame++)
+        {
+            TryQuarantineRestoreTailAction();
+            ResetActionExecutorForRestore();
+            RunManager.Instance.ActionQueueSet.Reset();
+            ResetActionSynchronizerForRestore();
+            await WaitOneFrameAsync();
+
+            if (HasTransientRestoreTailActivity())
+            {
+                stableFrames = 0;
+                continue;
+            }
+
+            stableFrames++;
+            if (stableFrames >= requiredStableFrames)
+                return;
+        }
+
+        TryQuarantineRestoreTailAction();
+        ResetActionExecutorForRestore();
+        RunManager.Instance.ActionQueueSet.Reset();
+        ResetActionSynchronizerForRestore();
+        for (int frame = 0; frame < requiredStableFrames; frame++)
+        {
+            await WaitOneFrameAsync();
+            if (HasTransientRestoreTailActivity())
+                break;
+        }
+    }
+
+    private async Task<bool> ApplyFullStateSnapshotCoreAsync(UndoCombatFullState snapshot, RunState runState, CombatState combatState)
+    {
+        ResetActionExecutorForRestore();
+        RunManager.Instance.ActionQueueSet.Reset();
+        ResetActionSynchronizerForRestore();
+        RebuildActionQueues(runState.Players);
+        runState.Rng.LoadFromSerializable(snapshot.FullState.Rng);
+
+        RestorePlayers(runState, combatState, snapshot);
+        RestoreCreatures(runState, combatState, snapshot);
+
+        combatState.RoundNumber = snapshot.RoundNumber;
+        combatState.CurrentSide = snapshot.CurrentSide;
+        UndoCombatHistoryCodec.Restore(runState, combatState, snapshot.CombatHistoryState);
+        foreach (Player player in runState.Players)
+            player.PlayerCombatState?.RecalculateCardValues();
+
+        RunManager.Instance.ActionQueueSet.FastForwardNextActionId(snapshot.NextActionId);
+        RunManager.Instance.ActionQueueSynchronizer.FastForwardHookId(snapshot.NextHookId);
+        RunManager.Instance.ChecksumTracker.LoadReplayChecksums(GetReplayChecksumsFrom(snapshot.NextChecksumId), snapshot.NextChecksumId);
+        RunManager.Instance.PlayerChoiceSynchronizer.FastForwardChoiceIds([.. snapshot.FullState.nextChoiceIds]);
+
+        RestoreCapabilityReport topologyReport = UndoCreatureTopologyCodecRegistry.Restore(snapshot.CreatureTopologyStates, combatState.Creatures);
+        if (topologyReport.IsFailure)
+        {
+            _lastRestoreFailureReason = topologyReport.Detail ?? topologyReport.Result.ToString();
+            _lastRestoreCapabilityReport = topologyReport;
+            return false;
+        }
+
+        RestoreCapabilityReport creatureStatusReport = UndoCreatureStatusCodecRegistry.Restore(snapshot.CreatureStatusRuntimeStates, combatState.Creatures);
+        if (creatureStatusReport.IsFailure)
+        {
+            _lastRestoreFailureReason = creatureStatusReport.Detail ?? creatureStatusReport.Result.ToString();
+            _lastRestoreCapabilityReport = creatureStatusReport;
+            return false;
+        }
+
+        RestoreCapabilityReport creatureReconciliationReport = UndoCreatureReconciliationCodecRegistry.Restore(snapshot.MonsterStates, combatState.Creatures);
+        if (creatureReconciliationReport.IsFailure)
+        {
+            _lastRestoreFailureReason = creatureReconciliationReport.Detail ?? creatureReconciliationReport.Result.ToString();
+            _lastRestoreCapabilityReport = creatureReconciliationReport;
+            return false;
+        }
+
+        RestoreCapabilityReport actionKernelReport = UndoActionKernelService.Restore(snapshot.ActionKernelState, runState);
+        _lastRestoreCapabilityReport = actionKernelReport;
+        if (actionKernelReport.IsFailure)
+        {
+            _lastRestoreFailureReason = actionKernelReport.Detail ?? actionKernelReport.Result.ToString();
+            return false;
+        }
+
+        ResetActionExecutorForRestore(quarantineOutstandingActions: false);
+        ActionSynchronizerCombatState effectiveSynchronizerState = GetEffectiveSynchronizerState(snapshot);
+        if (!RestoreActionSynchronizationState(effectiveSynchronizerState, snapshot.ActionKernelState.BoundaryKind, out string? reason))
+        {
+            _lastRestoreFailureReason = reason;
+            _lastRestoreCapabilityReport = new RestoreCapabilityReport
+            {
+                Result = RestoreCapabilityResult.QueueStateMismatch,
+                Detail = reason
+            };
+            return false;
+        }
+
+        RebuildTransientCombatCaches(runState, snapshot.CombatCardDbState);
+        NormalizeRelicInventoryUi(runState);
+        ApplyFirstInSeriesPlayCountOverrides(snapshot);
+
+        foreach (Player player in runState.Players)
+        {
+            if (player.Creature.IsAlive)
+                player.ActivateHooks();
+            else
+                player.DeactivateHooks();
+        }
+
+        await RefreshCombatUiAsync(combatState, snapshot);
+        return true;
     }
 
     private static void ResetActionSynchronizerForRestore()
@@ -689,6 +979,7 @@ public sealed partial class UndoController
         UndoChoiceSpec? choiceSpec = preferredChoiceSpec ?? ResolveCurrentChoiceSpec(restoredSnapshot, replayEventCount);
         if (!IsSupportedChoiceAnchorKind(choiceSpec))
             return;
+        UndoChoiceSpec activeChoiceSpec = choiceSpec!;
 
         GameAction? action = RunManager.Instance.ActionExecutor.CurrentlyRunningAction;
         NCombatUi? combatUi = NCombatRoom.Instance?.Ui;
@@ -708,14 +999,21 @@ public sealed partial class UndoController
         {
             if (!forceRefresh && existing.ChoiceSpec != null)
                 return;
+        }
 
-            _pastSnapshots.RemoveFirst();
+        List<UndoSnapshot> replacedAnchors = DetachLeadingEquivalentChoiceAnchors(activeChoiceSpec, restoredSnapshot.ActionLabel, replayEventCount);
+        if (replacedAnchors.Count > 0)
+        {
+            UndoDebugLog.Write(
+                $"choice_anchor_pruned replayEvents={replayEventCount}"
+                + $" removed={replacedAnchors.Count}"
+                + $" label={restoredSnapshot.ActionLabel}");
         }
 
         UndoCombatFullState anchorCombatState = BuildChoiceAnchorCombatState(
             restoredSnapshot,
-            choiceSpec,
-            existing,
+            activeChoiceSpec,
+            replacedAnchors,
             replayEventCount,
             anchorCombatStateOverride);
         UndoSnapshot anchor = new(
@@ -725,17 +1023,60 @@ public sealed partial class UndoController
             _nextSequenceId++,
             restoredSnapshot.ActionLabel,
             isChoiceAnchor: true,
-            choiceSpec: choiceSpec);
+            choiceSpec: activeChoiceSpec);
 
         _pastSnapshots.AddFirst(anchor);
         TrimSnapshots(_pastSnapshots);
-        MainFile.Logger.Info($"Re-armed player choice undo anchor. ReplayEvents={anchor.ReplayEventCount}, UndoCount={_pastSnapshots.Count}, ChoiceKind={(choiceSpec == null ? "null" : choiceSpec.Kind)} forceRefresh={forceRefresh}");
+        MainFile.Logger.Info($"Re-armed player choice undo anchor. ReplayEvents={anchor.ReplayEventCount}, UndoCount={_pastSnapshots.Count}, ChoiceKind={activeChoiceSpec.Kind} forceRefresh={forceRefresh}");
+    }
+
+    private List<UndoSnapshot> DetachLeadingEquivalentChoiceAnchors(UndoChoiceSpec choiceSpec, string actionLabel, int replayEventCount)
+    {
+        List<UndoSnapshot> detachedAnchors = [];
+        while (_pastSnapshots.First?.Value is UndoSnapshot snapshot
+               && snapshot.IsChoiceAnchor
+               && snapshot.ReplayEventCount <= replayEventCount
+               && IsEquivalentChoiceAnchor(snapshot, choiceSpec, actionLabel))
+        {
+            _pastSnapshots.RemoveFirst();
+            detachedAnchors.Add(snapshot);
+        }
+
+        return detachedAnchors;
+    }
+
+    private static bool IsEquivalentChoiceAnchor(UndoSnapshot snapshot, UndoChoiceSpec choiceSpec, string actionLabel)
+    {
+        return snapshot.IsChoiceAnchor
+            && string.Equals(snapshot.ActionLabel, actionLabel, StringComparison.Ordinal)
+            && AreEquivalentChoiceSpecs(snapshot.ChoiceSpec, choiceSpec);
+    }
+
+    private static bool AreEquivalentChoiceSpecs(UndoChoiceSpec? left, UndoChoiceSpec? right)
+    {
+        if (left == null || right == null)
+            return false;
+
+        if (left.Kind != right.Kind
+            || left.SourcePileType != right.SourcePileType
+            || left.CanSkip != right.CanSkip
+            || !string.Equals(left.SourceModelTypeName, right.SourceModelTypeName, StringComparison.Ordinal)
+            || !string.Equals(left.SourceModelId, right.SourceModelId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (!Nullable.Equals(left.SourceCombatCard, right.SourceCombatCard))
+            return false;
+
+        return left.OptionCards.Count == right.OptionCards.Count
+            && left.SourcePileCombatCards.Count == right.SourcePileCombatCards.Count;
     }
 
     private UndoCombatFullState BuildChoiceAnchorCombatState(
         UndoSnapshot restoredSnapshot,
         UndoChoiceSpec choiceSpec,
-        UndoSnapshot? existingAnchor,
+        IReadOnlyList<UndoSnapshot> existingAnchors,
         int replayEventCount,
         UndoCombatFullState? anchorCombatStateOverride)
     {
@@ -745,7 +1086,7 @@ public sealed partial class UndoController
 
         Dictionary<UndoChoiceResultKey, UndoChoiceBranchState> savedBranches = new();
         RememberChoiceBranchStates(savedBranches, anchorCombatState.ChoiceBranchStates);
-        if (existingAnchor?.IsChoiceAnchor == true && existingAnchor.ReplayEventCount == replayEventCount)
+        foreach (UndoSnapshot existingAnchor in existingAnchors)
             RememberChoiceBranchStates(savedBranches, existingAnchor.CombatState.ChoiceBranchStates);
         RememberChoiceBranchStates(savedBranches, restoredSnapshot.CombatState.ChoiceBranchStates);
 
@@ -755,6 +1096,7 @@ public sealed partial class UndoController
         }
         else if (restoredSnapshot.ActionKind == UndoActionKind.PlayerChoice
             && _lastResolvedChoiceResultKey != null
+            && existingAnchors.Any(static anchor => anchor.IsChoiceAnchor)
             && restoredSnapshot.ReplayEventCount == replayEventCount)
         {
             UndoSnapshot resolvedBranchSnapshot = new(
@@ -906,7 +1248,39 @@ public sealed partial class UndoController
     private static void RebuildTransientCombatCaches(RunState runState, UndoCombatCardDbState? combatCardDbState = null)
     {
         RebuildNetCombatCardDb(runState, combatCardDbState);
+        ResetLocalHoveredModelState();
         RebuildPotionContainer(runState);
+    }
+
+    private static void ResetLocalHoveredModelState()
+    {
+        object? hoveredModelTracker = RunManager.Instance?.HoveredModelTracker;
+        if (hoveredModelTracker == null)
+            return;
+
+        SetPrivateFieldValue(hoveredModelTracker, "_localSelectedCard", null);
+        SetPrivateFieldValue(hoveredModelTracker, "_localSelectedPotion", null);
+        SetPrivateFieldValue(hoveredModelTracker, "_localHoveredCard", null);
+        SetPrivateFieldValue(hoveredModelTracker, "_localHoveredRelic", null);
+        SetPrivateFieldValue(hoveredModelTracker, "_localHoveredPotion", null);
+
+        try
+        {
+            if (GetPrivateFieldValue<object>(hoveredModelTracker, "_inputSynchronizer") is { } inputSynchronizer)
+            {
+                inputSynchronizer.GetType()
+                    .GetMethod("SyncLocalHoveredModel", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                    ?.Invoke(inputSynchronizer, [null]);
+            }
+        }
+        catch (TargetInvocationException ex)
+        {
+            UndoDebugLog.Write($"hover_reset_sync_failed:{ex.InnerException ?? ex}");
+        }
+        catch (Exception ex)
+        {
+            UndoDebugLog.Write($"hover_reset_sync_failed:{ex}");
+        }
     }
 
     private static void RebuildNetCombatCardDb(RunState runState, UndoCombatCardDbState? combatCardDbState)
@@ -926,7 +1300,6 @@ public sealed partial class UndoController
         if (potionContainer == null)
             return;
 
-        RunManager.Instance.HoveredModelTracker.OnLocalPotionUnhovered();
         Control? potionHolders = GetPrivateFieldValue<Control>(potionContainer, "_potionHolders");
         Vector2 potionHolderBasePosition = potionHolders?.Position ?? Vector2.Zero;
         if (GetPrivateFieldValue<Tween>(potionContainer, "_potionsFullTween") is { } potionsFullTween)
@@ -969,7 +1342,7 @@ public sealed partial class UndoController
         if (relicInventory == null)
             return;
 
-        RunManager.Instance.HoveredModelTracker.OnLocalRelicUnhovered();
+        ResetLocalHoveredModelState();
         if (GetPrivateFieldValue<System.Collections.IList>(relicInventory, "_relicNodes") is { } relicNodes)
         {
             foreach (Node node in relicNodes.Cast<Node>().ToList())
@@ -1433,6 +1806,8 @@ public sealed partial class UndoController
                 twoTailedRat.CallForBackupCount = callForBackupCount;
         }
 
+        RestoreSummonMonsterRuntimeState(monster, moveStateMachine, state);
+
         UndoReflectionUtil.TrySetPropertyValue(monster, "SpawnedThisTurn", state.SpawnedThisTurn);
         UndoReflectionUtil.TrySetFieldValue(moveStateMachine, "_performedFirstMove", state.PerformedFirstMove);
         if (moveStateMachine.StateLog is List<MonsterState> stateLog)
@@ -1478,6 +1853,40 @@ public sealed partial class UndoController
 
         if (monster.Creature.IsDead || isPendingRevive)
             NCombatRoom.Instance?.SetCreatureIsInteractable(monster.Creature, false);
+    }
+
+    private static void RestoreSummonMonsterRuntimeState(MonsterModel monster, MonsterMoveStateMachine moveStateMachine, UndoMonsterState state)
+    {
+        if (monster is Fabricator fabricator)
+        {
+            MonsterModel? lastSpawned = state.FabricatorLastSpawnedMonsterId is ModelId lastSpawnedId
+                ? ModelDb.GetById<MonsterModel>(lastSpawnedId)
+                : null;
+            UndoReflectionUtil.TrySetFieldValue(fabricator, "_lastSpawned", lastSpawned);
+        }
+
+        if (monster is LivingFog livingFog && state.LivingFogBloatAmount is int bloatAmount)
+            UndoReflectionUtil.TrySetPropertyValue(livingFog, "BloatAmount", bloatAmount);
+
+        if (monster is ToughEgg toughEgg)
+        {
+            if (state.ToughEggIsHatched is bool isHatched)
+                UndoReflectionUtil.TrySetPropertyValue(toughEgg, "IsHatched", isHatched);
+
+            if (state.ToughEggVisualHatched is bool visualHatched)
+                UndoReflectionUtil.TrySetFieldValue(toughEgg, "_hatched", visualHatched);
+
+            if (state.ToughEggAfterHatchedStateId is string afterHatchedStateId
+                && moveStateMachine.States.TryGetValue(afterHatchedStateId, out MonsterState? afterHatchedState))
+            {
+                UndoReflectionUtil.TrySetPropertyValue(toughEgg, "AfterHatchedState", afterHatchedState);
+            }
+
+            if (state.ToughEggHatchPos is Vector2 hatchPos)
+                UndoReflectionUtil.TrySetPropertyValue(toughEgg, "HatchPos", hatchPos);
+            else
+                UndoReflectionUtil.TrySetPropertyValue(toughEgg, "HatchPos", null);
+        }
     }
 
 

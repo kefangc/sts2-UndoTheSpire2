@@ -3,6 +3,7 @@
 // Capture/restore details should live in dedicated services; this type is the orchestrator.
 using System.Reflection;
 using Godot;
+using MegaCrit.Sts2.Core.Animation;
 using MegaCrit.Sts2.Core.Bindings.MegaSpine;
 using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Combat;
@@ -97,6 +98,7 @@ public sealed partial class UndoController
 
             SnapEnemyCreatureNodesToSlots(combatState);
             UndoSpecialCreatureVisualNormalizer.Refresh(combatState, combatRoom);
+            ApplySnapshotPresentationState(combatState, snapshotState);
             RefreshCreatureStateDisplays(combatState, snapshotState);
         }
         await WaitOneFrameAsync();
@@ -107,6 +109,7 @@ public sealed partial class UndoController
             ForceCombatUiInteractiveState(NCombatRoom.Instance.Ui, combatState, LocalContext.GetMe(combatState));
             SnapEnemyCreatureNodesToSlots(combatState);
             UndoSpecialCreatureVisualNormalizer.Refresh(combatState, NCombatRoom.Instance);
+            ApplySnapshotPresentationState(combatState, snapshotState);
             RefreshCreatureStateDisplays(combatState, snapshotState);
         }
 
@@ -116,7 +119,7 @@ public sealed partial class UndoController
         NotifyCombatStateChangedMethod?.Invoke(CombatManager.Instance.StateTracker, ["UndoRefreshCombatUiAsync"]);
     }
 
-    private static async Task RefreshCombatUiAfterHandDiscardChoiceAsync(CombatState combatState)
+    private static async Task RefreshCombatUiAfterHandDiscardChoiceAsync(CombatState combatState, bool officialHandChoiceUiSettled)
     {
         NCombatRoom? combatRoom = NCombatRoom.Instance;
         if (combatRoom == null)
@@ -133,13 +136,15 @@ public sealed partial class UndoController
 
         ForceCombatUiInteractiveState(combatRoom.Ui, combatState, me);
         await WaitOneFrameAsync();
-        _ = ReconcileHandDiscardChoiceUiAfterSettleAsync(combatState);
+        if (!officialHandChoiceUiSettled)
+            _ = ReconcileHandDiscardChoiceUiAfterSettleAsync(combatState);
     }
 
     private static async Task ReconcileHandDiscardChoiceUiAfterSettleAsync(CombatState combatState)
     {
         try
         {
+            Player? me = LocalContext.GetMe(combatState);
             for (int frame = 0; frame < 120; frame++)
             {
                 NCombatRoom? combatRoom = NCombatRoom.Instance;
@@ -150,10 +155,19 @@ public sealed partial class UndoController
                 bool hasValidCurrentCardPlay = HasValidCurrentCardPlay(hand);
                 bool hasTransientCardFlyVfx = HasTransientCardFlyVfx(combatRoom.CombatVfxContainer)
                     || HasTransientCardFlyVfx(NRun.Instance?.GlobalUi?.TopBar?.TrailContainer);
-                if (!hasValidCurrentCardPlay && !hasTransientCardFlyVfx)
+                bool waitingForOfficialSelectedHolderReturn = MainFile.Controller.IsAwaitingOfficialHandChoiceSourceFinish(hand, me);
+                if (!hasValidCurrentCardPlay && !hasTransientCardFlyVfx && !waitingForOfficialSelectedHolderReturn)
                     break;
 
                 await WaitOneFrameAsync();
+            }
+
+            if (NCombatRoom.Instance?.Ui?.Hand is { } handAfterWait
+                && MainFile.Controller.IsAwaitingOfficialHandChoiceSourceFinish(handAfterWait, me)
+                && TryCompletePendingHandDiscardChoiceUiViaOfficialPath(handAfterWait))
+            {
+                await WaitOneFrameAsync();
+                await MainFile.Controller.WaitForOfficialHandChoiceUiSettleAsync(handAfterWait, me, maxFrames: 60);
             }
 
             RecoverHandDiscardChoiceUiIfNeeded(combatState);
@@ -184,13 +198,40 @@ public sealed partial class UndoController
         }
 
         WriteInteractionLog("hand_discard_ui_recovered", $"expectedHand={PileType.Hand.GetPile(me).Cards.Count} holders={hand.CardHolderContainer.GetChildCount()}");
-        ResetPlayerHandUi(hand);
-        foreach (CardModel card in PileType.Hand.GetPile(me).Cards)
-            hand.Add(CreateCardNode(card, PileType.Hand), -1);
-        SnapHandHolders(hand);
+        TrySyncExistingHandUi(hand, me, normalizeLayout: true);
         SyncPlayContainerCards(ui, me);
-        ForceCombatUiInteractiveState(ui, combatState, me);
+        ForceCombatUiInteractiveState(ui, combatState, me, normalizeHandLayout: true);
         NotifyCombatStateChangedMethod?.Invoke(CombatManager.Instance.StateTracker, ["UndoHandDiscardChoiceUiRecovery"]);
+    }
+
+    private static bool TryCompletePendingHandDiscardChoiceUiViaOfficialPath(NPlayerHand hand)
+    {
+        AbstractModel? pendingSource = MainFile.Controller._pendingHandChoiceSource;
+        if (!GodotObject.IsInstanceValid(hand)
+            || pendingSource == null
+            || MainFile.Controller._pendingHandChoiceUiSettle?.CallbackObserved == true
+            || GetSelectedHandHolderCount(hand) == 0)
+        {
+            return false;
+        }
+
+        MethodInfo? handlerMethod = FindMethod(hand.GetType(), "OnSelectModeSourceFinished");
+        if (handlerMethod == null)
+            return false;
+
+        try
+        {
+            handlerMethod.Invoke(hand, [pendingSource]);
+            UndoDebugLog.Write(
+                $"hand_discard_ui_recovered_via_official source={pendingSource.GetType().Name}"
+                + $" holders={hand.CardHolderContainer.GetChildCount()} selected={GetSelectedHandHolderCount(hand)}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            UndoDebugLog.Write($"hand_discard_ui_official_recover_failed:{ex}");
+            return false;
+        }
     }
 
     private static bool NeedsHandDiscardChoiceUiRecovery(NPlayerHand hand, Player player)
@@ -201,18 +242,20 @@ public sealed partial class UndoController
         if (HasValidCurrentCardPlay(hand))
             return false;
 
-        int expectedHandCount = PileType.Hand.GetPile(player).Cards.Count;
-        int holderCount = hand.CardHolderContainer.GetChildCount();
-        int selectedHolderCount = (GetPrivateFieldValue<NSelectedHandCardContainer>(hand, "_selectedHandCardContainer")
-            ?? hand.GetNodeOrNull<NSelectedHandCardContainer>("%SelectedHandCardContainer"))
-            ?.Holders.Count
-            ?? 0;
-        int awaitingHolderCount = GetPrivateFieldValue<System.Collections.IDictionary>(hand, "_holdersAwaitingQueue")?.Count ?? 0;
+        if (MainFile.Controller.IsAwaitingOfficialHandChoiceSourceFinish(hand, player))
+            return false;
 
-        if (selectedHolderCount > 0 || awaitingHolderCount > 0)
+        if (GetSelectedHandHolderCount(hand) > 0)
             return true;
 
-        return holderCount != expectedHandCount;
+        if (GetAwaitingHandHolderCount(hand) > 0)
+            return true;
+
+        int expectedHandCount = PileType.Hand.GetPile(player).Cards.Count;
+        if (hand.CardHolderContainer.GetChildCount() != expectedHandCount)
+            return true;
+
+        return HasDetachedHandHolders(hand) || !TryGetReusableHandHolders(hand, player, out _);
     }
 
     private static bool HasValidCurrentCardPlay(NPlayerHand hand)
@@ -403,8 +446,7 @@ public sealed partial class UndoController
     private static void NormalizeCombatInteractionState(CombatState combatState)
     {
         NTargetManager.Instance?.CancelTargeting();
-        RunManager.Instance.HoveredModelTracker.OnLocalCardDeselected();
-        RunManager.Instance.HoveredModelTracker.OnLocalCardUnhovered();
+        ResetLocalHoveredModelState();
         ClearCombatManagerCollection("_playersReadyToEndTurn");
         ClearCombatManagerCollection("_playersReadyToBeginEnemyTurn");
         ClearCombatManagerCollection("_playersTakingExtraTurn");
@@ -424,21 +466,234 @@ public sealed partial class UndoController
         if (combatRoom == null)
             return;
         NCombatUi ui = combatRoom.Ui;
-        ResetPlayerHandUi(ui.Hand);
         ClearPlayQueueUi(ui.PlayQueue);
-        ClearNodeChildren(ui.PlayContainer);
         Player? me = LocalContext.GetMe(combatState);
         if (me == null)
             return;
-        foreach (CardModel card in PileType.Hand.GetPile(me).Cards)
-            ui.Hand.Add(CreateCardNode(card, PileType.Hand), -1);
-        SnapHandHolders(ui.Hand);
+
+        TrySyncExistingHandUi(ui.Hand, me);
+
         SyncPlayContainerCards(ui, me);
     }
 
     // choice undo 时，屏幕中央“本次打出的牌”和左侧眼睛预览都依赖 PlayContainer。
     // 如果每次 restore 都直接清掉再用普通 NCard 重建，很容易丢掉官方的显示状态，
     // 并把卡留在左上角默认位置。这里优先复用已在场上的节点，只有不匹配时才重建。
+    private static bool TrySyncExistingHandUi(NPlayerHand hand, Player player, bool normalizeLayout = false)
+    {
+        if (!TryGetReusableHandHolders(hand, player, out List<NHandCardHolder> holders))
+            return TryReconcileHandUiInPlace(hand, player, normalizeLayout);
+
+        foreach (NHandCardHolder holder in holders)
+            NormalizeHandHolderCard(holder);
+
+        if (normalizeLayout)
+            SnapHandHolders(hand, preserveHoveredHolders: true);
+        else
+            RefreshHandHolderInteractionState(hand);
+        return true;
+    }
+
+    private static bool TryReconcileHandUiInPlace(NPlayerHand hand, Player player, bool normalizeLayout = false)
+    {
+        if (!GodotObject.IsInstanceValid(hand))
+            return false;
+
+        ClearDetachedHandHolderNodes(hand);
+        ClearTransientHandUiStateForRestore(hand);
+
+        List<Node> rawChildren = hand.CardHolderContainer.GetChildren().Cast<Node>().ToList();
+        List<NHandCardHolder> existingHolders = [];
+        foreach (Node child in rawChildren)
+        {
+            if (child is not NHandCardHolder holder)
+            {
+                child.GetParent()?.RemoveChildSafely(child);
+                QueueFreeNodeSafelyOnce(child);
+                continue;
+            }
+
+            NCard? cardNode = holder.CardNode;
+            if (!GodotObject.IsInstanceValid(holder)
+                || cardNode == null
+                || !GodotObject.IsInstanceValid(cardNode)
+                || cardNode.Model == null)
+            {
+                RemoveHandHolderWithoutRefresh(hand, holder);
+                continue;
+            }
+
+            existingHolders.Add(holder);
+        }
+
+        Dictionary<CardModel, Queue<NHandCardHolder>> holdersByCard = new(ReferenceEqualityComparer.Instance);
+        foreach (NHandCardHolder holder in existingHolders)
+        {
+            NCard? cardNode = holder.CardNode;
+            if (cardNode?.Model == null)
+                continue;
+
+            if (!holdersByCard.TryGetValue(cardNode.Model, out Queue<NHandCardHolder>? queuedHolders))
+            {
+                queuedHolders = new Queue<NHandCardHolder>();
+                holdersByCard[cardNode.Model] = queuedHolders;
+            }
+
+            queuedHolders.Enqueue(holder);
+        }
+
+        List<CardModel> handCards = PileType.Hand.GetPile(player).Cards.ToList();
+        Dictionary<CardModel, NHandCardHolder> matchedHoldersByCard = new(ReferenceEqualityComparer.Instance);
+        HashSet<NHandCardHolder> retainedHolders = [];
+        List<NHandCardHolder> returnedHolders = [];
+        foreach (CardModel card in handCards)
+        {
+            if (holdersByCard.TryGetValue(card, out Queue<NHandCardHolder>? queuedHolders)
+                && queuedHolders.Count > 0)
+            {
+                NHandCardHolder holder = queuedHolders.Dequeue();
+                retainedHolders.Add(holder);
+                matchedHoldersByCard[card] = holder;
+            }
+        }
+
+        foreach (NHandCardHolder holder in existingHolders)
+        {
+            if (!retainedHolders.Contains(holder))
+                RemoveHandHolderWithoutRefresh(hand, holder);
+        }
+
+        for (int index = 0; index < handCards.Count; index++)
+        {
+            CardModel card = handCards[index];
+            if (matchedHoldersByCard.TryGetValue(card, out NHandCardHolder? holder))
+            {
+                if (hand.CardHolderContainer.GetChild(index) != holder)
+                    hand.CardHolderContainer.MoveChild(holder, index);
+                NormalizeHandHolderCard(holder);
+                continue;
+            }
+
+            NHandCardHolder newHolder = hand.Add(CreateCardNode(card, PileType.Hand), index);
+            NormalizeHandHolderCard(newHolder);
+            returnedHolders.Add(newHolder);
+        }
+
+        InvokePrivateMethod(hand, "RefreshLayout");
+        FinalizeReturnedHandHoldersInstantly(returnedHolders);
+        hand.ForceRefreshCardIndices();
+        if (normalizeLayout)
+            SnapHandHolders(hand, preserveHoveredHolders: true);
+        else
+            RefreshHandHolderInteractionState(hand);
+        return TryGetReusableHandHolders(hand, player, out _);
+    }
+
+    private static void ClearTransientHandUiStateForRestore(NPlayerHand hand)
+    {
+        if (!GodotObject.IsInstanceValid(hand))
+            return;
+
+        if (GetPrivateFieldValue<Node>(hand, "_currentCardPlay") is Node currentCardPlay
+            && GodotObject.IsInstanceValid(currentCardPlay))
+        {
+            currentCardPlay.GetParent()?.RemoveChildSafely(currentCardPlay);
+            QueueFreeNodeSafelyOnce(currentCardPlay);
+        }
+
+        GetPrivateFieldValue<System.Collections.IDictionary>(hand, "_holdersAwaitingQueue")?.Clear();
+        GetPrivateFieldValue<System.Collections.IList>(hand, "_selectedCards")?.Clear();
+        SetPrivateFieldValue(hand, "_currentCardPlay", null);
+        SetPrivateFieldValue(hand, "_draggedHolderIndex", -1);
+        SetPrivateFieldValue(hand, "_lastFocusedHolderIdx", -1);
+        SetPrivatePropertyValue(hand, "FocusedHolder", null);
+    }
+
+    private static void RemoveHandHolderWithoutRefresh(NPlayerHand hand, NHandCardHolder holder)
+    {
+        if (!GodotObject.IsInstanceValid(holder))
+            return;
+
+        GetPrivateFieldValue<System.Collections.IDictionary>(hand, "_holdersAwaitingQueue")?.Remove(holder);
+        if (ReferenceEquals(GetPrivatePropertyValue<NHandCardHolder>(hand, "FocusedHolder"), holder))
+            SetPrivatePropertyValue(hand, "FocusedHolder", null);
+
+        holder.Clear();
+        holder.GetParent()?.RemoveChildSafely(holder);
+        holder.QueueFreeSafely();
+    }
+
+    private static bool TryGetReusableHandHolders(NPlayerHand hand, Player player, out List<NHandCardHolder> holders)
+    {
+        holders = [];
+        if (!GodotObject.IsInstanceValid(hand))
+            return false;
+
+        if (HasDetachedHandHolders(hand)
+            || HasValidCurrentCardPlay(hand)
+            || GetSelectedHandHolderCount(hand) > 0
+            || GetAwaitingHandHolderCount(hand) > 0)
+            return false;
+
+        List<CardModel> handCards = PileType.Hand.GetPile(player).Cards.ToList();
+        holders = hand.CardHolderContainer.GetChildren().OfType<NHandCardHolder>().ToList();
+        if (holders.Count != handCards.Count)
+            return false;
+
+        for (int i = 0; i < handCards.Count; i++)
+        {
+            NHandCardHolder holder = holders[i];
+            if (!GodotObject.IsInstanceValid(holder))
+                return false;
+
+            NCard? cardNode = holder.CardNode;
+            if (cardNode == null || !GodotObject.IsInstanceValid(cardNode))
+                return false;
+
+            if (!ReferenceEquals(cardNode.Model, handCards[i]))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static void NormalizeHandHolderCard(NHandCardHolder holder)
+    {
+        ClearObjectTweenFields(holder);
+        NCard? cardNode = holder.CardNode;
+        if (cardNode != null && GodotObject.IsInstanceValid(cardNode))
+        {
+            ClearObjectTweenFields(cardNode);
+            InvokePrivateMethod(cardNode, "Reload");
+            cardNode.Position = Vector2.Zero;
+            cardNode.Visible = true;
+            cardNode.Modulate = Colors.White;
+        }
+
+        holder.UpdateCard();
+        holder.SetClickable(true);
+        holder.FocusMode = Control.FocusModeEnum.All;
+        holder.Hitbox.SetEnabled(true);
+        holder.Hitbox.MouseFilter = Control.MouseFilterEnum.Stop;
+    }
+
+    private static void FinalizeReturnedHandHoldersInstantly(IEnumerable<NHandCardHolder> holders)
+    {
+        foreach (NHandCardHolder holder in holders.Distinct())
+        {
+            if (!GodotObject.IsInstanceValid(holder))
+                continue;
+
+            NormalizeHandHolderCard(holder);
+            holder.SetDefaultTargets();
+            holder.Position = holder.TargetPosition;
+            holder.SetAngleInstantly(holder.TargetAngle);
+            object? targetScale = FindField(holder.GetType(), "_targetScale")?.GetValue(holder);
+            holder.SetScaleInstantly(targetScale is Vector2 scale ? scale : Vector2.One);
+            holder.ZIndex = 0;
+        }
+    }
+
     private static void SyncPlayContainerCards(NCombatUi ui, Player player)
     {
         List<CardModel> playCards = PileType.Play.GetPile(player).Cards.ToList();
@@ -571,7 +826,8 @@ public sealed partial class UndoController
                 || state.CanvasStates.Count > 0
                 || state.ParticleStates.Count > 0
                 || state.ShaderParamStates.Count > 0
-                || state.StateDisplayState != null)
+                || state.StateDisplayState != null
+                || state.AnimatorState != null)
             .ToDictionary(static state => state.CreatureKey, static state => state);
         if (creatureVisualStatesByKey.Count == 0 && snapshotState.MonsterStates.Count > 0)
         {
@@ -606,9 +862,19 @@ public sealed partial class UndoController
                 ?? (FindField(creatureVisuals.GetType(), "_hue")?.GetValue(creatureVisuals) is float currentHue ? currentHue : 0f);
             RestoreCreatureVisualStateInstantly(creatureNode, scale, hue, creatureVisualState.TempScale);
             RestoreCreatureSceneVisualState(creatureVisuals, creatureVisualState);
+            RestoreCreatureAnimatorState(creatureNode, creatureVisualState.AnimatorState);
         }
 
         RelayoutEnemyCreatureNodes(combatRoom, combatState);
+    }
+
+    private static void ApplySnapshotPresentationState(CombatState combatState, UndoCombatFullState? snapshotState)
+    {
+        if (snapshotState == null)
+            return;
+
+        ApplySnapshotCreatureNodeVisuals(combatState, snapshotState);
+        UndoAudioLoopTracker.ApplySnapshot(snapshotState.AudioLoopStates);
     }
 
     private static void RestoreCreatureVisualStateInstantly(NCreature creatureNode, float defaultScale, float hue, float? tempScale)
@@ -710,7 +976,7 @@ public sealed partial class UndoController
     private static void RestoreCreatureTrackStates(Node root, IReadOnlyList<UndoCreatureTrackState> states)
     {
         Dictionary<string, List<UndoCreatureTrackState>> statesByPath = states
-            .Where(static state => state.TrackIndex > 0)
+            .Where(static state => state.TrackIndex >= 0)
             .GroupBy(static state => state.RelativePath, StringComparer.Ordinal)
             .ToDictionary(static group => group.Key, static group => group.OrderBy(track => track.TrackIndex).ToList(), StringComparer.Ordinal);
 
@@ -720,7 +986,8 @@ public sealed partial class UndoController
                 continue;
 
             string relativePath = ReferenceEquals(root, node) ? "." : root.GetPathTo(node).ToString();
-            MegaAnimationState animationState = new MegaSprite(node2D).GetAnimationState();
+            MegaSprite megaSprite = new(node2D);
+            MegaAnimationState animationState = megaSprite.GetAnimationState();
             statesByPath.TryGetValue(relativePath, out List<UndoCreatureTrackState>? pathStates);
             HashSet<int> trackIndexes = pathStates == null
                 ? []
@@ -736,7 +1003,48 @@ public sealed partial class UndoController
 
             foreach (UndoCreatureTrackState trackState in pathStates)
             {
-                MegaTrackEntry? trackEntry = animationState.SetAnimation(trackState.AnimationName, trackState.Loop ?? true, trackState.TrackIndex);
+                if (string.IsNullOrWhiteSpace(trackState.AnimationName))
+                {
+                    UndoDebugLog.Write(
+                        $"creature_track_restore_skipped_empty path={relativePath}"
+                        + $" track={trackState.TrackIndex}");
+                    TryClearCreatureTrack(animationState, trackState.TrackIndex);
+                    continue;
+                }
+
+                bool hasAnimation = false;
+                try
+                {
+                    hasAnimation = megaSprite.HasAnimation(trackState.AnimationName);
+                }
+                catch
+                {
+                }
+
+                if (!hasAnimation)
+                {
+                    UndoDebugLog.Write(
+                        $"creature_track_restore_skipped_invalid path={relativePath}"
+                        + $" track={trackState.TrackIndex}"
+                        + $" animation={trackState.AnimationName}");
+                    TryClearCreatureTrack(animationState, trackState.TrackIndex);
+                    continue;
+                }
+
+                MegaTrackEntry? trackEntry;
+                try
+                {
+                    trackEntry = animationState.SetAnimation(trackState.AnimationName, trackState.Loop ?? true, trackState.TrackIndex);
+                }
+                catch
+                {
+                    UndoDebugLog.Write(
+                        $"creature_track_restore_failed path={relativePath}"
+                        + $" track={trackState.TrackIndex}"
+                        + $" animation={trackState.AnimationName}");
+                    TryClearCreatureTrack(animationState, trackState.TrackIndex);
+                    continue;
+                }
                 if (trackEntry == null)
                     continue;
 
@@ -744,6 +1052,100 @@ public sealed partial class UndoController
                     trackEntry.SetLoop(trackState.Loop.Value);
                 if (trackState.TrackTime.HasValue)
                     trackEntry.SetTrackTime(trackState.TrackTime.Value);
+            }
+        }
+    }
+
+    private static void RestoreCreatureAnimatorState(NCreature creatureNode, UndoCreatureAnimatorState? state)
+    {
+        if (state == null
+            || GetPrivateFieldValue<CreatureAnimator>(creatureNode, "_spineAnimator") is not CreatureAnimator animator)
+        {
+            return;
+        }
+
+        AnimState? targetState = FindCreatureAnimatorState(animator, state.StateId);
+        if (targetState == null)
+            return;
+
+        bool appliedViaAnimator = false;
+        MethodInfo? setNextStateMethod = FindMethod(animator.GetType(), "SetNextState", [typeof(AnimState)]);
+        if (setNextStateMethod != null)
+        {
+            try
+            {
+                setNextStateMethod.Invoke(animator, [targetState]);
+                appliedViaAnimator = true;
+            }
+            catch
+            {
+            }
+        }
+
+        if (!appliedViaAnimator)
+            SetPrivateFieldValue(animator, "_currentState", targetState);
+
+        if (!string.IsNullOrWhiteSpace(state.NextStateId)
+            && targetState.NextState != null
+            && !string.Equals(targetState.NextState.Id, state.NextStateId, StringComparison.Ordinal)
+            && FindCreatureAnimatorState(animator, state.NextStateId) is AnimState explicitNextState)
+        {
+            targetState.NextState = explicitNextState;
+        }
+
+        if (state.HasLooped.HasValue)
+            UndoReflectionUtil.TrySetFieldValue(targetState, "<HasLooped>k__BackingField", state.HasLooped.Value);
+
+        if (!string.IsNullOrWhiteSpace(targetState.BoundsContainer))
+            InvokePrivateMethodExact(creatureNode, "UpdateBounds", [typeof(string)], targetState.BoundsContainer);
+    }
+
+    private static AnimState? FindCreatureAnimatorState(CreatureAnimator animator, string stateId)
+    {
+        Queue<AnimState> pending = new();
+        HashSet<AnimState> visited = [];
+
+        if (FindField(animator.GetType(), "_currentState")?.GetValue(animator) is AnimState currentState)
+            pending.Enqueue(currentState);
+        if (FindField(animator.GetType(), "_anyState")?.GetValue(animator) is AnimState anyState)
+            pending.Enqueue(anyState);
+
+        while (pending.Count > 0)
+        {
+            AnimState state = pending.Dequeue();
+            if (!visited.Add(state))
+                continue;
+
+            if (string.Equals(state.Id, stateId, StringComparison.Ordinal))
+                return state;
+
+            if (state.NextState != null)
+                pending.Enqueue(state.NextState);
+
+            foreach (AnimState branchState in EnumerateAnimStateBranches(state))
+                pending.Enqueue(branchState);
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<AnimState> EnumerateAnimStateBranches(AnimState state)
+    {
+        if (FindField(state.GetType(), "_branchedStates")?.GetValue(state) is not System.Collections.IDictionary branchMap)
+            yield break;
+
+        foreach (object? branchList in branchMap.Values)
+        {
+            if (branchList is not System.Collections.IEnumerable branches)
+                continue;
+
+            foreach (object? branch in branches)
+            {
+                if (branch != null
+                    && FindField(branch.GetType(), "state")?.GetValue(branch) is AnimState branchState)
+                {
+                    yield return branchState;
+                }
             }
         }
     }
@@ -1029,13 +1431,50 @@ public sealed partial class UndoController
         object? scaling = encounter == null ? null : FindMethod(encounter.GetType(), "GetCameraScaling")?.Invoke(encounter, null);
         return scaling is float floatScaling ? floatScaling : 1f;
     }
+
+    private static bool HasDetachedHandHolders(NPlayerHand hand)
+    {
+        return hand.GetChildren().OfType<NHandCardHolder>().Any();
+    }
+
+    private static int GetSelectedHandHolderCount(NPlayerHand hand)
+    {
+        return (GetPrivateFieldValue<NSelectedHandCardContainer>(hand, "_selectedHandCardContainer")
+            ?? hand.GetNodeOrNull<NSelectedHandCardContainer>("%SelectedHandCardContainer"))
+            ?.Holders.Count
+            ?? 0;
+    }
+
+    private static int GetAwaitingHandHolderCount(NPlayerHand hand)
+    {
+        return GetPrivateFieldValue<System.Collections.IDictionary>(hand, "_holdersAwaitingQueue")?.Count ?? 0;
+    }
+
+    private static HashSet<NHandCardHolder> GetHoveredHandHolders(NPlayerHand hand)
+    {
+        HashSet<NHandCardHolder> hoveredHolders = [];
+        if (!GodotObject.IsInstanceValid(hand))
+            return hoveredHolders;
+
+        if (GetPrivatePropertyValue<NHandCardHolder>(hand, "FocusedHolder") is { } focusedHolder
+            && GodotObject.IsInstanceValid(focusedHolder))
+            hoveredHolders.Add(focusedHolder);
+
+        foreach (NHandCardHolder holder in hand.CardHolderContainer.GetChildren().OfType<NHandCardHolder>())
+        {
+            if (FindField(holder.GetType(), "_isHovered")?.GetValue(holder) as bool? == true)
+                hoveredHolders.Add(holder);
+        }
+
+        return hoveredHolders;
+    }
+
     private static void ResetPlayerHandUi(NPlayerHand hand)
     {
         InvokePrivateMethod(hand, "CancelHandSelectionIfNecessary");
         hand.CancelAllCardPlay();
         ClearDetachedHandHolderNodes(hand);
-        hand.PeekButton.SetPeeking(false);
-        hand.PeekButton.Disable();
+        NormalizePeekButtonForRestore(hand, selectionActive: false);
         ClearTween(hand, "_animInTween");
         ClearTween(hand, "_animOutTween");
         ClearTween(hand, "_animEnableTween");
@@ -1065,8 +1504,10 @@ public sealed partial class UndoController
         ClearNodeChildren(hand.CardHolderContainer);
         ResetSelectedHandCardContainerState(hand);
         HideControl(hand, "%SelectModeBackstop", Control.MouseFilterEnum.Ignore);
+        HideControl(hand, "%SelectModeConfirmButton", Control.MouseFilterEnum.Ignore);
         HideControl(hand, "%UpgradePreviewContainer");
         HideControl(hand, "%SelectionHeader");
+        DisableControl(hand, "%SelectModeConfirmButton");
         if (GetPrivateFieldValue<object>(hand, "_upgradePreview") is { } upgradePreview)
             SetPrivatePropertyValue(upgradePreview, "Card", null);
     }
@@ -1141,13 +1582,18 @@ public sealed partial class UndoController
         object? countLabel = GetPrivateFieldValue<object>(pileNode, "_countLabel");
         countLabel?.GetType().GetMethod("SetTextAutoSize", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.Invoke(countLabel, [count.ToString()]);
     }
-    private static void ForceCombatUiInteractiveState(NCombatUi ui, CombatState combatState, Player? me)
+    private static void ForceCombatUiInteractiveState(NCombatUi ui, CombatState combatState, Player? me, bool normalizeHandLayout = false)
     {
         SetPrivateFieldValue(ui.Hand, "_combatState", combatState);
         SetHandPresentation(ui.Hand, combatState.CurrentSide == CombatSide.Player && me != null && me.Creature.IsAlive);
+        NormalizePeekButtonForRestore(ui.Hand, selectionActive: ui.Hand.IsInCardSelection);
         ui.Hand.EnableControllerNavigation();
-        ui.Hand.ForceRefreshCardIndices();
-        SnapHandHolders(ui.Hand);
+        if (normalizeHandLayout || NeedsHandCardIndexRefresh(ui.Hand, me))
+            ui.Hand.ForceRefreshCardIndices();
+        if (normalizeHandLayout)
+            SnapHandHolders(ui.Hand, preserveHoveredHolders: true);
+        else
+            RefreshHandHolderInteractionState(ui.Hand);
         ui.EndTurnButton.Initialize(combatState);
         ForceEndTurnButtonState(ui.EndTurnButton, combatState, me);
         WriteInteractionLog("force_ui_interactive", $"side={combatState.CurrentSide} me={(me == null ? "null" : me.NetId)}");
@@ -1163,11 +1609,26 @@ public sealed partial class UndoController
 
         return GetPrivateFieldValue<System.Collections.IDictionary>(hand, "_holdersAwaitingQueue")?.Count > 0;
     }
+
+    private static bool NeedsHandCardIndexRefresh(NPlayerHand hand, Player? player)
+    {
+        if (!GodotObject.IsInstanceValid(hand) || player == null)
+            return true;
+
+        return !TryGetReusableHandHolders(hand, player, out _);
+    }
+
     private static void SetHandPresentation(NPlayerHand hand, bool shouldBeEnabled)
     {
-        ClearTween(hand, "_animInTween");
-        ClearTween(hand, "_animOutTween");
-        ClearTween(hand, "_animEnableTween");
+        object? disabledValue = FindField(hand.GetType(), "_isDisabled")?.GetValue(hand);
+        bool isCurrentlyDisabled = disabledValue is bool disabled && disabled;
+        if (isCurrentlyDisabled != !shouldBeEnabled)
+        {
+            ClearTween(hand, "_animInTween");
+            ClearTween(hand, "_animOutTween");
+            ClearTween(hand, "_animEnableTween");
+        }
+
         hand.Position = shouldBeEnabled
             ? GetStaticFieldValue<Vector2>(typeof(NPlayerHand), "_showPosition")
             : GetStaticFieldValue<Vector2>(typeof(NPlayerHand), "_disablePosition");
@@ -1176,6 +1637,85 @@ public sealed partial class UndoController
             : GetStaticFieldValue<Color>(typeof(NPlayerHand), "_disableModulate");
         SetPrivateFieldValue(hand, "_isDisabled", !shouldBeEnabled);
         hand.CardHolderContainer.FocusMode = Control.FocusModeEnum.All;
+    }
+
+    private static void NormalizePeekButtonForRestore(NPlayerHand hand, bool selectionActive)
+    {
+        NPeekButton? peekButton = hand.PeekButton;
+        if (!GodotObject.IsInstanceValid(peekButton))
+            return;
+
+        bool wasPeeking = peekButton.IsPeeking;
+        ClearTween(peekButton, "_hoverTween");
+        ClearTween(peekButton, "_wiggleTween");
+        SetPrivateFieldValue(peekButton, "_isPressed", false);
+
+        if (FindField(peekButton.GetType(), "_hiddenTargets")?.GetValue(peekButton) is System.Collections.IEnumerable hiddenTargets)
+        {
+            foreach (Control target in hiddenTargets.OfType<Control>())
+                target.Visible = true;
+
+            hiddenTargets.GetType().GetMethod("Clear", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.Invoke(hiddenTargets, null);
+        }
+
+        if (GetPrivateFieldValue<TextureRect>(peekButton, "_flash") is { } flash)
+        {
+            flash.Visible = false;
+            Color flashModulate = flash.Modulate;
+            flashModulate.A = 0f;
+            flash.Modulate = flashModulate;
+        }
+
+        if (GetPrivateFieldValue<Control>(peekButton, "_visuals") is { } visuals)
+        {
+            visuals.Scale = Vector2.One;
+            visuals.RotationDegrees = 0f;
+            if (visuals.Material is ShaderMaterial shaderMaterial)
+                shaderMaterial.SetShaderParameter("pulse_strength", 0);
+        }
+
+        SetPrivatePropertyValue(peekButton, "IsPeeking", false);
+
+        if (wasPeeking && NCombatRoom.Instance?.Ui is { } combatUi)
+            ResetCombatUiPeekModeForRestore(combatUi);
+
+        if (selectionActive)
+        {
+            if (!peekButton.IsEnabled)
+                peekButton.Enable();
+            peekButton.MouseFilter = Control.MouseFilterEnum.Stop;
+        }
+        else
+        {
+            peekButton.Disable();
+            peekButton.MouseFilter = Control.MouseFilterEnum.Ignore;
+        }
+    }
+
+    private static void ResetCombatUiPeekModeForRestore(NCombatUi ui)
+    {
+        ClearTween(ui, "_playContainerPeekModeTween");
+        ui.PlayQueue.Show();
+
+        if (FindField(ui.GetType(), "_originalPlayContainerCardPositions")?.GetValue(ui) is System.Collections.IDictionary originalPositions
+            && FindField(ui.GetType(), "_originalPlayContainerCardScales")?.GetValue(ui) is System.Collections.IDictionary originalScales)
+        {
+            foreach (NCard card in ui.PlayContainer.GetChildren().OfType<NCard>())
+            {
+                if (!GodotObject.IsInstanceValid(card))
+                    continue;
+
+                if (originalPositions.Contains(card) && originalPositions[card] is Vector2 position)
+                    card.Position = position;
+                if (originalScales.Contains(card) && originalScales[card] is Vector2 scale)
+                    card.Scale = scale;
+            }
+
+            originalPositions.Clear();
+            originalScales.Clear();
+        }
+
+        ActiveScreenContext.Instance.Update();
     }
     private static void ForceEndTurnButtonState(NEndTurnButton endTurnButton, CombatState combatState, Player? me)
     {
@@ -1199,28 +1739,134 @@ public sealed partial class UndoController
         }
         endTurnButton.RefreshEnabled();
     }
-    private static void SnapHandHolders(NPlayerHand hand)
+
+    private static void RefreshHandHolderInteractionState(NPlayerHand hand)
     {
         foreach (Node child in hand.CardHolderContainer.GetChildren())
         {
             if (child is not NHandCardHolder holder)
                 continue;
-            holder.SetDefaultTargets();
-            holder.Position = holder.TargetPosition;
-            holder.SetAngleInstantly(holder.TargetAngle);
-            object? targetScale = FindField(holder.GetType(), "_targetScale")?.GetValue(holder);
-            holder.SetScaleInstantly(targetScale is Vector2 scale ? scale : Vector2.One);
+
             holder.SetClickable(true);
             holder.FocusMode = Control.FocusModeEnum.All;
             holder.Hitbox.SetEnabled(true);
             holder.Hitbox.MouseFilter = Control.MouseFilterEnum.Stop;
-            holder.ZIndex = 0;
         }
+    }
+
+    private static void SnapHandHolders(NPlayerHand hand, bool preserveHoveredHolders = false)
+    {
+        HashSet<NHandCardHolder>? preservedHolders = preserveHoveredHolders
+            ? GetHoveredHandHolders(hand)
+            : null;
+        foreach (Node child in hand.CardHolderContainer.GetChildren())
+        {
+            if (child is not NHandCardHolder holder)
+                continue;
+
+            bool preserveHover = preservedHolders?.Contains(holder) == true;
+            if (!preserveHover)
+            {
+                ClearObjectTweenFields(holder);
+                if (holder.CardNode != null)
+                    ClearObjectTweenFields(holder.CardNode);
+                holder.SetDefaultTargets();
+                holder.Position = holder.TargetPosition;
+                holder.SetAngleInstantly(holder.TargetAngle);
+                object? targetScale = FindField(holder.GetType(), "_targetScale")?.GetValue(holder);
+                holder.SetScaleInstantly(targetScale is Vector2 scale ? scale : Vector2.One);
+                holder.ZIndex = 0;
+            }
+        }
+
+        RefreshHandHolderInteractionState(hand);
     }
     private static void ClearTween(object instance, string fieldName)
     {
         if (GetPrivateFieldValue<Tween>(instance, fieldName) is { } tween)
             tween.Kill();
+    }
+
+    private static void ClearObjectTweenFields(object? instance)
+    {
+        if (instance == null)
+            return;
+
+        Type type = instance.GetType();
+        foreach (FieldInfo field in type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+        {
+            if (!typeof(Tween).IsAssignableFrom(field.FieldType))
+                continue;
+
+            try
+            {
+                if (field.GetValue(instance) is Tween tween && GodotObject.IsInstanceValid(tween))
+                    tween.Kill();
+                if (!field.IsInitOnly && !field.IsLiteral)
+                    field.SetValue(instance, null);
+            }
+            catch
+            {
+            }
+        }
+
+        foreach (PropertyInfo property in type.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+        {
+            if (!typeof(Tween).IsAssignableFrom(property.PropertyType)
+                || !property.CanRead
+                || property.GetIndexParameters().Length > 0)
+            {
+                continue;
+            }
+
+            try
+            {
+                if (property.GetValue(instance) is Tween tween && GodotObject.IsInstanceValid(tween))
+                    tween.Kill();
+                if (property.CanWrite)
+                    property.SetValue(instance, null);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private static void ClearHandChoiceUiTweens(NPlayerHand hand)
+    {
+        if (!GodotObject.IsInstanceValid(hand))
+            return;
+
+        ClearObjectTweenFields(hand);
+        foreach (NHandCardHolder holder in hand.CardHolderContainer.GetChildren().OfType<NHandCardHolder>())
+        {
+            ClearObjectTweenFields(holder);
+            if (holder.CardNode != null)
+                ClearObjectTweenFields(holder.CardNode);
+        }
+
+        foreach (NHandCardHolder holder in hand.GetChildren().OfType<NHandCardHolder>())
+        {
+            ClearObjectTweenFields(holder);
+            if (holder.CardNode != null)
+                ClearObjectTweenFields(holder.CardNode);
+        }
+
+        NSelectedHandCardContainer? selectedContainer = GetPrivateFieldValue<NSelectedHandCardContainer>(hand, "_selectedHandCardContainer")
+            ?? hand.GetNodeOrNull<NSelectedHandCardContainer>("%SelectedHandCardContainer");
+        if (selectedContainer == null || !GodotObject.IsInstanceValid(selectedContainer))
+            return;
+
+        ClearObjectTweenFields(selectedContainer);
+        foreach (Node child in selectedContainer.GetChildren().Cast<Node>())
+        {
+            ClearObjectTweenFields(child);
+            object? cardNode = FindProperty(child.GetType(), "CardNode")?.GetValue(child)
+                ?? FindField(child.GetType(), "CardNode")?.GetValue(child)
+                ?? FindField(child.GetType(), "_cardNode")?.GetValue(child);
+            if (cardNode != null)
+                ClearObjectTweenFields(cardNode);
+        }
     }
 
     private static bool IsTweenRunning(object instance, string fieldName)
@@ -1389,6 +2035,14 @@ public sealed partial class UndoController
 
         foreach (NSelectedHandCardHolder selectedHolder in selectedContainer.Holders.ToList())
         {
+            selectedHolder.SetClickable(false);
+            selectedHolder.FocusMode = Control.FocusModeEnum.None;
+            selectedHolder.MouseFilter = Control.MouseFilterEnum.Ignore;
+            selectedHolder.Hitbox.SetEnabled(false);
+            selectedHolder.Hitbox.MouseFilter = Control.MouseFilterEnum.Ignore;
+            ClearObjectTweenFields(selectedHolder);
+            if (selectedHolder.CardNode != null)
+                ClearObjectTweenFields(selectedHolder.CardNode);
             selectedHolder.GetParent()?.RemoveChild(selectedHolder);
             QueueFreeNodeSafelyOnce(selectedHolder);
         }
@@ -1401,6 +2055,7 @@ public sealed partial class UndoController
         if (selectedContainer == null || !GodotObject.IsInstanceValid(selectedContainer))
             return;
 
+        ClearObjectTweenFields(selectedContainer);
         selectedContainer.Hand = hand;
         ulong id = selectedContainer.GetInstanceId();
         if (SelectedHandContainerDefaultPositions.TryGetValue(id, out Vector2 defaultPosition))
@@ -1410,6 +2065,7 @@ public sealed partial class UndoController
         else
             selectedContainer.Scale = Vector2.One;
         selectedContainer.FocusMode = Control.FocusModeEnum.None;
+        selectedContainer.MouseFilter = Control.MouseFilterEnum.Ignore;
         ClearNodeChildren(selectedContainer);
         InvokePrivateMethod(selectedContainer, "RefreshHolderPositions");
         InvokePrivateMethod(hand, "UpdateSelectedCardContainer", 0);

@@ -3,6 +3,7 @@
 // Capture/restore details should live in dedicated services; this type is the orchestrator.
 using System.Reflection;
 using Godot;
+using MegaCrit.Sts2.Core.Animation;
 using MegaCrit.Sts2.Core.Bindings.MegaSpine;
 using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Combat;
@@ -91,7 +92,8 @@ public sealed partial class UndoController
             combatCardDbState: CaptureCombatCardDbState(runState),
             playerOrbStates: CapturePlayerOrbStates(runState),
             playerDeckStates: CapturePlayerDeckStates(runState),
-            playerPotionStates: CapturePlayerPotionStates(runState));
+            playerPotionStates: CapturePlayerPotionStates(runState),
+            audioLoopStates: UndoAudioLoopTracker.CaptureSnapshot());
     }
 
     private static IReadOnlyList<UndoPlayerOrbState> CapturePlayerOrbStates(RunState runState)
@@ -198,11 +200,65 @@ public sealed partial class UndoController
                     ? turnsUntilSummonable
                     : null,
                 CallForBackupCount = monster is TwoTailedRat twoTailedRatWithBackup ? twoTailedRatWithBackup.CallForBackupCount : null,
+                FabricatorLastSpawnedMonsterId = CaptureFabricatorLastSpawnedMonsterId(monster),
+                LivingFogBloatAmount = CaptureLivingFogBloatAmount(monster),
+                ToughEggIsHatched = CaptureToughEggIsHatched(monster),
+                ToughEggVisualHatched = CaptureToughEggVisualHatched(monster),
+                ToughEggAfterHatchedStateId = CaptureToughEggAfterHatchedStateId(monster),
+                ToughEggHatchPos = CaptureToughEggHatchPos(monster),
                 StateLogIds = [.. moveStateMachine.StateLog.Select(static state => state.Id)]
             });
         }
 
         return states;
+    }
+
+    private static ModelId? CaptureFabricatorLastSpawnedMonsterId(MonsterModel monster)
+    {
+        return monster is Fabricator fabricator
+            && FindField(fabricator.GetType(), "_lastSpawned")?.GetValue(fabricator) is MonsterModel lastSpawned
+                ? lastSpawned.Id
+                : null;
+    }
+
+    private static int? CaptureLivingFogBloatAmount(MonsterModel monster)
+    {
+        return monster is LivingFog
+            && FindProperty(monster.GetType(), "BloatAmount")?.GetValue(monster) is int bloatAmount
+                ? bloatAmount
+                : null;
+    }
+
+    private static bool? CaptureToughEggIsHatched(MonsterModel monster)
+    {
+        return monster is ToughEgg
+            && FindProperty(monster.GetType(), "IsHatched")?.GetValue(monster) is bool isHatched
+                ? isHatched
+                : null;
+    }
+
+    private static bool? CaptureToughEggVisualHatched(MonsterModel monster)
+    {
+        return monster is ToughEgg
+            && FindField(monster.GetType(), "_hatched")?.GetValue(monster) is bool visualHatched
+                ? visualHatched
+                : null;
+    }
+
+    private static string? CaptureToughEggAfterHatchedStateId(MonsterModel monster)
+    {
+        return monster is ToughEgg
+            && FindProperty(monster.GetType(), "AfterHatchedState")?.GetValue(monster) is MonsterState afterHatchedState
+                ? afterHatchedState.Id
+                : null;
+    }
+
+    private static Vector2? CaptureToughEggHatchPos(MonsterModel monster)
+    {
+        return monster is ToughEgg
+            && FindProperty(monster.GetType(), "HatchPos")?.GetValue(monster) is Vector2 hatchPos
+                ? hatchPos
+                : null;
     }
 
     private static IReadOnlyList<UndoCreatureVisualState> CaptureCreatureVisualStates(IReadOnlyList<Creature> creatures)
@@ -236,7 +292,8 @@ public sealed partial class UndoController
                 CanvasStates = CaptureCreatureCanvasStates(creatureVisuals),
                 ParticleStates = CaptureCreatureParticleStates(creatureVisuals),
                 ShaderParamStates = CaptureCreatureShaderParamStates(creatureVisuals),
-                StateDisplayState = CaptureCreatureStateDisplayState(creatureNode)
+                StateDisplayState = CaptureCreatureStateDisplayState(creatureNode),
+                AnimatorState = CaptureCreatureAnimatorState(creatureNode)
             });
         }
 
@@ -285,7 +342,7 @@ public sealed partial class UndoController
 
             MegaAnimationState animationState = new MegaSprite(node2D).GetAnimationState();
             string relativePath = BuildCreatureVisualRelativePath(root, node);
-            for (int trackIndex = 1; trackIndex < 4; trackIndex++)
+            for (int trackIndex = 0; trackIndex < 4; trackIndex++)
             {
                 UndoCreatureTrackState? trackState = TryCaptureCreatureTrackState(animationState, relativePath, trackIndex);
                 if (trackState != null)
@@ -294,6 +351,25 @@ public sealed partial class UndoController
         }
 
         return states;
+    }
+
+    private static UndoCreatureAnimatorState? CaptureCreatureAnimatorState(NCreature creatureNode)
+    {
+        if (GetPrivateFieldValue<CreatureAnimator>(creatureNode, "_spineAnimator") is not CreatureAnimator animator)
+            return null;
+
+        if (FindField(animator.GetType(), "_currentState")?.GetValue(animator) is not AnimState currentState
+            || string.IsNullOrWhiteSpace(currentState.Id))
+        {
+            return null;
+        }
+
+        return new UndoCreatureAnimatorState
+        {
+            StateId = currentState.Id,
+            NextStateId = currentState.NextState?.Id,
+            HasLooped = currentState.HasLooped
+        };
     }
 
     private static UndoCreatureTrackState? TryCaptureCreatureTrackState(MegaAnimationState animationState, string relativePath, int trackIndex)

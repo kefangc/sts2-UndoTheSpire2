@@ -220,6 +220,7 @@ public sealed partial class UndoController
         Player? me = combatState == null ? null : LocalContext.GetMe(combatState);
         UndoChoiceSpec choiceSpec = session.ChoiceSpec;
         if (me == null
+            || !ShouldCaptureTransformChoiceVfx(choiceSpec)
             || choiceSpec.SourcePileType == null
             || selectedKey.OptionIndexes.Count == 0)
         {
@@ -274,6 +275,11 @@ public sealed partial class UndoController
             request.TransformCards.Add(new SyntheticTransformVfxCard(liveSourceCards[sourceIndex].ToSerializable(), sourceIndex));
 
         return request.TransformCards.Count > 0;
+    }
+
+    private static bool ShouldCaptureTransformChoiceVfx(UndoChoiceSpec choiceSpec)
+    {
+        return IsSourceChoice(choiceSpec, typeof(EntropyPower));
     }
 
     private async Task PlaySyntheticChoiceVfxAsync(SyntheticChoiceVfxRequest request)
@@ -379,7 +385,7 @@ public sealed partial class UndoController
         return session.ChoiceSpec.Kind switch
         {
             UndoChoiceKind.ChooseACard => await ShowSyntheticChooseACardAsync(session.ChoiceSpec, me),
-            UndoChoiceKind.HandSelection => await ShowSyntheticHandSelectionAsync(session.ChoiceSpec, me),
+            UndoChoiceKind.HandSelection => await ShowSyntheticHandSelectionAsync(session, me),
             UndoChoiceKind.SimpleGridSelection => await ShowSyntheticSimpleGridAsync(session.ChoiceSpec, me),
             _ => null
         };
@@ -393,22 +399,82 @@ public sealed partial class UndoController
         return choiceSpec.TryMapDisplayedOptionSelection(options, selected == null ? [] : [selected]);
     }
 
-    private static async Task<UndoChoiceResultKey?> ShowSyntheticHandSelectionAsync(UndoChoiceSpec choiceSpec, Player me)
+    private async Task<UndoChoiceResultKey?> ShowSyntheticHandSelectionAsync(UndoSyntheticChoiceSession session, Player me)
     {
         NPlayerHand? hand = NCombatRoom.Instance?.Ui?.Hand;
         if (hand == null)
             return null;
 
+        UndoChoiceSpec choiceSpec = session.ChoiceSpec;
+        AbstractModel? source = null;
+        if (session.RequiresAuthoritativeBranchExecution && IsOfficialFromHandDiscardChoice(choiceSpec))
+        {
+            source = ResolveSyntheticHandChoiceSourceModel(me, choiceSpec);
+            PrimePendingHandChoiceUiTracking(me, source);
+        }
+
         Task<IEnumerable<CardModel>>? selectionTask = await RunOnMainThreadAsync(() =>
         {
             hand.CancelAllCardPlay();
-            return hand.SelectCards(choiceSpec.SelectionPrefs, choiceSpec.BuildHandFilter(me), null);
+            return hand.SelectCards(choiceSpec.SelectionPrefs, choiceSpec.BuildHandFilter(me), source);
         });
         if (selectionTask == null)
             return null;
 
         IEnumerable<CardModel> selectedCards = await selectionTask;
         return choiceSpec.TryMapSyntheticSelection(me, selectedCards);
+    }
+
+    private static AbstractModel? ResolveSyntheticHandChoiceSourceModel(Player player, UndoChoiceSpec choiceSpec)
+    {
+        CardModel? sourceCard = PileType.Play.GetPile(player).Cards.LastOrDefault(card =>
+            choiceSpec.SourceCombatCard == null || Equals(NetCombatCard.FromModel(card), choiceSpec.SourceCombatCard));
+        if (sourceCard != null)
+            return sourceCard;
+
+        if (string.IsNullOrWhiteSpace(choiceSpec.SourceModelTypeName))
+            return null;
+
+        if (player.PlayerCombatState != null)
+        {
+            foreach (AbstractModel model in player.PlayerCombatState.AllCards.OfType<AbstractModel>())
+            {
+                if (MatchesSyntheticHandChoiceSourceModel(model, choiceSpec))
+                    return model;
+            }
+        }
+
+        foreach (AbstractModel model in player.Relics.OfType<AbstractModel>())
+        {
+            if (MatchesSyntheticHandChoiceSourceModel(model, choiceSpec))
+                return model;
+        }
+
+        foreach (AbstractModel model in player.Creature.Powers.OfType<AbstractModel>())
+        {
+            if (MatchesSyntheticHandChoiceSourceModel(model, choiceSpec))
+                return model;
+        }
+
+        for (int slotIndex = 0; slotIndex < player.MaxPotionCount; slotIndex++)
+        {
+            if (player.GetPotionAtSlotIndex(slotIndex) is AbstractModel potion
+                && MatchesSyntheticHandChoiceSourceModel(potion, choiceSpec))
+            {
+                return potion;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool MatchesSyntheticHandChoiceSourceModel(AbstractModel model, UndoChoiceSpec choiceSpec)
+    {
+        if (!string.Equals(model.GetType().FullName, choiceSpec.SourceModelTypeName, StringComparison.Ordinal))
+            return false;
+
+        return string.IsNullOrWhiteSpace(choiceSpec.SourceModelId)
+            || string.Equals(model.Id.Entry, choiceSpec.SourceModelId, StringComparison.Ordinal);
     }
 
     private static async Task<UndoChoiceResultKey?> ShowSyntheticSimpleGridAsync(UndoChoiceSpec choiceSpec, Player me)

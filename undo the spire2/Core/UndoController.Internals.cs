@@ -129,6 +129,27 @@ public sealed partial class UndoController
         control.MouseFilter = mouseFilter;
     }
 
+    private static void ShowControl(Node node, string path, Control.MouseFilterEnum mouseFilter = Control.MouseFilterEnum.Stop)
+    {
+        Control? control = node.GetNodeOrNull<Control>(path);
+        if (control == null)
+            return;
+
+        control.Visible = true;
+        control.MouseFilter = mouseFilter;
+    }
+
+    private static void DisableControl(Node node, string path)
+    {
+        Node? control = node.GetNodeOrNull<Node>(path);
+        if (control == null)
+            return;
+
+        control.GetType()
+            .GetMethod("Disable", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?
+            .Invoke(control, null);
+    }
+
     private static void ClearCombatManagerCollection(string fieldName)
     {
         object? collection = FindField(typeof(CombatManager), fieldName)?.GetValue(CombatManager.Instance);
@@ -273,8 +294,21 @@ public sealed partial class UndoController
         IReadOnlyList<UndoPlayerPileCardCostState>? cardCostStates = null,
         IReadOnlyList<UndoPlayerPileCardRuntimeState>? cardRuntimeStates = null)
     {
+        return CreateDerivedCombatState(source, null, fullState, cardCostStates, cardRuntimeStates);
+    }
+
+    private static UndoCombatFullState CreateDerivedCombatState(
+        UndoCombatFullState source,
+        UndoCombatFullState? fallbackSource,
+        NetFullCombatState fullState,
+        IReadOnlyList<UndoPlayerPileCardCostState>? cardCostStates = null,
+        IReadOnlyList<UndoPlayerPileCardRuntimeState>? cardRuntimeStates = null)
+    {
         IReadOnlyList<UndoPlayerPileCardCostState> effectiveCardCostStates = cardCostStates ?? source.CardCostStates;
         IReadOnlyList<UndoPlayerPileCardRuntimeState> effectiveCardRuntimeStates = cardRuntimeStates ?? source.CardRuntimeStates;
+        UndoSelectionSessionState? derivedSelectionSessionState = CreateDerivedSelectionSessionState(source);
+        UndoCombatCardDbState derivedCombatCardDbState = RebuildDerivedCombatCardDbState(source, fallbackSource, fullState);
+        IReadOnlyList<UndoCreatureVisualState> derivedCreatureVisualStates = SanitizeDerivedCreatureVisualStates(source.CreatureVisualStates);
         return new UndoCombatFullState(
             fullState,
             source.RoundNumber,
@@ -290,7 +324,7 @@ public sealed partial class UndoController
             effectiveCardRuntimeStates,
             source.PowerRuntimeStates,
             source.RelicRuntimeStates,
-            source.SelectionSessionState,
+            derivedSelectionSessionState,
             source.FirstInSeriesPlayCounts,
             new RuntimeGraphState
             {
@@ -300,15 +334,16 @@ public sealed partial class UndoController
             },
             new PresentationHints
             {
-                SelectionSessionState = source.SelectionSessionState
+                SelectionSessionState = derivedSelectionSessionState
             },
             source.CreatureTopologyStates,
             source.CreatureStatusRuntimeStates,
-            source.CreatureVisualStates,
-            source.CombatCardDbState,
+            derivedCreatureVisualStates,
+            derivedCombatCardDbState,
             source.PlayerOrbStates,
             source.PlayerDeckStates,
             source.PlayerPotionStates,
+            source.AudioLoopStates,
             source.SchemaVersion, source.ChoiceBranchStates);
     }
 
@@ -318,7 +353,7 @@ public sealed partial class UndoController
         NetFullCombatState fullState)
     {
         RebuildDerivedCardSupplementalStates(source, fallbackSource, fullState, out IReadOnlyList<UndoPlayerPileCardCostState> cardCostStates, out IReadOnlyList<UndoPlayerPileCardRuntimeState> cardRuntimeStates);
-        return CreateDerivedCombatState(source, fullState, cardCostStates, cardRuntimeStates);
+        return CreateDerivedCombatState(source, fallbackSource, fullState, cardCostStates, cardRuntimeStates);
     }
 
     private static void RebuildDerivedCardSupplementalStates(
@@ -378,6 +413,180 @@ public sealed partial class UndoController
 
         cardCostStates = rebuiltCostStates;
         cardRuntimeStates = rebuiltRuntimeStates;
+    }
+
+    private static UndoSelectionSessionState? CreateDerivedSelectionSessionState(UndoCombatFullState source)
+    {
+        if (source.SelectionSessionState == null && source.PresentationHints.SelectionSessionState == null)
+            return null;
+
+        // Derived/synthetic branches represent a resolved post-choice state. Carrying
+        // the template branch's active hand/overlay selection session back into the new
+        // branch leaves stale choice UI, dangling selected holders, and incorrect redo
+        // boundaries. Keep the branch explicitly stable.
+        return new UndoSelectionSessionState
+        {
+            HandSelectionActive = false,
+            OverlaySelectionActive = false,
+            SupportedChoiceUiActive = false,
+            OverlayScreenType = null,
+            ChoiceSpec = null
+        };
+    }
+
+    private static UndoCombatCardDbState RebuildDerivedCombatCardDbState(
+        UndoCombatFullState primarySource,
+        UndoCombatFullState? fallbackSource,
+        NetFullCombatState fullState)
+    {
+        List<DerivedCombatCardDbCandidate> primaryCandidates = BuildDerivedCombatCardDbCandidates(primarySource);
+        List<DerivedCombatCardDbCandidate> fallbackCandidates = fallbackSource == null
+            ? []
+            : BuildDerivedCombatCardDbCandidates(fallbackSource);
+        HashSet<uint> usedCombatCardIds = [];
+        List<UndoCombatCardDbEntryState> entries = [];
+
+        foreach (NetFullCombatState.PlayerState playerState in fullState.Players)
+        {
+            Dictionary<PileType, NetFullCombatState.CombatPileState> pilesByType = playerState.piles.ToDictionary(static pile => pile.pileType);
+            foreach (PileType pileType in CombatPileOrder)
+            {
+                if (!pilesByType.TryGetValue(pileType, out NetFullCombatState.CombatPileState pileState))
+                    continue;
+
+                for (int cardIndex = 0; cardIndex < pileState.cards.Count; cardIndex++)
+                {
+                    SerializableCard card = ClonePacketSerializable(pileState.cards[cardIndex].card);
+                    if (!TryTakeMatchingCombatCardDbCandidate(primaryCandidates, usedCombatCardIds, playerState.playerId, pileType, cardIndex, card, out DerivedCombatCardDbCandidate? candidate)
+                        && !TryTakeMatchingCombatCardDbCandidate(fallbackCandidates, usedCombatCardIds, playerState.playerId, pileType, cardIndex, card, out candidate))
+                    {
+                        continue;
+                    }
+
+                    usedCombatCardIds.Add(candidate.CombatCardId);
+                    entries.Add(new UndoCombatCardDbEntryState
+                    {
+                        CombatCardId = candidate.CombatCardId,
+                        Card = CreateDerivedCardRef(playerState.playerId, pileType, cardIndex, card)
+                    });
+                }
+            }
+        }
+
+        uint nextId = Math.Max(primarySource.CombatCardDbState.NextId, fallbackSource?.CombatCardDbState.NextId ?? 0U);
+        if (entries.Count > 0)
+            nextId = Math.Max(nextId, entries.Max(static entry => entry.CombatCardId) + 1U);
+
+        return new UndoCombatCardDbState
+        {
+            Entries = [.. entries.OrderBy(static entry => entry.CombatCardId)],
+            NextId = nextId
+        };
+    }
+
+    private static List<DerivedCombatCardDbCandidate> BuildDerivedCombatCardDbCandidates(UndoCombatFullState source)
+    {
+        List<DerivedCombatCardDbCandidate> candidates = [];
+        foreach (UndoCombatCardDbEntryState entry in source.CombatCardDbState.Entries)
+        {
+            candidates.Add(new DerivedCombatCardDbCandidate
+            {
+                CombatCardId = entry.CombatCardId,
+                PlayerNetId = entry.Card.PlayerNetId,
+                PileType = entry.Card.PileType,
+                PileIndex = entry.Card.PileIndex,
+                Card = ClonePacketSerializable(entry.Card.Card)
+            });
+        }
+
+        return candidates;
+    }
+
+    private static bool TryTakeMatchingCombatCardDbCandidate(
+        List<DerivedCombatCardDbCandidate> candidates,
+        ISet<uint> usedCombatCardIds,
+        ulong playerNetId,
+        PileType pileType,
+        int cardIndex,
+        SerializableCard card,
+        out DerivedCombatCardDbCandidate? matchedCandidate)
+    {
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            DerivedCombatCardDbCandidate candidate = candidates[i];
+            if (candidate.Used
+                || usedCombatCardIds.Contains(candidate.CombatCardId)
+                || candidate.PlayerNetId != playerNetId
+                || candidate.PileType != pileType
+                || candidate.PileIndex != cardIndex
+                || !PacketDataEquals(candidate.Card, card))
+            {
+                continue;
+            }
+
+            candidate.Used = true;
+            matchedCandidate = candidate;
+            return true;
+        }
+
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            DerivedCombatCardDbCandidate candidate = candidates[i];
+            if (candidate.Used || usedCombatCardIds.Contains(candidate.CombatCardId) || !PacketDataEquals(candidate.Card, card))
+                continue;
+
+            candidate.Used = true;
+            matchedCandidate = candidate;
+            return true;
+        }
+
+        matchedCandidate = null;
+        return false;
+    }
+
+    private static CardRef CreateDerivedCardRef(ulong playerNetId, PileType pileType, int pileIndex, SerializableCard card)
+    {
+        return new CardRef
+        {
+            Card = ClonePacketSerializable(card),
+            PlayerNetId = playerNetId,
+            PileType = pileType,
+            PileIndex = pileIndex
+        };
+    }
+
+    private static IReadOnlyList<UndoCreatureVisualState> SanitizeDerivedCreatureVisualStates(IReadOnlyList<UndoCreatureVisualState> creatureVisualStates)
+    {
+        if (creatureVisualStates.Count == 0)
+            return creatureVisualStates;
+
+        return
+        [
+            .. creatureVisualStates.Select(static state => new UndoCreatureVisualState
+            {
+                CreatureKey = state.CreatureKey,
+                VisualDefaultScale = state.VisualDefaultScale,
+                VisualHue = state.VisualHue,
+                TempScale = state.TempScale,
+                TrackStates =
+                [
+                    .. state.TrackStates.Where(static trackState => !string.IsNullOrWhiteSpace(trackState.AnimationName))
+                        .Select(static trackState => new UndoCreatureTrackState
+                        {
+                            RelativePath = trackState.RelativePath,
+                            TrackIndex = trackState.TrackIndex,
+                            AnimationName = trackState.AnimationName,
+                            Loop = trackState.Loop,
+                            TrackTime = trackState.TrackTime
+                        })
+                ],
+                CanvasStates = state.CanvasStates,
+                ParticleStates = state.ParticleStates,
+                ShaderParamStates = state.ShaderParamStates,
+                StateDisplayState = state.StateDisplayState,
+                AnimatorState = state.AnimatorState
+            })
+        ];
     }
 
     private static List<DerivedCardSupplementalCandidate> BuildDerivedCardSupplementalCandidates(UndoCombatFullState source, ulong playerNetId)
@@ -575,7 +784,18 @@ public sealed partial class UndoController
         if (Engine.GetMainLoop() is not SceneTree tree)
             throw new InvalidOperationException("Main loop is not a SceneTree.");
 
-        await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+        TaskCompletionSource<bool> completionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        Callable callback = default;
+        callback = Callable.From(() =>
+        {
+            if (tree.IsConnected(SceneTree.SignalName.ProcessFrame, callback))
+                tree.Disconnect(SceneTree.SignalName.ProcessFrame, callback);
+
+            completionSource.TrySetResult(true);
+        });
+
+        tree.Connect(SceneTree.SignalName.ProcessFrame, callback, (uint)GodotObject.ConnectFlags.OneShot);
+        await completionSource.Task;
     }
 
     private static Task<T?> RunOnMainThreadAsync<T>(Func<T?> action)
