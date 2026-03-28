@@ -1,9 +1,11 @@
 // 文件说明：恢复卡牌、能力、遗物等通用运行时属性。
 using System.Reflection;
+using System.Collections.Generic;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Entities.Powers;
 using MegaCrit.Sts2.Core.Entities.Relics;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
@@ -124,6 +126,70 @@ internal sealed class UndoNamedIntRuntimeEntry
 internal sealed class UndoNamedIntFieldsRuntimeComplexState : UndoComplexRuntimeState
 {
     public IReadOnlyList<UndoNamedIntRuntimeEntry> Entries { get; init; } = [];
+}
+
+internal sealed class UndoNamedCardRefRuntimeEntry
+{
+    public required string Name { get; init; }
+
+    public CardRef? Card { get; init; }
+}
+
+internal sealed class UndoNamedCardRefFieldsRuntimeComplexState : UndoComplexRuntimeState
+{
+    public IReadOnlyList<UndoNamedCardRefRuntimeEntry> Entries { get; init; } = [];
+}
+
+internal sealed class UndoNamedCardPlayRuntimeEntry
+{
+    public required string Name { get; init; }
+
+    public UndoCardPlayState? CardPlay { get; init; }
+}
+
+internal sealed class UndoNamedCardPlayFieldsRuntimeComplexState : UndoComplexRuntimeState
+{
+    public IReadOnlyList<UndoNamedCardPlayRuntimeEntry> Entries { get; init; } = [];
+}
+
+internal sealed class UndoNamedPowerRefRuntimeEntry
+{
+    public required string Name { get; init; }
+
+    public required PowerRef Power { get; init; }
+}
+
+internal sealed class UndoNamedPowerRefCollectionRuntimeEntry
+{
+    public required string Name { get; init; }
+
+    public IReadOnlyList<UndoNamedPowerRefRuntimeEntry> Entries { get; init; } = [];
+}
+
+internal sealed class UndoNamedPowerRefCollectionsRuntimeComplexState : UndoComplexRuntimeState
+{
+    public IReadOnlyList<UndoNamedPowerRefCollectionRuntimeEntry> Collections { get; init; } = [];
+}
+
+internal sealed class UndoRelicScalarFieldsRuntimeComplexState : UndoComplexRuntimeState
+{
+    public IReadOnlyList<UndoNamedBoolState> BoolFields { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedIntState> IntFields { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedEnumState> EnumFields { get; init; } = [];
+}
+
+internal sealed class UndoNamedCardRefCollectionRuntimeEntry
+{
+    public required string Name { get; init; }
+
+    public IReadOnlyList<CardRef> Cards { get; init; } = [];
+}
+
+internal sealed class UndoNamedCardRefCollectionsRuntimeComplexState : UndoComplexRuntimeState
+{
+    public IReadOnlyList<UndoNamedCardRefCollectionRuntimeEntry> Collections { get; init; } = [];
 }
 
 internal sealed class UndoDampenRuntimeComplexState : UndoComplexRuntimeState
@@ -270,6 +336,11 @@ internal static class UndoRuntimeStateCodecRegistry
 
     private static readonly IReadOnlyList<IUndoRelicRuntimeCodec> RelicCodecs =
     [
+        new GenericRelicScalarFieldsCodec(),
+        new GenericRelicCardRefFieldsCodec(),
+        new GenericRelicCardPlayFieldsCodec(),
+        new GenericRelicCardRefCollectionsCodec(),
+        new GenericRelicPowerRefCollectionsCodec(),
         new PaelsLegionAffectedCardPlayRelicCodec(),
         new PenNibAttackToDoubleRelicCodec(),
         new CardsPlayedTurnCounterRelicCodec()
@@ -497,6 +568,135 @@ internal static class UndoRuntimeStateCodecRegistry
     private static bool IsCardsPlayedTurnCounterRelic(RelicModel relic)
     {
         return relic is BrilliantScarf or DiamondDiadem or Pocketwatch or VelvetChoker;
+    }
+
+    private static IEnumerable<FieldInfo> GetDeclaredScalarRuntimeFields(Type type)
+    {
+        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+        return type.GetFields(Flags)
+            .Where(static field => !field.IsStatic && !field.IsInitOnly && !field.IsLiteral)
+            .Where(static field => !field.Name.StartsWith("<", StringComparison.Ordinal))
+            .Where(field =>
+            {
+                Type fieldType = field.FieldType;
+                return fieldType == typeof(bool) || fieldType == typeof(int) || fieldType.IsEnum;
+            })
+            .Where(field => !HasComparableRuntimeProperty(type, field.Name, field.FieldType));
+    }
+
+    private static IEnumerable<PropertyInfo> GetDeclaredReferenceRuntimeProperties(Type type, Type valueType)
+    {
+        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+        return type.GetProperties(Flags)
+            .Where(static property => property.GetIndexParameters().Length == 0)
+            .Where(static property => property.CanRead)
+            .Where(property => property.PropertyType == valueType)
+            .Where(static property => property.Name != "Status");
+    }
+
+    private static IEnumerable<FieldInfo> GetDeclaredReferenceRuntimeFields(Type type, Type valueType)
+    {
+        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+        return type.GetFields(Flags)
+            .Where(static field => !field.IsStatic && !field.IsInitOnly && !field.IsLiteral)
+            .Where(static field => !field.Name.StartsWith("<", StringComparison.Ordinal))
+            .Where(field => field.FieldType == valueType)
+            .Where(field => !HasComparableRuntimeProperty(type, field.Name, valueType));
+    }
+
+    private static IEnumerable<PropertyInfo> GetDeclaredCollectionRuntimeProperties(Type type, Type elementType)
+    {
+        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+        return type.GetProperties(Flags)
+            .Where(static property => property.GetIndexParameters().Length == 0)
+            .Where(static property => property.CanRead)
+            .Where(property => property.SetMethod != null || UndoReflectionUtil.FindField(type, $"<{property.Name}>k__BackingField") != null)
+            .Where(property => TryGetCollectionElementType(property.PropertyType, out Type? candidate) && candidate == elementType);
+    }
+
+    private static IEnumerable<FieldInfo> GetDeclaredCollectionRuntimeFields(Type type, Type elementType)
+    {
+        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+        return type.GetFields(Flags)
+            .Where(static field => !field.IsStatic && !field.IsInitOnly && !field.IsLiteral)
+            .Where(static field => !field.Name.StartsWith("<", StringComparison.Ordinal))
+            .Where(field => TryGetCollectionElementType(field.FieldType, out Type? candidate) && candidate == elementType);
+    }
+
+    private static bool TryGetCollectionElementType(Type type, out Type? elementType)
+    {
+        if (type.IsArray)
+        {
+            elementType = type.GetElementType();
+            return elementType != null;
+        }
+
+        Type? collectionInterface = type.IsGenericType && type.GetGenericTypeDefinition() == typeof(ICollection<>)
+            ? type
+            : type.GetInterfaces().FirstOrDefault(interfaceType =>
+                interfaceType.IsGenericType && interfaceType.GetGenericTypeDefinition() == typeof(ICollection<>));
+        if (collectionInterface != null)
+        {
+            elementType = collectionInterface.GetGenericArguments()[0];
+            return true;
+        }
+
+        elementType = null;
+        return false;
+    }
+
+    private static bool HasComparableRuntimeProperty(Type type, string memberName, Type memberType)
+    {
+        string normalizedFieldName = NormalizeRuntimeFieldName(memberName);
+        return type.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+            .Any(property =>
+                string.Equals(property.Name, normalizedFieldName, StringComparison.OrdinalIgnoreCase)
+                && (property.PropertyType == memberType
+                    || (TryGetCollectionElementType(property.PropertyType, out Type? propertyElementType)
+                        && TryGetCollectionElementType(memberType, out Type? fieldElementType)
+                        && propertyElementType == fieldElementType)));
+    }
+
+    private static string NormalizeRuntimeFieldName(string fieldName)
+    {
+        return fieldName.StartsWith("_", StringComparison.Ordinal) && fieldName.Length > 1
+            ? char.ToUpperInvariant(fieldName[1]) + fieldName[2..]
+            : fieldName;
+    }
+
+    private static PowerModel? ResolvePowerRef(IReadOnlyDictionary<string, Creature> creaturesByKey, PowerRef powerRef)
+    {
+        Creature? owner = UndoStableRefs.ResolveCreature(creaturesByKey, powerRef.OwnerCreatureKey);
+        if (owner == null)
+            return null;
+
+        int ordinal = 0;
+        foreach (PowerModel power in owner.Powers)
+        {
+            if (power.Id != powerRef.PowerId)
+                continue;
+
+            if (ordinal == powerRef.Ordinal)
+                return power;
+
+            ordinal++;
+        }
+
+        return null;
+    }
+
+    private static bool TryReplaceCollectionItems<TItem>(object collection, IReadOnlyList<TItem> items)
+    {
+        MethodInfo? clearMethod = collection.GetType().GetMethod("Clear", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        MethodInfo? addMethod = collection.GetType().GetMethod("Add", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, [typeof(TItem)], null);
+        if (clearMethod == null || addMethod == null)
+            return false;
+
+        clearMethod.Invoke(collection, null);
+        foreach (TItem item in items)
+            addMethod.Invoke(collection, [item]);
+
+        return true;
     }
 
     private static bool TryGetRelicCardsPlayedThisTurn(RelicModel relic, out int value)
@@ -1149,6 +1349,356 @@ internal static class UndoRuntimeStateCodecRegistry
                 ? null
                 : UndoCombatHistoryCodec.RestoreCardPlay(context.RunState, creaturesByKey, state.CardPlay);
             UndoReflectionUtil.TrySetPropertyValue(relic, "AffectedCardPlay", affectedCardPlay);
+        }
+    }
+
+    private sealed class GenericRelicScalarFieldsCodec : UndoRelicRuntimeCodec<UndoRelicScalarFieldsRuntimeComplexState>
+    {
+        public override string CodecId => "relic:Generic.scalarFields";
+
+        public override bool CanHandle(RelicModel relic)
+        {
+            return GetDeclaredScalarRuntimeFields(relic.GetType()).Any();
+        }
+
+        public override UndoRelicScalarFieldsRuntimeComplexState? Capture(RelicModel relic, UndoRuntimeCaptureContext context)
+        {
+            List<UndoNamedBoolState> boolFields = [];
+            List<UndoNamedIntState> intFields = [];
+            List<UndoNamedEnumState> enumFields = [];
+            foreach (FieldInfo field in GetDeclaredScalarRuntimeFields(relic.GetType()))
+            {
+                object? rawValue = field.GetValue(relic);
+                if (field.FieldType == typeof(bool))
+                {
+                    boolFields.Add(new UndoNamedBoolState
+                    {
+                        Name = field.Name,
+                        Value = rawValue is bool value && value
+                    });
+                }
+                else if (field.FieldType == typeof(int))
+                {
+                    intFields.Add(new UndoNamedIntState
+                    {
+                        Name = field.Name,
+                        Value = rawValue is int value ? value : 0
+                    });
+                }
+                else if (field.FieldType.IsEnum)
+                {
+                    enumFields.Add(new UndoNamedEnumState
+                    {
+                        Name = field.Name,
+                        EnumTypeName = field.FieldType.AssemblyQualifiedName ?? field.FieldType.FullName ?? field.FieldType.Name,
+                        Value = rawValue == null ? 0 : Convert.ToInt32(rawValue)
+                    });
+                }
+            }
+
+            return new UndoRelicScalarFieldsRuntimeComplexState
+            {
+                CodecId = CodecId,
+                BoolFields = boolFields,
+                IntFields = intFields,
+                EnumFields = enumFields
+            };
+        }
+
+        public override void Restore(RelicModel relic, UndoRelicScalarFieldsRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            bool restoredAny = false;
+            foreach (UndoNamedBoolState fieldState in state.BoolFields)
+            {
+                if (UndoReflectionUtil.FindField(relic.GetType(), fieldState.Name)?.FieldType == typeof(bool))
+                {
+                    UndoReflectionUtil.TrySetFieldValue(relic, fieldState.Name, fieldState.Value);
+                    restoredAny = true;
+                }
+            }
+
+            foreach (UndoNamedIntState fieldState in state.IntFields)
+            {
+                if (UndoReflectionUtil.FindField(relic.GetType(), fieldState.Name)?.FieldType == typeof(int))
+                {
+                    UndoReflectionUtil.TrySetFieldValue(relic, fieldState.Name, fieldState.Value);
+                    restoredAny = true;
+                }
+            }
+
+            foreach (UndoNamedEnumState fieldState in state.EnumFields)
+            {
+                FieldInfo? field = UndoReflectionUtil.FindField(relic.GetType(), fieldState.Name);
+                if (field == null || !field.FieldType.IsEnum)
+                    continue;
+
+                UndoReflectionUtil.TrySetFieldValue(relic, fieldState.Name, Enum.ToObject(field.FieldType, fieldState.Value));
+                restoredAny = true;
+            }
+
+            if (restoredAny)
+                RefreshRelicCounterDisplay(relic);
+        }
+    }
+
+    private sealed class GenericRelicCardRefFieldsCodec : UndoRelicRuntimeCodec<UndoNamedCardRefFieldsRuntimeComplexState>
+    {
+        public override string CodecId => "relic:Generic.cardRefs";
+
+        public override bool CanHandle(RelicModel relic)
+        {
+            Type type = relic.GetType();
+            return GetDeclaredReferenceRuntimeProperties(type, typeof(CardModel)).Any()
+                || GetDeclaredReferenceRuntimeFields(type, typeof(CardModel)).Any();
+        }
+
+        public override UndoNamedCardRefFieldsRuntimeComplexState? Capture(RelicModel relic, UndoRuntimeCaptureContext context)
+        {
+            List<UndoNamedCardRefRuntimeEntry> entries = [];
+            Type type = relic.GetType();
+            foreach (PropertyInfo property in GetDeclaredReferenceRuntimeProperties(type, typeof(CardModel)))
+            {
+                entries.Add(new UndoNamedCardRefRuntimeEntry
+                {
+                    Name = property.Name,
+                    Card = property.GetValue(relic) is CardModel card ? UndoStableRefs.CaptureCardRef(context.RunState, card) : null
+                });
+            }
+
+            foreach (FieldInfo field in GetDeclaredReferenceRuntimeFields(type, typeof(CardModel)))
+            {
+                entries.Add(new UndoNamedCardRefRuntimeEntry
+                {
+                    Name = field.Name,
+                    Card = field.GetValue(relic) is CardModel card ? UndoStableRefs.CaptureCardRef(context.RunState, card) : null
+                });
+            }
+
+            return new UndoNamedCardRefFieldsRuntimeComplexState
+            {
+                CodecId = CodecId,
+                Entries = entries
+            };
+        }
+
+        public override void Restore(RelicModel relic, UndoNamedCardRefFieldsRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            foreach (UndoNamedCardRefRuntimeEntry entry in state.Entries)
+            {
+                CardModel? card = entry.Card == null ? null : UndoStableRefs.ResolveCardRef(context.RunState, entry.Card);
+                if (UndoReflectionUtil.FindProperty(relic.GetType(), entry.Name)?.PropertyType == typeof(CardModel))
+                {
+                    UndoReflectionUtil.TrySetPropertyValue(relic, entry.Name, card);
+                    continue;
+                }
+
+                if (UndoReflectionUtil.FindField(relic.GetType(), entry.Name)?.FieldType == typeof(CardModel))
+                    UndoReflectionUtil.TrySetFieldValue(relic, entry.Name, card);
+            }
+        }
+    }
+
+    private sealed class GenericRelicCardPlayFieldsCodec : UndoRelicRuntimeCodec<UndoNamedCardPlayFieldsRuntimeComplexState>
+    {
+        public override string CodecId => "relic:Generic.cardPlays";
+
+        public override bool CanHandle(RelicModel relic)
+        {
+            Type type = relic.GetType();
+            return GetDeclaredReferenceRuntimeProperties(type, typeof(CardPlay)).Any()
+                || GetDeclaredReferenceRuntimeFields(type, typeof(CardPlay)).Any();
+        }
+
+        public override UndoNamedCardPlayFieldsRuntimeComplexState? Capture(RelicModel relic, UndoRuntimeCaptureContext context)
+        {
+            List<UndoNamedCardPlayRuntimeEntry> entries = [];
+            Type type = relic.GetType();
+            foreach (PropertyInfo property in GetDeclaredReferenceRuntimeProperties(type, typeof(CardPlay)))
+            {
+                entries.Add(new UndoNamedCardPlayRuntimeEntry
+                {
+                    Name = property.Name,
+                    CardPlay = property.GetValue(relic) is CardPlay cardPlay
+                        ? UndoCombatHistoryCodec.CaptureCardPlay(context.RunState, context.CombatState.Creatures, cardPlay)
+                        : null
+                });
+            }
+
+            foreach (FieldInfo field in GetDeclaredReferenceRuntimeFields(type, typeof(CardPlay)))
+            {
+                entries.Add(new UndoNamedCardPlayRuntimeEntry
+                {
+                    Name = field.Name,
+                    CardPlay = field.GetValue(relic) is CardPlay cardPlay
+                        ? UndoCombatHistoryCodec.CaptureCardPlay(context.RunState, context.CombatState.Creatures, cardPlay)
+                        : null
+                });
+            }
+
+            return new UndoNamedCardPlayFieldsRuntimeComplexState
+            {
+                CodecId = CodecId,
+                Entries = entries
+            };
+        }
+
+        public override void Restore(RelicModel relic, UndoNamedCardPlayFieldsRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            Dictionary<string, Creature> creaturesByKey = UndoStableRefs.BuildCreatureKeyMap(context.CombatState.Creatures);
+            foreach (UndoNamedCardPlayRuntimeEntry entry in state.Entries)
+            {
+                CardPlay? cardPlay = entry.CardPlay == null
+                    ? null
+                    : UndoCombatHistoryCodec.RestoreCardPlay(context.RunState, creaturesByKey, entry.CardPlay);
+                if (UndoReflectionUtil.FindProperty(relic.GetType(), entry.Name)?.PropertyType == typeof(CardPlay))
+                {
+                    UndoReflectionUtil.TrySetPropertyValue(relic, entry.Name, cardPlay);
+                    continue;
+                }
+
+                if (UndoReflectionUtil.FindField(relic.GetType(), entry.Name)?.FieldType == typeof(CardPlay))
+                    UndoReflectionUtil.TrySetFieldValue(relic, entry.Name, cardPlay);
+            }
+        }
+    }
+
+    private sealed class GenericRelicCardRefCollectionsCodec : UndoRelicRuntimeCodec<UndoNamedCardRefCollectionsRuntimeComplexState>
+    {
+        public override string CodecId => "relic:Generic.cardCollections";
+
+        public override bool CanHandle(RelicModel relic)
+        {
+            Type type = relic.GetType();
+            return GetDeclaredCollectionRuntimeProperties(type, typeof(CardModel)).Any()
+                || GetDeclaredCollectionRuntimeFields(type, typeof(CardModel)).Any();
+        }
+
+        public override UndoNamedCardRefCollectionsRuntimeComplexState? Capture(RelicModel relic, UndoRuntimeCaptureContext context)
+        {
+            List<UndoNamedCardRefCollectionRuntimeEntry> collections = [];
+            Type type = relic.GetType();
+            foreach (PropertyInfo property in GetDeclaredCollectionRuntimeProperties(type, typeof(CardModel)))
+            {
+                if (property.GetValue(relic) is not IEnumerable<CardModel> cards)
+                    continue;
+
+                collections.Add(new UndoNamedCardRefCollectionRuntimeEntry
+                {
+                    Name = property.Name,
+                    Cards = cards.Select(card => UndoStableRefs.CaptureCardRef(context.RunState, card)).ToList()
+                });
+            }
+
+            foreach (FieldInfo field in GetDeclaredCollectionRuntimeFields(type, typeof(CardModel)))
+            {
+                if (field.GetValue(relic) is not IEnumerable<CardModel> cards)
+                    continue;
+
+                collections.Add(new UndoNamedCardRefCollectionRuntimeEntry
+                {
+                    Name = field.Name,
+                    Cards = cards.Select(card => UndoStableRefs.CaptureCardRef(context.RunState, card)).ToList()
+                });
+            }
+
+            return new UndoNamedCardRefCollectionsRuntimeComplexState
+            {
+                CodecId = CodecId,
+                Collections = collections
+            };
+        }
+
+        public override void Restore(RelicModel relic, UndoNamedCardRefCollectionsRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            foreach (UndoNamedCardRefCollectionRuntimeEntry collectionState in state.Collections)
+            {
+                object? collection = UndoReflectionUtil.FindProperty(relic.GetType(), collectionState.Name)?.GetValue(relic)
+                    ?? UndoReflectionUtil.FindField(relic.GetType(), collectionState.Name)?.GetValue(relic);
+                if (collection == null)
+                    continue;
+
+                List<CardModel> resolvedCards = collectionState.Cards
+                    .Select(cardRef => UndoStableRefs.ResolveCardRef(context.RunState, cardRef))
+                    .ToList();
+                TryReplaceCollectionItems(collection, resolvedCards);
+            }
+        }
+    }
+
+    private sealed class GenericRelicPowerRefCollectionsCodec : UndoRelicRuntimeCodec<UndoNamedPowerRefCollectionsRuntimeComplexState>
+    {
+        public override string CodecId => "relic:Generic.powerCollections";
+
+        public override bool CanHandle(RelicModel relic)
+        {
+            Type type = relic.GetType();
+            return GetDeclaredCollectionRuntimeProperties(type, typeof(PowerModel)).Any()
+                || GetDeclaredCollectionRuntimeFields(type, typeof(PowerModel)).Any();
+        }
+
+        public override UndoNamedPowerRefCollectionsRuntimeComplexState? Capture(RelicModel relic, UndoRuntimeCaptureContext context)
+        {
+            List<UndoNamedPowerRefCollectionRuntimeEntry> collections = [];
+            Type type = relic.GetType();
+            foreach (PropertyInfo property in GetDeclaredCollectionRuntimeProperties(type, typeof(PowerModel)))
+            {
+                if (property.GetValue(relic) is not IEnumerable<PowerModel> powers)
+                    continue;
+
+                collections.Add(new UndoNamedPowerRefCollectionRuntimeEntry
+                {
+                    Name = property.Name,
+                    Entries = powers.Select(power => new UndoNamedPowerRefRuntimeEntry
+                    {
+                        Name = power.GetType().Name,
+                        Power = UndoStableRefs.CapturePowerRef(context.CombatState.Creatures, power)
+                    }).ToList()
+                });
+            }
+
+            foreach (FieldInfo field in GetDeclaredCollectionRuntimeFields(type, typeof(PowerModel)))
+            {
+                if (field.GetValue(relic) is not IEnumerable<PowerModel> powers)
+                    continue;
+
+                collections.Add(new UndoNamedPowerRefCollectionRuntimeEntry
+                {
+                    Name = field.Name,
+                    Entries = powers.Select(power => new UndoNamedPowerRefRuntimeEntry
+                    {
+                        Name = power.GetType().Name,
+                        Power = UndoStableRefs.CapturePowerRef(context.CombatState.Creatures, power)
+                    }).ToList()
+                });
+            }
+
+            return new UndoNamedPowerRefCollectionsRuntimeComplexState
+            {
+                CodecId = CodecId,
+                Collections = collections
+            };
+        }
+
+        public override void Restore(RelicModel relic, UndoNamedPowerRefCollectionsRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            Dictionary<string, Creature> creaturesByKey = UndoStableRefs.BuildCreatureKeyMap(context.CombatState.Creatures);
+            foreach (UndoNamedPowerRefCollectionRuntimeEntry collectionState in state.Collections)
+            {
+                object? collection = UndoReflectionUtil.FindProperty(relic.GetType(), collectionState.Name)?.GetValue(relic)
+                    ?? UndoReflectionUtil.FindField(relic.GetType(), collectionState.Name)?.GetValue(relic);
+                if (collection == null)
+                    continue;
+
+                List<PowerModel> powers = [];
+                foreach (UndoNamedPowerRefRuntimeEntry entry in collectionState.Entries)
+                {
+                    PowerModel? power = ResolvePowerRef(creaturesByKey, entry.Power);
+                    if (power != null)
+                        powers.Add(power);
+                }
+
+                TryReplaceCollectionItems(collection, powers);
+            }
         }
     }
     private sealed class PenNibAttackToDoubleRelicCodec : UndoRelicRuntimeCodec<UndoCardRefRuntimeComplexState>

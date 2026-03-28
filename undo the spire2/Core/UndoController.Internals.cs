@@ -129,6 +129,27 @@ public sealed partial class UndoController
         control.MouseFilter = mouseFilter;
     }
 
+    private static void ShowControl(Node node, string path, Control.MouseFilterEnum mouseFilter = Control.MouseFilterEnum.Stop)
+    {
+        Control? control = node.GetNodeOrNull<Control>(path);
+        if (control == null)
+            return;
+
+        control.Visible = true;
+        control.MouseFilter = mouseFilter;
+    }
+
+    private static void DisableControl(Node node, string path)
+    {
+        Node? control = node.GetNodeOrNull<Node>(path);
+        if (control == null)
+            return;
+
+        control.GetType()
+            .GetMethod("Disable", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?
+            .Invoke(control, null);
+    }
+
     private static void ClearCombatManagerCollection(string fieldName)
     {
         object? collection = FindField(typeof(CombatManager), fieldName)?.GetValue(CombatManager.Instance);
@@ -575,7 +596,18 @@ public sealed partial class UndoController
         if (Engine.GetMainLoop() is not SceneTree tree)
             throw new InvalidOperationException("Main loop is not a SceneTree.");
 
-        await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+        TaskCompletionSource<bool> completionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        Callable callback = default;
+        callback = Callable.From(() =>
+        {
+            if (tree.IsConnected(SceneTree.SignalName.ProcessFrame, callback))
+                tree.Disconnect(SceneTree.SignalName.ProcessFrame, callback);
+
+            completionSource.TrySetResult(true);
+        });
+
+        tree.Connect(SceneTree.SignalName.ProcessFrame, callback, (uint)GodotObject.ConnectFlags.OneShot);
+        await completionSource.Task;
     }
 
     private static Task<T?> RunOnMainThreadAsync<T>(Func<T?> action)

@@ -1,9 +1,16 @@
 // 文件说明：实现 paused choice 等官方 action 的恢复 codec。
+using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Commands;
+using MegaCrit.Sts2.Core.Entities.Actions;
 using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions;
+using MegaCrit.Sts2.Core.Models.Cards;
+using MegaCrit.Sts2.Core.Models.Potions;
+using MegaCrit.Sts2.Core.Models.Powers;
+using MegaCrit.Sts2.Core.Models.Relics;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
@@ -118,6 +125,7 @@ internal static class UndoActionCodecRegistry
         uint? choiceId = GetChoiceId(runState, state, player);
         if (choiceId != null)
             RunManager.Instance.PlayerChoiceSynchronizer.SyncLocalChoice(player, choiceId.Value, PlayerChoiceResult.FromMutableCombatCards(selected));
+        TryResumeRestoredChoiceSourceAction(state);
 
         return key;
     }
@@ -129,6 +137,7 @@ internal static class UndoActionCodecRegistry
         uint? choiceId = GetChoiceId(runState, state, player);
         if (choiceId != null)
             RunManager.Instance.PlayerChoiceSynchronizer.SyncLocalChoice(player, choiceId.Value, PlayerChoiceResult.FromIndex(selectedIndex));
+        TryResumeRestoredChoiceSourceAction(state);
 
         return key;
     }
@@ -141,9 +150,163 @@ internal static class UndoActionCodecRegistry
         uint? choiceId = GetChoiceId(runState, state, player);
         if (choiceId != null)
             RunManager.Instance.PlayerChoiceSynchronizer.SyncLocalChoice(player, choiceId.Value, PlayerChoiceResult.FromIndexes(indexes));
+        TryResumeRestoredChoiceSourceAction(state);
 
         return key;
     }
+
+    private static void TryResumeRestoredChoiceSourceAction(PausedChoiceState state)
+    {
+        uint? sourceActionId = state.SourceActionRef?.ActionId;
+        if (sourceActionId == null
+            || string.Equals(state.SourceActionCodecId, "action:hook-choice", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        GameAction? sourceAction = FindTrackedAction(sourceActionId.Value);
+        if (sourceAction == null)
+        {
+            UndoDebugLog.Write(
+                $"restored_choice_resume_skipped codec={state.SourceActionCodecId ?? "unknown"}"
+                + $" sourceActionId={sourceActionId.Value}"
+                + " reason=source_action_missing");
+            return;
+        }
+
+        if (sourceAction.State != GameActionState.GatheringPlayerChoice)
+        {
+            UndoDebugLog.Write(
+                $"restored_choice_resume_skipped codec={state.SourceActionCodecId ?? "unknown"}"
+                + $" sourceActionId={sourceActionId.Value}"
+                + $" reason=state_{sourceAction.State}");
+            return;
+        }
+
+        if (!HasLivePlayerChoiceResumptionState(sourceAction, out string? reason))
+        {
+            UndoDebugLog.Write(
+                $"restored_choice_resume_skipped codec={state.SourceActionCodecId ?? "unknown"}"
+                + $" sourceActionId={sourceActionId.Value}"
+                + $" reason={reason ?? "missing_live_choice_state"}");
+            return;
+        }
+
+        RunManager.Instance.ActionQueueSynchronizer.RequestResumeActionAfterPlayerChoice(sourceAction);
+        UndoDebugLog.Write(
+            $"restored_choice_resume_requested codec={state.SourceActionCodecId ?? "unknown"}"
+            + $" sourceActionId={sourceActionId.Value}");
+    }
+
+    private static GameAction? FindTrackedAction(uint actionId)
+    {
+        if (RunManager.Instance.ActionExecutor.CurrentlyRunningAction?.Id == actionId)
+            return RunManager.Instance.ActionExecutor.CurrentlyRunningAction;
+
+        if (UndoReflectionUtil.FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionQueues")?.GetValue(RunManager.Instance.ActionQueueSet) is not System.Collections.IEnumerable rawQueues)
+            return null;
+
+        foreach (object rawQueue in rawQueues)
+        {
+            if (UndoReflectionUtil.FindField(rawQueue.GetType(), "actions")?.GetValue(rawQueue) is not System.Collections.IEnumerable rawActions)
+                continue;
+
+            foreach (GameAction action in rawActions.OfType<GameAction>())
+            {
+                if (action.Id == actionId)
+                    return action;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool HasLivePlayerChoiceResumptionState(GameAction action, out string? reason)
+    {
+        reason = null;
+        if (action.State != GameActionState.GatheringPlayerChoice)
+        {
+            reason = $"state_{action.State}";
+            return false;
+        }
+
+        if (UndoReflectionUtil.FindField(action.GetType(), "_executeAfterResumptionTaskSource")?.GetValue(action) == null)
+        {
+            reason = "missing_resume_task_source";
+            return false;
+        }
+
+        object? executionTaskObject = UndoReflectionUtil.FindField(action.GetType(), "_executionTask")?.GetValue(action);
+        if (executionTaskObject is not Task executionTask
+            || executionTask.IsCompleted)
+        {
+            reason = executionTaskObject == null ? "missing_execution_task" : "execution_task_completed";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static CardModel? ResolveSourceCardFromPlayPile(Player player, UndoChoiceSpec choiceSpec)
+    {
+        IReadOnlyList<CardModel> playCards = PileType.Play.GetPile(player).Cards;
+        if (choiceSpec.SourceCombatCard != null)
+        {
+            CardModel? matchedCard = playCards.FirstOrDefault(card => Equals(NetCombatCard.FromModel(card), choiceSpec.SourceCombatCard));
+            if (matchedCard != null)
+                return matchedCard;
+        }
+
+        return playCards.LastOrDefault();
+    }
+
+    private static IEnumerable<AbstractModel> EnumeratePotentialChoiceSourceModels(Player player)
+    {
+        if (player.PlayerCombatState != null)
+        {
+            foreach (AbstractModel model in player.PlayerCombatState.AllCards.OfType<AbstractModel>())
+                yield return model;
+        }
+
+        foreach (AbstractModel model in player.Relics.OfType<AbstractModel>())
+            yield return model;
+
+        foreach (AbstractModel model in player.Creature.Powers.OfType<AbstractModel>())
+            yield return model;
+
+        for (int slotIndex = 0; slotIndex < player.MaxPotionCount; slotIndex++)
+        {
+            if (player.GetPotionAtSlotIndex(slotIndex) is AbstractModel potion)
+                yield return potion;
+        }
+    }
+
+    private static AbstractModel? ResolveChoiceSourceModel(Player player, UndoChoiceSpec choiceSpec)
+    {
+        CardModel? sourceCard = ResolveSourceCardFromPlayPile(player, choiceSpec);
+        if (sourceCard != null)
+            return sourceCard;
+
+        if (string.IsNullOrWhiteSpace(choiceSpec.SourceModelTypeName))
+            return null;
+
+        foreach (AbstractModel model in EnumeratePotentialChoiceSourceModels(player))
+        {
+            if (!string.Equals(model.GetType().FullName, choiceSpec.SourceModelTypeName, StringComparison.Ordinal))
+                continue;
+
+            if (!string.IsNullOrWhiteSpace(choiceSpec.SourceModelId)
+                && !string.Equals(model.Id.Entry, choiceSpec.SourceModelId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            return model;
+        }
+
+        return null;
+    }
+
     private static IReadOnlyList<CardModel> ResolveChooseACardOptions(Player player, PausedChoiceState state)
     {
         if (NOverlayStack.Instance?.Peek() is NChooseACardSelectionScreen screen
@@ -168,23 +331,79 @@ internal static class UndoActionCodecRegistry
         return state.ChoiceSpec?.BuildOptionCards(player) ?? [];
     }
 
-    private static Task<IEnumerable<CardModel>>? TryAwaitExistingHandSelection()
+    private static bool IsDiscardSelection(CardSelectorPrefs prefs)
     {
-        NPlayerHand? hand = NPlayerHand.Instance;
-        if (hand?.IsInCardSelection != true)
+        return string.Equals(prefs.Prompt.LocTable, "card_selection", StringComparison.Ordinal)
+            && string.Equals(prefs.Prompt.LocEntryKey, "TO_DISCARD", StringComparison.Ordinal);
+    }
+
+    private static bool IsSourceChoice(UndoChoiceSpec choiceSpec, Type sourceType)
+    {
+        return string.Equals(choiceSpec.SourceModelTypeName, sourceType.FullName, StringComparison.Ordinal);
+    }
+
+    private static bool IsOfficialFromHandDiscardChoice(UndoChoiceSpec choiceSpec)
+    {
+        return choiceSpec.Kind == UndoChoiceKind.HandSelection
+            && choiceSpec.SourcePileType == PileType.Hand
+            && IsDiscardSelection(choiceSpec.SelectionPrefs)
+            && (
+                IsSourceChoice(choiceSpec, typeof(Acrobatics))
+                || IsSourceChoice(choiceSpec, typeof(DaggerThrow))
+                || IsSourceChoice(choiceSpec, typeof(HiddenDaggers))
+                || IsSourceChoice(choiceSpec, typeof(Prepared))
+                || IsSourceChoice(choiceSpec, typeof(Survivor))
+                || IsSourceChoice(choiceSpec, typeof(GamblingChip))
+                || IsSourceChoice(choiceSpec, typeof(GamblersBrew))
+                || IsSourceChoice(choiceSpec, typeof(ToolsOfTheTradePower)));
+    }
+
+    private static bool IsTrackedOfficialFromHandDiscardChoice(PausedChoiceState state, UndoChoiceSpec choiceSpec)
+    {
+        return state.SourceActionRef?.ActionId != null
+            && string.Equals(state.SourceActionCodecId, "action:from-hand", StringComparison.Ordinal)
+            && IsOfficialFromHandDiscardChoice(choiceSpec);
+    }
+
+    private static Task<IEnumerable<CardModel>>? TryAwaitExistingHandSelection(NPlayerHand hand, Player player)
+    {
+        if (!hand.IsInCardSelection)
             return null;
 
         if (UndoReflectionUtil.FindField(hand.GetType(), "_selectionCompletionSource")?.GetValue(hand) is not TaskCompletionSource<IEnumerable<CardModel>> completionSource)
+        {
+            MainFile.Controller.ResetPendingHandChoiceUiForRestore(hand, player);
             return null;
+        }
 
         Task<IEnumerable<CardModel>> task = completionSource.Task;
         if (task.IsCompleted)
         {
-            UndoReflectionUtil.FindMethod(hand.GetType(), "AfterCardsSelected")?.Invoke(hand, [null]);
+            MainFile.Controller.ResetPendingHandChoiceUiForRestore(hand, player);
             return null;
         }
 
+        MainFile.Controller.PrepareHandSelectionUiForOpen(hand);
         return task;
+    }
+
+    private static void PrepareOfficialLiveHandSelectionRestore(NPlayerHand hand, Player player, UndoChoiceSpec choiceSpec)
+    {
+        bool wasInCardSelection = hand.IsInCardSelection;
+        TaskCompletionSource<IEnumerable<CardModel>>? selectionCompletionSource =
+            UndoReflectionUtil.FindField(hand.GetType(), "_selectionCompletionSource")?.GetValue(hand) as TaskCompletionSource<IEnumerable<CardModel>>;
+        bool hasSelectedCards = UndoReflectionUtil.FindField(hand.GetType(), "_selectedCards")?.GetValue(hand) is System.Collections.IList selectedCards
+            && selectedCards.Count > 0;
+        bool needsFreshRestore = wasInCardSelection || selectionCompletionSource != null || hasSelectedCards;
+        if (!needsFreshRestore)
+            return;
+
+        MainFile.Controller.ResetPendingHandChoiceUiForRestore(hand, player, detachPendingSource: false, clearPendingTracking: false);
+        UndoDebugLog.Write(
+            $"official_hand_choice_live_restore_reopen source={choiceSpec.SourceModelTypeName ?? "unknown"}"
+            + $" hadSelection={wasInCardSelection}"
+            + $" hadCompletionSource={(selectionCompletionSource != null)}"
+            + $" hadSelectedCards={hasSelectedCards}");
     }
 
     private static Task<IEnumerable<CardModel>>? TryAwaitExistingChooseACardSelection()
@@ -250,28 +469,48 @@ internal static class UndoActionCodecRegistry
             if (player == null || hand == null || state.ChoiceSpec == null)
                 return null;
 
-            Task<IEnumerable<CardModel>>? existingSelectionTask = TryAwaitExistingHandSelection();
+            AbstractModel? source = ResolveChoiceSourceModel(player, state.ChoiceSpec);
+            bool requiresOfficialLiveRestore = IsTrackedOfficialFromHandDiscardChoice(state, state.ChoiceSpec);
+            if (requiresOfficialLiveRestore && source == null)
+            {
+                UndoDebugLog.Write(
+                    $"official_hand_choice_live_restore_failed source={state.ChoiceSpec.SourceModelTypeName ?? "unknown"}"
+                    + " reason=source_missing");
+                return null;
+            }
+
+            if (requiresOfficialLiveRestore)
+                PrepareOfficialLiveHandSelectionRestore(hand, player, state.ChoiceSpec);
+
+            Task<IEnumerable<CardModel>>? existingSelectionTask = requiresOfficialLiveRestore
+                ? null
+                : TryAwaitExistingHandSelection(hand, player);
+            MainFile.Controller.RegisterPendingHandChoice(player, state.ChoiceSpec.SelectionPrefs, state.ChoiceSpec.BuildHandFilter(player), source);
+            MainFile.Controller.PrepareHandSelectionUiForOpen(hand);
             Task<IEnumerable<CardModel>> selectionTask = existingSelectionTask
-                ?? (ShouldUseDetachedHandSelection(state.ChoiceSpec)
-                    ? StartDetachedHandSelection(hand, player, state.ChoiceSpec)
-                    : hand.SelectCards(state.ChoiceSpec.SelectionPrefs, state.ChoiceSpec.BuildHandFilter(player), null));
+                ?? (ShouldUseDetachedHandSelection(state, state.ChoiceSpec, source)
+                    ? StartDetachedHandSelection(hand, player, state.ChoiceSpec, source)
+                    : hand.SelectCards(state.ChoiceSpec.SelectionPrefs, state.ChoiceSpec.BuildHandFilter(player), source));
             IEnumerable<CardModel> selected = await selectionTask;
             return MapAndSyncHandSelection(runState, state, player, selected);
         }
     }
 
-    private static bool ShouldUseDetachedHandSelection(UndoChoiceSpec choiceSpec)
+    private static bool ShouldUseDetachedHandSelection(PausedChoiceState state, UndoChoiceSpec choiceSpec, AbstractModel? source)
     {
-        return choiceSpec.SourcePileType == PileType.Hand;
+        if (choiceSpec.SourcePileType != PileType.Hand)
+            return false;
+
+        if (IsTrackedOfficialFromHandDiscardChoice(state, choiceSpec))
+            return source == null;
+
+        return true;
     }
 
-    private static Task<IEnumerable<CardModel>> StartDetachedHandSelection(NPlayerHand hand, Player player, UndoChoiceSpec choiceSpec)
+    private static Task<IEnumerable<CardModel>> StartDetachedHandSelection(NPlayerHand hand, Player player, UndoChoiceSpec choiceSpec, AbstractModel? source)
     {
-        if (hand.IsInCardSelection)
-            UndoReflectionUtil.FindMethod(hand.GetType(), "AfterCardsSelected")?.Invoke(hand, [null]);
-
-        UndoReflectionUtil.FindField(hand.GetType(), "_selectionCompletionSource")?.SetValue(hand, null);
-        return hand.SelectCards(choiceSpec.SelectionPrefs, choiceSpec.BuildHandFilter(player), null);
+        MainFile.Controller.ResetPendingHandChoiceUiForRestore(hand, player);
+        return hand.SelectCards(choiceSpec.SelectionPrefs, choiceSpec.BuildHandFilter(player), source);
     }
 
     private sealed class ChooseACardPausedChoiceCodec : IUndoActionCodec<PausedChoiceState>

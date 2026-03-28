@@ -19,6 +19,13 @@ internal static class UndoCombatHistoryPatch
         MainFile.Controller.OnCombatHistoryCardPlayStarted(combatState, cardPlay);
     }
 
+    [HarmonyPatch(typeof(CombatHistory), nameof(CombatHistory.CardPlayFinished))]
+    [HarmonyPostfix]
+    private static void OnCardPlayFinished(CombatState combatState, CardPlay cardPlay)
+    {
+        MainFile.Controller.OnCombatHistoryCardPlayFinished(combatState, cardPlay);
+    }
+
     [HarmonyPatch(typeof(EchoFormPower), nameof(EchoFormPower.ModifyCardPlayCount))]
     [HarmonyPrefix]
     private static bool TryOverrideEchoForm(

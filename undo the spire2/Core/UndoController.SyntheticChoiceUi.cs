@@ -220,6 +220,7 @@ public sealed partial class UndoController
         Player? me = combatState == null ? null : LocalContext.GetMe(combatState);
         UndoChoiceSpec choiceSpec = session.ChoiceSpec;
         if (me == null
+            || !ShouldCaptureTransformChoiceVfx(choiceSpec)
             || choiceSpec.SourcePileType == null
             || selectedKey.OptionIndexes.Count == 0)
         {
@@ -274,6 +275,11 @@ public sealed partial class UndoController
             request.TransformCards.Add(new SyntheticTransformVfxCard(liveSourceCards[sourceIndex].ToSerializable(), sourceIndex));
 
         return request.TransformCards.Count > 0;
+    }
+
+    private static bool ShouldCaptureTransformChoiceVfx(UndoChoiceSpec choiceSpec)
+    {
+        return IsSourceChoice(choiceSpec, typeof(EntropyPower));
     }
 
     private async Task PlaySyntheticChoiceVfxAsync(SyntheticChoiceVfxRequest request)
