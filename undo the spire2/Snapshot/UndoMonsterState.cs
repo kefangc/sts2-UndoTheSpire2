@@ -2,6 +2,8 @@
 // Captures monster move-machine metadata that supplements official full state.
 // Sleep/stun/hover runtime booleans now live in CreatureStatusRuntimeState.
 using System.Collections.Generic;
+using Godot;
+using MegaCrit.Sts2.Core.Models;
 
 namespace UndoTheSpire2;
 
@@ -36,6 +38,18 @@ internal sealed class UndoMonsterState
     public int? TurnsUntilSummonable { get; init; }
 
     public int? CallForBackupCount { get; init; }
+
+    public ModelId? FabricatorLastSpawnedMonsterId { get; init; }
+
+    public int? LivingFogBloatAmount { get; init; }
+
+    public bool? ToughEggIsHatched { get; init; }
+
+    public bool? ToughEggVisualHatched { get; init; }
+
+    public string? ToughEggAfterHatchedStateId { get; init; }
+
+    public Vector2? ToughEggHatchPos { get; init; }
 
     public IReadOnlyList<string> StateLogIds { get; init; } = [];
 }

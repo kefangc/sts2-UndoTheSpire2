@@ -163,6 +163,47 @@ internal abstract class UndoCreatureStatusIntCodec<TMonster> : IUndoCreatureStat
     }
 }
 
+internal abstract class UndoComputedCreatureStatusBoolCodec<TMonster> : IUndoCreatureStatusCodec<UndoBoolCreatureStatusRuntimePayload>
+    where TMonster : MonsterModel
+{
+    public abstract string CodecId { get; }
+
+    protected abstract string PropertyName { get; }
+
+    public bool CanHandle(MonsterModel monster)
+    {
+        return monster is TMonster;
+    }
+
+    public UndoBoolCreatureStatusRuntimePayload? CaptureTyped(MonsterModel monster)
+    {
+        return UndoReflectionUtil.FindProperty(monster.GetType(), PropertyName)?.GetValue(monster) is bool value
+            ? new UndoBoolCreatureStatusRuntimePayload
+            {
+                CodecId = CodecId,
+                Value = value
+            }
+            : null;
+    }
+
+    public bool RestoreTyped(MonsterModel monster, UndoBoolCreatureStatusRuntimePayload state)
+    {
+        // Computed summon/fabrication predicates should be recomputed from the
+        // restored live combat topology rather than forced through reflection.
+        return monster is TMonster;
+    }
+
+    UndoCreatureStatusRuntimePayload? IUndoCreatureStatusCodec.Capture(MonsterModel monster)
+    {
+        return CaptureTyped(monster);
+    }
+
+    bool IUndoCreatureStatusCodec.Restore(MonsterModel monster, UndoCreatureStatusRuntimePayload state)
+    {
+        return state is UndoBoolCreatureStatusRuntimePayload typed && RestoreTyped(monster, typed);
+    }
+}
+
 internal static class UndoCreatureStatusCodecRegistry
 {
     private static readonly IReadOnlyList<IUndoCreatureStatusCodec> Codecs =
@@ -376,7 +417,7 @@ internal static class UndoCreatureStatusCodecRegistry
         protected override string PropertyName => "IsCrossbowReloaded";
     }
 
-    private sealed class FabricatorCanFabricateCodec : UndoCreatureStatusBoolCodec<Fabricator>
+    private sealed class FabricatorCanFabricateCodec : UndoComputedCreatureStatusBoolCodec<Fabricator>
     {
         public override string CodecId => "status:Fabricator.CanFabricate";
 
@@ -418,49 +459,11 @@ internal static class UndoCreatureStatusCodecRegistry
         protected override string PropertyName => "IsWoundUp";
     }
 
-    private sealed class OvicopterCanLayCodec : IUndoCreatureStatusCodec<UndoBoolCreatureStatusRuntimePayload>
+    private sealed class OvicopterCanLayCodec : UndoComputedCreatureStatusBoolCodec<Ovicopter>
     {
-        public string CodecId => "status:Ovicopter.CanLay";
+        public override string CodecId => "status:Ovicopter.CanLay";
 
-        public bool CanHandle(MonsterModel monster)
-        {
-            return monster is Ovicopter;
-        }
-
-        public UndoBoolCreatureStatusRuntimePayload? CaptureTyped(MonsterModel monster)
-        {
-            if (monster is not Ovicopter ovicopter)
-                return null;
-
-            return new UndoBoolCreatureStatusRuntimePayload
-            {
-                CodecId = CodecId,
-                Value = ReadCanLay(ovicopter)
-            };
-        }
-
-        public bool RestoreTyped(MonsterModel monster, UndoBoolCreatureStatusRuntimePayload state)
-        {
-            // CanLay is a computed branch predicate derived from current live topology,
-            // not a mutable runtime field. Keep the codec id for backward compatibility
-            // with existing snapshots, but let restore recompute it from combat state.
-            return monster is Ovicopter;
-        }
-
-        UndoCreatureStatusRuntimePayload? IUndoCreatureStatusCodec.Capture(MonsterModel monster)
-        {
-            return CaptureTyped(monster);
-        }
-
-        bool IUndoCreatureStatusCodec.Restore(MonsterModel monster, UndoCreatureStatusRuntimePayload state)
-        {
-            return state is UndoBoolCreatureStatusRuntimePayload typed && RestoreTyped(monster, typed);
-        }
-
-        private static bool ReadCanLay(Ovicopter ovicopter)
-        {
-            return UndoReflectionUtil.FindProperty(typeof(Ovicopter), "CanLay")?.GetValue(ovicopter) is true;
-        }
+        protected override string PropertyName => "CanLay";
     }
 
     private sealed class SnappingJaxfruitChargedCodec : UndoCreatureStatusBoolCodec<SnappingJaxfruit>

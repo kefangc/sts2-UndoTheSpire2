@@ -107,7 +107,11 @@ public sealed partial class UndoController
 
     private void OpenSyntheticChoiceSession(UndoSnapshot anchorSnapshot, UndoSnapshot? branchSnapshot)
     {
-        _syntheticChoiceSession = new UndoSyntheticChoiceSession(anchorSnapshot, anchorSnapshot.ChoiceSpec!, branchSnapshot);
+        _syntheticChoiceSession = new UndoSyntheticChoiceSession(
+            anchorSnapshot,
+            anchorSnapshot.ChoiceSpec!,
+            branchSnapshot,
+            requiresAuthoritativeBranchExecution: ShouldRequireAuthoritativeSyntheticChoiceExecution(anchorSnapshot.ChoiceSpec!));
         RememberSavedChoiceBranches(_syntheticChoiceSession, anchorSnapshot.CombatState.ChoiceBranchStates);
         if (branchSnapshot?.ChoiceResultKey != null)
             _syntheticChoiceSession.RememberBranch(branchSnapshot.ChoiceResultKey, branchSnapshot);
@@ -122,6 +126,25 @@ public sealed partial class UndoController
             UndoChoiceResultKey? selectedKey = await ShowSyntheticChoiceSelectionAsync(session);
             if (_syntheticChoiceSession != session || selectedKey == null)
                 return;
+
+            if (session.RequiresAuthoritativeBranchExecution)
+            {
+                if (await TryCommitCustomChoiceBranchAsync(session, selectedKey))
+                {
+                    WriteInteractionLog(
+                        "branch_commit_after_reselect",
+                        $"choice={selectedKey} label={session.AnchorSnapshot.ActionLabel} replayEvents={session.AnchorSnapshot.ReplayEventCount} source=custom");
+                    return;
+                }
+
+                UndoDebugLog.Write(
+                    $"authoritative_choice_branch_unavailable choice={selectedKey}"
+                    + $" label={session.AnchorSnapshot.ActionLabel}"
+                    + $" replayEvents={session.AnchorSnapshot.ReplayEventCount}"
+                    + $" source={session.ChoiceSpec.SourceModelTypeName ?? "unknown"}");
+                OpenSyntheticChoiceSession(session.AnchorSnapshot, session.TemplateSnapshot ?? _futureSnapshots.First?.Value);
+                return;
+            }
 
             if (session.CachedBranches.TryGetValue(selectedKey, out UndoSnapshot? cachedBranchSnapshot))
             {

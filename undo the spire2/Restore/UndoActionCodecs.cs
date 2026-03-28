@@ -346,16 +346,7 @@ internal static class UndoActionCodecRegistry
     {
         return choiceSpec.Kind == UndoChoiceKind.HandSelection
             && choiceSpec.SourcePileType == PileType.Hand
-            && IsDiscardSelection(choiceSpec.SelectionPrefs)
-            && (
-                IsSourceChoice(choiceSpec, typeof(Acrobatics))
-                || IsSourceChoice(choiceSpec, typeof(DaggerThrow))
-                || IsSourceChoice(choiceSpec, typeof(HiddenDaggers))
-                || IsSourceChoice(choiceSpec, typeof(Prepared))
-                || IsSourceChoice(choiceSpec, typeof(Survivor))
-                || IsSourceChoice(choiceSpec, typeof(GamblingChip))
-                || IsSourceChoice(choiceSpec, typeof(GamblersBrew))
-                || IsSourceChoice(choiceSpec, typeof(ToolsOfTheTradePower)));
+            && IsDiscardSelection(choiceSpec.SelectionPrefs);
     }
 
     private static bool IsTrackedOfficialFromHandDiscardChoice(PausedChoiceState state, UndoChoiceSpec choiceSpec)

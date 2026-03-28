@@ -200,11 +200,65 @@ public sealed partial class UndoController
                     ? turnsUntilSummonable
                     : null,
                 CallForBackupCount = monster is TwoTailedRat twoTailedRatWithBackup ? twoTailedRatWithBackup.CallForBackupCount : null,
+                FabricatorLastSpawnedMonsterId = CaptureFabricatorLastSpawnedMonsterId(monster),
+                LivingFogBloatAmount = CaptureLivingFogBloatAmount(monster),
+                ToughEggIsHatched = CaptureToughEggIsHatched(monster),
+                ToughEggVisualHatched = CaptureToughEggVisualHatched(monster),
+                ToughEggAfterHatchedStateId = CaptureToughEggAfterHatchedStateId(monster),
+                ToughEggHatchPos = CaptureToughEggHatchPos(monster),
                 StateLogIds = [.. moveStateMachine.StateLog.Select(static state => state.Id)]
             });
         }
 
         return states;
+    }
+
+    private static ModelId? CaptureFabricatorLastSpawnedMonsterId(MonsterModel monster)
+    {
+        return monster is Fabricator fabricator
+            && FindField(fabricator.GetType(), "_lastSpawned")?.GetValue(fabricator) is MonsterModel lastSpawned
+                ? lastSpawned.Id
+                : null;
+    }
+
+    private static int? CaptureLivingFogBloatAmount(MonsterModel monster)
+    {
+        return monster is LivingFog
+            && FindProperty(monster.GetType(), "BloatAmount")?.GetValue(monster) is int bloatAmount
+                ? bloatAmount
+                : null;
+    }
+
+    private static bool? CaptureToughEggIsHatched(MonsterModel monster)
+    {
+        return monster is ToughEgg
+            && FindProperty(monster.GetType(), "IsHatched")?.GetValue(monster) is bool isHatched
+                ? isHatched
+                : null;
+    }
+
+    private static bool? CaptureToughEggVisualHatched(MonsterModel monster)
+    {
+        return monster is ToughEgg
+            && FindField(monster.GetType(), "_hatched")?.GetValue(monster) is bool visualHatched
+                ? visualHatched
+                : null;
+    }
+
+    private static string? CaptureToughEggAfterHatchedStateId(MonsterModel monster)
+    {
+        return monster is ToughEgg
+            && FindProperty(monster.GetType(), "AfterHatchedState")?.GetValue(monster) is MonsterState afterHatchedState
+                ? afterHatchedState.Id
+                : null;
+    }
+
+    private static Vector2? CaptureToughEggHatchPos(MonsterModel monster)
+    {
+        return monster is ToughEgg
+            && FindProperty(monster.GetType(), "HatchPos")?.GetValue(monster) is Vector2 hatchPos
+                ? hatchPos
+                : null;
     }
 
     private static IReadOnlyList<UndoCreatureVisualState> CaptureCreatureVisualStates(IReadOnlyList<Creature> creatures)
@@ -313,6 +367,7 @@ public sealed partial class UndoController
         return new UndoCreatureAnimatorState
         {
             StateId = currentState.Id,
+            NextStateId = currentState.NextState?.Id,
             HasLooped = currentState.HasLooped
         };
     }

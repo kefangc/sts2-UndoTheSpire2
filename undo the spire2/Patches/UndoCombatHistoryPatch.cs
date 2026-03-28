@@ -16,6 +16,9 @@ internal static class UndoCombatHistoryPatch
     [HarmonyPostfix]
     private static void OnCardPlayStarted(CombatState combatState, CardPlay cardPlay)
     {
+        if (combatState == null || cardPlay?.Card == null)
+            return;
+
         MainFile.Controller.OnCombatHistoryCardPlayStarted(combatState, cardPlay);
     }
 
@@ -23,6 +26,9 @@ internal static class UndoCombatHistoryPatch
     [HarmonyPostfix]
     private static void OnCardPlayFinished(CombatState combatState, CardPlay cardPlay)
     {
+        if (combatState == null || cardPlay?.Card == null)
+            return;
+
         MainFile.Controller.OnCombatHistoryCardPlayFinished(combatState, cardPlay);
     }
 

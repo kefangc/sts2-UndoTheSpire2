@@ -826,7 +826,8 @@ public sealed partial class UndoController
                 || state.CanvasStates.Count > 0
                 || state.ParticleStates.Count > 0
                 || state.ShaderParamStates.Count > 0
-                || state.StateDisplayState != null)
+                || state.StateDisplayState != null
+                || state.AnimatorState != null)
             .ToDictionary(static state => state.CreatureKey, static state => state);
         if (creatureVisualStatesByKey.Count == 0 && snapshotState.MonsterStates.Count > 0)
         {
@@ -985,7 +986,8 @@ public sealed partial class UndoController
                 continue;
 
             string relativePath = ReferenceEquals(root, node) ? "." : root.GetPathTo(node).ToString();
-            MegaAnimationState animationState = new MegaSprite(node2D).GetAnimationState();
+            MegaSprite megaSprite = new(node2D);
+            MegaAnimationState animationState = megaSprite.GetAnimationState();
             statesByPath.TryGetValue(relativePath, out List<UndoCreatureTrackState>? pathStates);
             HashSet<int> trackIndexes = pathStates == null
                 ? []
@@ -1001,7 +1003,48 @@ public sealed partial class UndoController
 
             foreach (UndoCreatureTrackState trackState in pathStates)
             {
-                MegaTrackEntry? trackEntry = animationState.SetAnimation(trackState.AnimationName, trackState.Loop ?? true, trackState.TrackIndex);
+                if (string.IsNullOrWhiteSpace(trackState.AnimationName))
+                {
+                    UndoDebugLog.Write(
+                        $"creature_track_restore_skipped_empty path={relativePath}"
+                        + $" track={trackState.TrackIndex}");
+                    TryClearCreatureTrack(animationState, trackState.TrackIndex);
+                    continue;
+                }
+
+                bool hasAnimation = false;
+                try
+                {
+                    hasAnimation = megaSprite.HasAnimation(trackState.AnimationName);
+                }
+                catch
+                {
+                }
+
+                if (!hasAnimation)
+                {
+                    UndoDebugLog.Write(
+                        $"creature_track_restore_skipped_invalid path={relativePath}"
+                        + $" track={trackState.TrackIndex}"
+                        + $" animation={trackState.AnimationName}");
+                    TryClearCreatureTrack(animationState, trackState.TrackIndex);
+                    continue;
+                }
+
+                MegaTrackEntry? trackEntry;
+                try
+                {
+                    trackEntry = animationState.SetAnimation(trackState.AnimationName, trackState.Loop ?? true, trackState.TrackIndex);
+                }
+                catch
+                {
+                    UndoDebugLog.Write(
+                        $"creature_track_restore_failed path={relativePath}"
+                        + $" track={trackState.TrackIndex}"
+                        + $" animation={trackState.AnimationName}");
+                    TryClearCreatureTrack(animationState, trackState.TrackIndex);
+                    continue;
+                }
                 if (trackEntry == null)
                     continue;
 
@@ -1025,7 +1068,31 @@ public sealed partial class UndoController
         if (targetState == null)
             return;
 
-        SetPrivateFieldValue(animator, "_currentState", targetState);
+        bool appliedViaAnimator = false;
+        MethodInfo? setNextStateMethod = FindMethod(animator.GetType(), "SetNextState", [typeof(AnimState)]);
+        if (setNextStateMethod != null)
+        {
+            try
+            {
+                setNextStateMethod.Invoke(animator, [targetState]);
+                appliedViaAnimator = true;
+            }
+            catch
+            {
+            }
+        }
+
+        if (!appliedViaAnimator)
+            SetPrivateFieldValue(animator, "_currentState", targetState);
+
+        if (!string.IsNullOrWhiteSpace(state.NextStateId)
+            && targetState.NextState != null
+            && !string.Equals(targetState.NextState.Id, state.NextStateId, StringComparison.Ordinal)
+            && FindCreatureAnimatorState(animator, state.NextStateId) is AnimState explicitNextState)
+        {
+            targetState.NextState = explicitNextState;
+        }
+
         if (state.HasLooped.HasValue)
             UndoReflectionUtil.TrySetFieldValue(targetState, "<HasLooped>k__BackingField", state.HasLooped.Value);
 

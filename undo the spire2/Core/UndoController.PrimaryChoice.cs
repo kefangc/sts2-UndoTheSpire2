@@ -90,7 +90,22 @@ public sealed partial class UndoController
 
         await WaitOneFrameAsync();
 
-        UndoSyntheticChoiceSession primarySession = new(snapshot, choiceSpec, branchSnapshot);
+        if (pausedChoiceState != null
+            && IsTrackedOfficialFromHandDiscardChoice(pausedChoiceState, choiceSpec)
+            && !CanResumeTrackedOfficialHandDiscardLive(pausedChoiceState, choiceSpec, out string? liveUnavailableReason))
+        {
+            UndoDebugLog.Write(
+                $"official_hand_choice_primary_restore_unavailable source={choiceSpec.SourceModelTypeName ?? "unknown"}"
+                + $" reason={liveUnavailableReason ?? "missing_live_choice_state"}"
+                + $" replayEvents={snapshot.ReplayEventCount}->{GetCurrentReplayEventCount()}");
+            return false;
+        }
+
+        UndoSyntheticChoiceSession primarySession = new(
+            snapshot,
+            choiceSpec,
+            branchSnapshot,
+            requiresAuthoritativeBranchExecution: ShouldRequireAuthoritativeSyntheticChoiceExecution(choiceSpec));
         _syntheticChoiceSession = primarySession;
         _lastResolvedChoiceSpec = choiceSpec;
         _lastResolvedChoiceResultKey = null;
@@ -169,6 +184,17 @@ public sealed partial class UndoController
         if (ShouldPreferCustomChoiceBeforeCached(primarySession)
             && await TryCommitCustomChoiceBranchAsync(primarySession, selectedKey))
             return true;
+
+        if (primarySession.RequiresAuthoritativeBranchExecution)
+        {
+            UndoDebugLog.Write(
+                $"authoritative_choice_branch_unavailable choice={selectedKey}"
+                + $" label={snapshot.ActionLabel}"
+                + $" replayEvents={snapshot.ReplayEventCount}"
+                + $" source={primarySession.ChoiceSpec.SourceModelTypeName ?? "unknown"}"
+                + " stage=primary_sync");
+            return false;
+        }
 
         if (primarySession.CachedBranches.TryGetValue(selectedKey, out UndoSnapshot? cachedBranchSnapshot))
         {
@@ -324,6 +350,18 @@ public sealed partial class UndoController
 
             if (ShouldAbortStaleSyntheticChoiceSession(session, "after_preferred_custom_commit"))
                 return;
+
+            if (session.RequiresAuthoritativeBranchExecution)
+            {
+                UndoDebugLog.Write(
+                    $"authoritative_choice_branch_unavailable choice={selectedKey}"
+                    + $" label={session.AnchorSnapshot.ActionLabel}"
+                    + $" replayEvents={session.AnchorSnapshot.ReplayEventCount}"
+                    + $" source={session.ChoiceSpec.SourceModelTypeName ?? "unknown"}"
+                    + " stage=primary");
+                OpenSyntheticChoiceSession(session.AnchorSnapshot, session.TemplateSnapshot ?? _futureSnapshots.First?.Value);
+                return;
+            }
 
             if (session.CachedBranches.TryGetValue(selectedKey, out UndoSnapshot? cachedBranchSnapshot))
             {
@@ -485,11 +523,10 @@ public sealed partial class UndoController
         return true;
     }
 
-    private static bool CanResumeTrackedOfficialHandDiscardLive(UndoSyntheticChoiceSession session, out string? reason)
+    private static bool CanResumeTrackedOfficialHandDiscardLive(PausedChoiceState? pausedChoiceState, UndoChoiceSpec choiceSpec, out string? reason)
     {
         reason = null;
-        PausedChoiceState? pausedChoiceState = session.AnchorSnapshot.CombatState.ActionKernelState.PausedChoiceState;
-        if (!IsTrackedOfficialFromHandDiscardChoice(pausedChoiceState, session.ChoiceSpec))
+        if (!IsTrackedOfficialFromHandDiscardChoice(pausedChoiceState, choiceSpec))
             return false;
 
         GameAction? sourceAction = FindTrackedAction(pausedChoiceState!.SourceActionRef?.ActionId);
@@ -519,6 +556,14 @@ public sealed partial class UndoController
         }
 
         return true;
+    }
+
+    private static bool CanResumeTrackedOfficialHandDiscardLive(UndoSyntheticChoiceSession session, out string? reason)
+    {
+        return CanResumeTrackedOfficialHandDiscardLive(
+            session.AnchorSnapshot.CombatState.ActionKernelState.PausedChoiceState,
+            session.ChoiceSpec,
+            out reason);
     }
 
     private async Task<bool> WaitForOfficialHandDiscardLiveResumeAsync(UndoSyntheticChoiceSession session, int maxFrames = 180)
@@ -685,7 +730,11 @@ public sealed partial class UndoController
     // 导致 Sly、AfterCardDiscarded 等效果在切换目标后漂移。
     private static bool ShouldPreferCustomChoiceBeforeCached(UndoSyntheticChoiceSession session)
     {
-        UndoChoiceSpec choiceSpec = session.ChoiceSpec;
+        return session.RequiresAuthoritativeBranchExecution;
+    }
+
+    private static bool ShouldRequireAuthoritativeSyntheticChoiceExecution(UndoChoiceSpec choiceSpec)
+    {
         return IsRetainChoiceSource(choiceSpec)
             || IsOfficialFromHandDiscardChoice(choiceSpec)
             || IsSelectedCardMutationSource(choiceSpec)
@@ -1295,16 +1344,7 @@ public sealed partial class UndoController
     {
         return choiceSpec.Kind == UndoChoiceKind.HandSelection
             && choiceSpec.SourcePileType == PileType.Hand
-            && IsDiscardSelection(choiceSpec.SelectionPrefs)
-            && (
-                IsSourceChoice(choiceSpec, typeof(Acrobatics))
-                || IsSourceChoice(choiceSpec, typeof(DaggerThrow))
-                || IsSourceChoice(choiceSpec, typeof(HiddenDaggers))
-                || IsSourceChoice(choiceSpec, typeof(Prepared))
-                || IsSourceChoice(choiceSpec, typeof(Survivor))
-                || IsSourceChoice(choiceSpec, typeof(GamblingChip))
-                || IsSourceChoice(choiceSpec, typeof(GamblersBrew))
-                || IsSourceChoice(choiceSpec, typeof(ToolsOfTheTradePower)));
+            && IsDiscardSelection(choiceSpec.SelectionPrefs);
     }
 
     private static bool IsTrackedOfficialFromHandDiscardChoice(PausedChoiceState? pausedChoiceState, UndoChoiceSpec choiceSpec)

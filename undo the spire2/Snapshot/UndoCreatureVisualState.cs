@@ -31,6 +31,8 @@ internal sealed class UndoCreatureAnimatorState
 {
     public required string StateId { get; init; }
 
+    public string? NextStateId { get; init; }
+
     public bool? HasLooped { get; init; }
 }
 

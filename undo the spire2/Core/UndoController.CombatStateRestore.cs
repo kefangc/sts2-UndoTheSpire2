@@ -1806,6 +1806,8 @@ public sealed partial class UndoController
                 twoTailedRat.CallForBackupCount = callForBackupCount;
         }
 
+        RestoreSummonMonsterRuntimeState(monster, moveStateMachine, state);
+
         UndoReflectionUtil.TrySetPropertyValue(monster, "SpawnedThisTurn", state.SpawnedThisTurn);
         UndoReflectionUtil.TrySetFieldValue(moveStateMachine, "_performedFirstMove", state.PerformedFirstMove);
         if (moveStateMachine.StateLog is List<MonsterState> stateLog)
@@ -1851,6 +1853,40 @@ public sealed partial class UndoController
 
         if (monster.Creature.IsDead || isPendingRevive)
             NCombatRoom.Instance?.SetCreatureIsInteractable(monster.Creature, false);
+    }
+
+    private static void RestoreSummonMonsterRuntimeState(MonsterModel monster, MonsterMoveStateMachine moveStateMachine, UndoMonsterState state)
+    {
+        if (monster is Fabricator fabricator)
+        {
+            MonsterModel? lastSpawned = state.FabricatorLastSpawnedMonsterId is ModelId lastSpawnedId
+                ? ModelDb.GetById<MonsterModel>(lastSpawnedId)
+                : null;
+            UndoReflectionUtil.TrySetFieldValue(fabricator, "_lastSpawned", lastSpawned);
+        }
+
+        if (monster is LivingFog livingFog && state.LivingFogBloatAmount is int bloatAmount)
+            UndoReflectionUtil.TrySetPropertyValue(livingFog, "BloatAmount", bloatAmount);
+
+        if (monster is ToughEgg toughEgg)
+        {
+            if (state.ToughEggIsHatched is bool isHatched)
+                UndoReflectionUtil.TrySetPropertyValue(toughEgg, "IsHatched", isHatched);
+
+            if (state.ToughEggVisualHatched is bool visualHatched)
+                UndoReflectionUtil.TrySetFieldValue(toughEgg, "_hatched", visualHatched);
+
+            if (state.ToughEggAfterHatchedStateId is string afterHatchedStateId
+                && moveStateMachine.States.TryGetValue(afterHatchedStateId, out MonsterState? afterHatchedState))
+            {
+                UndoReflectionUtil.TrySetPropertyValue(toughEgg, "AfterHatchedState", afterHatchedState);
+            }
+
+            if (state.ToughEggHatchPos is Vector2 hatchPos)
+                UndoReflectionUtil.TrySetPropertyValue(toughEgg, "HatchPos", hatchPos);
+            else
+                UndoReflectionUtil.TrySetPropertyValue(toughEgg, "HatchPos", null);
+        }
     }
 
 
