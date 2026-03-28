@@ -594,12 +594,13 @@ public sealed partial class UndoController
             SetPrivateFieldValue(orb, "_passiveVal", glassPassiveValue);
     }
 
-    private static void ResetActionExecutorForRestore(bool quarantineOutstandingActions = true)
+    private static void ResetActionExecutorForRestore(bool quarantineOutstandingActions = true, bool trackQueueCompletion = false)
     {
         ActionExecutor actionExecutor = RunManager.Instance.ActionExecutor;
+        Task? queueCompletionTask = trackQueueCompletion ? actionExecutor.FinishedExecutingActions() : null;
         actionExecutor.Pause();
         actionExecutor.Cancel();
-        TrackRestoreTailTask(actionExecutor.FinishedExecutingActions());
+        TrackRestoreTailTask(queueCompletionTask);
         if (quarantineOutstandingActions)
             QuarantineOutstandingActionsForRestore(actionExecutor);
         UndoReflectionUtil.TrySetPropertyValue(actionExecutor, "CurrentlyRunningAction", null);
@@ -628,6 +629,9 @@ public sealed partial class UndoController
     private static void QuarantineActionForRestore(GameAction action)
     {
         TrackRestoreTailTask(GetActionExecutionTask(action));
+        bool hadPausedChoiceTail =
+            action.State == GameActionState.GatheringPlayerChoice
+            || UndoReflectionUtil.FindField(action.GetType(), "_executeAfterResumptionTaskSource")?.GetValue(action) != null;
 
         try
         {
@@ -635,6 +639,13 @@ public sealed partial class UndoController
         }
         catch
         {
+        }
+
+        if (hadPausedChoiceTail && TryReleasePausedChoiceTailForRestore(action))
+        {
+            UndoDebugLog.Write(
+                $"restore_choice_tail_released action={action.GetType().Name}"
+                + $" actionId={action.Id?.ToString() ?? "null"}");
         }
 
         foreach (string eventFieldName in new[]
@@ -649,6 +660,33 @@ public sealed partial class UndoController
         {
             UndoReflectionUtil.TrySetFieldValue(action, eventFieldName, null);
         }
+    }
+
+    private static bool TryReleasePausedChoiceTailForRestore(GameAction action)
+    {
+        object? resumeTaskSource = UndoReflectionUtil.FindField(action.GetType(), "_executeAfterResumptionTaskSource")?.GetValue(action);
+        if (resumeTaskSource == null)
+            return false;
+
+        try
+        {
+            if (UndoReflectionUtil.FindMethod(resumeTaskSource.GetType(), "TrySetCanceled") is { } trySetCanceled)
+            {
+                object? result = trySetCanceled.Invoke(resumeTaskSource, []);
+                return result is not bool success || success;
+            }
+
+            if (UndoReflectionUtil.FindMethod(resumeTaskSource.GetType(), "SetCanceled") is { } setCanceled)
+            {
+                setCanceled.Invoke(resumeTaskSource, []);
+                return true;
+            }
+        }
+        catch
+        {
+        }
+
+        return false;
     }
 
     private static Task? GetActionExecutionTask(GameAction action)
@@ -681,12 +719,64 @@ public sealed partial class UndoController
         }
     }
 
-    private static bool HasImmediateRestoreTailActivity()
+    private static bool HasSavestateVisualTailActivity()
+    {
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        return HasTransientCardFlyVfx(combatRoom?.BackCombatVfxContainer)
+            || HasTransientCardFlyVfx(combatRoom?.CombatVfxContainer)
+            || HasTransientCardFlyVfx(NRun.Instance?.GlobalUi?.TopBar?.TrailContainer);
+    }
+
+    private static bool TryClearSavestateVisualTail()
+    {
+        if (!HasSavestateVisualTailActivity())
+            return false;
+
+        ClearTransientCardVisuals();
+        return true;
+    }
+
+    private static bool HasSavestateStructuralTailActivity(bool includeTrackedRestoreTasks = true)
     {
         ActionExecutor actionExecutor = RunManager.Instance.ActionExecutor;
-        return actionExecutor.CurrentlyRunningAction != null
-            || actionExecutor.IsRunning
-            || HasTrackedRestoreTailTasks();
+        if (actionExecutor.CurrentlyRunningAction != null || actionExecutor.IsRunning)
+            return true;
+
+        if (includeTrackedRestoreTasks && HasTrackedRestoreTailTasks())
+            return true;
+
+        if (UndoReflectionUtil.FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionsWaitingForResumption")?.GetValue(RunManager.Instance.ActionQueueSet) is System.Collections.ICollection waitingForResumption
+            && waitingForResumption.Count > 0)
+        {
+            return true;
+        }
+
+        if (UndoReflectionUtil.FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionQueues")?.GetValue(RunManager.Instance.ActionQueueSet) is not System.Collections.IEnumerable rawQueues)
+            return false;
+
+        foreach (object rawQueue in rawQueues)
+        {
+            if (UndoReflectionUtil.FindField(rawQueue.GetType(), "actions")?.GetValue(rawQueue) is System.Collections.ICollection actions
+                && actions.Count > 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasSavestateBoundaryTailActivity(bool includeTrackedRestoreTasks = true, bool includeVisualTail = true)
+    {
+        if (HasSavestateStructuralTailActivity(includeTrackedRestoreTasks))
+            return true;
+
+        return includeVisualTail && HasSavestateVisualTailActivity();
+    }
+
+    private static bool HasImmediateRestoreTailActivity()
+    {
+        return HasSavestateBoundaryTailActivity();
     }
 
     private static bool RemoveRestoreTailQueuedActions(GameAction currentAction, uint? actionId)
@@ -782,43 +872,32 @@ public sealed partial class UndoController
 
     private static bool HasTransientRestoreTailActivity()
     {
-        ActionExecutor actionExecutor = RunManager.Instance.ActionExecutor;
-        if (actionExecutor.CurrentlyRunningAction != null || actionExecutor.IsRunning || HasTrackedRestoreTailTasks())
-            return true;
-
-        if (UndoReflectionUtil.FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionsWaitingForResumption")?.GetValue(RunManager.Instance.ActionQueueSet) is System.Collections.ICollection waitingForResumption
-            && waitingForResumption.Count > 0)
-        {
-            return true;
-        }
-
-        if (UndoReflectionUtil.FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionQueues")?.GetValue(RunManager.Instance.ActionQueueSet) is not System.Collections.IEnumerable rawQueues)
-            return false;
-
-        foreach (object rawQueue in rawQueues)
-        {
-            if (UndoReflectionUtil.FindField(rawQueue.GetType(), "actions")?.GetValue(rawQueue) is System.Collections.ICollection actions
-                && actions.Count > 0)
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return HasSavestateBoundaryTailActivity();
     }
 
     private static async Task WaitForRestoreTailToSettleAsync(int maxFrames = 90, int requiredStableFrames = 3)
     {
+        TryClearSavestateVisualTail();
+
         int stableFrames = 0;
         for (int frame = 0; frame < maxFrames; frame++)
         {
             TryQuarantineRestoreTailAction();
-            ResetActionExecutorForRestore();
+            ResetActionExecutorForRestore(trackQueueCompletion: false);
             RunManager.Instance.ActionQueueSet.Reset();
             ResetActionSynchronizerForRestore();
+            bool clearedVisualTail = TryClearSavestateVisualTail();
             await WaitOneFrameAsync();
 
-            if (HasTransientRestoreTailActivity())
+            bool structuralTailActive = HasSavestateStructuralTailActivity();
+            bool visualTailActive = HasSavestateVisualTailActivity();
+            if (visualTailActive)
+            {
+                TryClearSavestateVisualTail();
+                visualTailActive = HasSavestateVisualTailActivity();
+            }
+
+            if (structuralTailActive || visualTailActive || clearedVisualTail)
             {
                 stableFrames = 0;
                 continue;
@@ -830,9 +909,10 @@ public sealed partial class UndoController
         }
 
         TryQuarantineRestoreTailAction();
-        ResetActionExecutorForRestore();
+        ResetActionExecutorForRestore(trackQueueCompletion: false);
         RunManager.Instance.ActionQueueSet.Reset();
         ResetActionSynchronizerForRestore();
+        TryClearSavestateVisualTail();
         for (int frame = 0; frame < requiredStableFrames; frame++)
         {
             await WaitOneFrameAsync();

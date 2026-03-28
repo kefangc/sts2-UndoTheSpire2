@@ -232,13 +232,25 @@ internal static class UndoActionKernelService
             if (ReferenceEquals(action, currentAction) || action.State == GameActionState.Executing)
                 return false;
 
-            return IsQueueStateAllowed(action.State, allowGatheringPlayerChoice: false);
+            return IsQueueStateAllowed(action.State, allowGatheringPlayerChoice: false)
+                && !IsTransientPlayerInputAction(action);
         }
 
         if (boundaryKind == ActionKernelBoundaryKind.PausedChoice)
             return IsQueueStateAllowed(action.State, allowGatheringPlayerChoice: true);
 
         return false;
+    }
+
+    private static bool IsTransientPlayerInputAction(GameAction action)
+    {
+        // Stable save-state snapshots should not carry over player input actions that were
+        // merely queued while the boundary was being captured; otherwise restore can replay
+        // clicks that belong to the future branch instead of the target state.
+        return action is PlayCardAction
+            or UsePotionAction
+            or DiscardPotionGameAction
+            or EndPlayerTurnAction;
     }
 
     private static IReadOnlyList<ActionResumeState> CaptureWaitingForResumeStates(ActionQueueSet actionQueueSet)

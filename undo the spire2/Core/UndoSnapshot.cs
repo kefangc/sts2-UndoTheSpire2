@@ -11,10 +11,12 @@ internal sealed class UndoSnapshot
         string? actionLabel,
         bool isChoiceAnchor = false,
         UndoChoiceSpec? choiceSpec = null,
-        UndoChoiceResultKey? choiceResultKey = null)
+        UndoChoiceResultKey? choiceResultKey = null,
+        int? historyOrderReplayEventCount = null)
     {
         CombatState = combatState;
         ReplayEventCount = replayEventCount;
+        HistoryOrderReplayEventCount = historyOrderReplayEventCount ?? replayEventCount;
         ActionKind = actionKind;
         SequenceId = sequenceId;
         ActionLabel = string.IsNullOrWhiteSpace(actionLabel) ? GetDefaultLabel(actionKind) : actionLabel;
@@ -26,6 +28,8 @@ internal sealed class UndoSnapshot
     public UndoCombatFullState CombatState { get; }
 
     public int ReplayEventCount { get; }
+
+    public int HistoryOrderReplayEventCount { get; }
 
     public UndoActionKind ActionKind { get; }
 

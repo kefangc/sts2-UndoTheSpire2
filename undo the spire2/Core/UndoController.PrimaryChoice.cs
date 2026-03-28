@@ -1607,7 +1607,8 @@ public sealed partial class UndoController
             anchorNode.Value.SequenceId,
             anchorNode.Value.ActionLabel,
             isChoiceAnchor: true,
-            choiceSpec: anchorNode.Value.ChoiceSpec);
+            choiceSpec: anchorNode.Value.ChoiceSpec,
+            historyOrderReplayEventCount: anchorNode.Value.HistoryOrderReplayEventCount);
     }
 
     private IReadOnlyList<UndoChoiceBranchState> CaptureSavedChoiceBranchStates(UndoSyntheticChoiceSession session)

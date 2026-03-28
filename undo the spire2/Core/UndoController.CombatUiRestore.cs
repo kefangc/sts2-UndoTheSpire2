@@ -1005,9 +1005,6 @@ public sealed partial class UndoController
             {
                 if (string.IsNullOrWhiteSpace(trackState.AnimationName))
                 {
-                    UndoDebugLog.Write(
-                        $"creature_track_restore_skipped_empty path={relativePath}"
-                        + $" track={trackState.TrackIndex}");
                     TryClearCreatureTrack(animationState, trackState.TrackIndex);
                     continue;
                 }
@@ -1023,10 +1020,6 @@ public sealed partial class UndoController
 
                 if (!hasAnimation)
                 {
-                    UndoDebugLog.Write(
-                        $"creature_track_restore_skipped_invalid path={relativePath}"
-                        + $" track={trackState.TrackIndex}"
-                        + $" animation={trackState.AnimationName}");
                     TryClearCreatureTrack(animationState, trackState.TrackIndex);
                     continue;
                 }
@@ -1983,6 +1976,7 @@ public sealed partial class UndoController
             if (child is not NCardFlyVfx flyVfx)
                 continue;
 
+            NeutralizeCardFlyVfxCompletion(flyVfx);
             if (GetPrivateFieldValue<Node>(flyVfx, "_vfx") is { } trailVfx && GodotObject.IsInstanceValid(trailVfx))
             {
                 trailVfx.GetParent()?.RemoveChild(trailVfx);
@@ -1997,6 +1991,19 @@ public sealed partial class UndoController
 
             flyVfx.GetParent()?.RemoveChild(flyVfx);
             QueueFreeNodeSafelyOnce(flyVfx);
+        }
+    }
+
+    private static void NeutralizeCardFlyVfxCompletion(NCardFlyVfx flyVfx)
+    {
+        try
+        {
+            object? completionSource = UndoReflectionUtil.FindProperty(flyVfx.GetType(), nameof(NCardFlyVfx.SwooshAwayCompletion))?.GetValue(flyVfx);
+            UndoReflectionUtil.FindMethod(completionSource?.GetType(), "TrySetResult")?.Invoke(completionSource, []);
+            UndoReflectionUtil.TrySetPropertyValue(flyVfx, nameof(NCardFlyVfx.SwooshAwayCompletion), null);
+        }
+        catch
+        {
         }
     }
 
