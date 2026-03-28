@@ -37,3 +37,6 @@ export_credentials.cfg
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Local development docs
+doc/

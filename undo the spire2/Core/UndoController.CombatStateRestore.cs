@@ -599,6 +599,7 @@ public sealed partial class UndoController
         ActionExecutor actionExecutor = RunManager.Instance.ActionExecutor;
         actionExecutor.Pause();
         actionExecutor.Cancel();
+        TrackRestoreTailTask(actionExecutor.FinishedExecutingActions());
         if (quarantineOutstandingActions)
             QuarantineOutstandingActionsForRestore(actionExecutor);
         UndoReflectionUtil.TrySetPropertyValue(actionExecutor, "CurrentlyRunningAction", null);
@@ -626,6 +627,8 @@ public sealed partial class UndoController
 
     private static void QuarantineActionForRestore(GameAction action)
     {
+        TrackRestoreTailTask(GetActionExecutionTask(action));
+
         try
         {
             action.Cancel();
@@ -646,17 +649,44 @@ public sealed partial class UndoController
         {
             UndoReflectionUtil.TrySetFieldValue(action, eventFieldName, null);
         }
+    }
 
-        if (UndoReflectionUtil.FindField(typeof(GameAction), "_pauseForPlayerChoiceTaskSource")?.GetValue(action) is TaskCompletionSource pauseSource)
-            pauseSource.TrySetCanceled();
-        if (UndoReflectionUtil.FindField(typeof(GameAction), "_executeAfterResumptionTaskSource")?.GetValue(action) is TaskCompletionSource resumeSource)
-            resumeSource.TrySetCanceled();
-        if (UndoReflectionUtil.FindField(typeof(GameAction), "_completionSource")?.GetValue(action) is TaskCompletionSource completionSource)
-            completionSource.TrySetCanceled();
+    private static Task? GetActionExecutionTask(GameAction action)
+    {
+        return UndoReflectionUtil.FindField(typeof(GameAction), "_executionTask")?.GetValue(action) as Task;
+    }
 
-        UndoReflectionUtil.TrySetFieldValue(action, "_pauseForPlayerChoiceTaskSource", null);
-        UndoReflectionUtil.TrySetFieldValue(action, "_executeAfterResumptionTaskSource", null);
-        UndoReflectionUtil.TrySetFieldValue(action, "_completionSource", null);
+    private static void TrackRestoreTailTask(Task? task)
+    {
+        if (task == null || task.IsCompleted)
+            return;
+
+        lock (RestoreTailTaskLock)
+        {
+            RestoreTailTasks.Add(task);
+        }
+    }
+
+    private static bool HasTrackedRestoreTailTasks()
+    {
+        lock (RestoreTailTaskLock)
+        {
+            for (int i = RestoreTailTasks.Count - 1; i >= 0; i--)
+            {
+                if (RestoreTailTasks[i].IsCompleted)
+                    RestoreTailTasks.RemoveAt(i);
+            }
+
+            return RestoreTailTasks.Count > 0;
+        }
+    }
+
+    private static bool HasImmediateRestoreTailActivity()
+    {
+        ActionExecutor actionExecutor = RunManager.Instance.ActionExecutor;
+        return actionExecutor.CurrentlyRunningAction != null
+            || actionExecutor.IsRunning
+            || HasTrackedRestoreTailTasks();
     }
 
     private static bool RemoveRestoreTailQueuedActions(GameAction currentAction, uint? actionId)
@@ -753,7 +783,7 @@ public sealed partial class UndoController
     private static bool HasTransientRestoreTailActivity()
     {
         ActionExecutor actionExecutor = RunManager.Instance.ActionExecutor;
-        if (actionExecutor.CurrentlyRunningAction != null || actionExecutor.IsRunning)
+        if (actionExecutor.CurrentlyRunningAction != null || actionExecutor.IsRunning || HasTrackedRestoreTailTasks())
             return true;
 
         if (UndoReflectionUtil.FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionsWaitingForResumption")?.GetValue(RunManager.Instance.ActionQueueSet) is System.Collections.ICollection waitingForResumption

@@ -69,6 +69,8 @@ public sealed partial class UndoController
 
     private static readonly MethodInfo? NotifyCombatStateChangedMethod =
         typeof(CombatStateTracker).GetMethod("NotifyCombatStateChanged", BindingFlags.Instance | BindingFlags.NonPublic);
+    private static readonly object RestoreTailTaskLock = new();
+    private static readonly List<Task> RestoreTailTasks = [];
 
     private const int MaxSnapshots = 50;
     private readonly LinkedList<UndoSnapshot> _pastSnapshots = [];
@@ -1734,6 +1736,18 @@ public sealed partial class UndoController
 
         try
         {
+            if (HasImmediateRestoreTailActivity())
+            {
+                await WaitForRestoreTailToSettleAsync();
+                runState = RunManager.Instance.DebugOnlyGetState();
+                combatState = CombatManager.Instance.DebugOnlyGetState();
+                if (runState == null || combatState == null)
+                {
+                    _lastRestoreFailureReason = "missing_run_state";
+                    return false;
+                }
+            }
+
             await DismissSupportedChoiceUiIfPresentAsync();
             if (!await ApplyFullStateSnapshotCoreAsync(snapshot, runState, combatState))
                 return false;
