@@ -128,6 +128,18 @@ internal sealed class UndoNamedIntFieldsRuntimeComplexState : UndoComplexRuntime
     public IReadOnlyList<UndoNamedIntRuntimeEntry> Entries { get; init; } = [];
 }
 
+internal sealed class UndoNamedDecimalRuntimeEntry
+{
+    public required string Name { get; init; }
+
+    public decimal Value { get; init; }
+}
+
+internal sealed class UndoNamedDecimalFieldsRuntimeComplexState : UndoComplexRuntimeState
+{
+    public IReadOnlyList<UndoNamedDecimalRuntimeEntry> Entries { get; init; } = [];
+}
+
 internal sealed class UndoNamedCardRefRuntimeEntry
 {
     public required string Name { get; init; }
@@ -317,6 +329,7 @@ internal static class UndoRuntimeStateCodecRegistry
         new JugglingAttacksPlayedPowerCodec(),
         new PowerIntFieldsCodec<DarkEmbracePower>("power:DarkEmbracePower.etherealCount", true, "etherealCount"),
         new PowerIntFieldsCodec<FeralPower>("power:FeralPower.zeroCostAttacksPlayed", true, "zeroCostAttacksPlayed"),
+        new PowerDecimalFieldsCodec<HardenedShellPower>("power:HardenedShellPower.damageReceivedThisTurn", true, "damageReceivedThisTurn"),
         new PowerIntFieldsCodec<OrbitPower>("power:OrbitPower.progress", true, "energySpent", "triggerCount"),
         new PowerIntFieldsCodec<OutbreakPower>("power:OutbreakPower.timesPoisoned", true, "timesPoisoned"),
         new VitalSparkTriggeredPlayersPowerCodec(),
@@ -532,6 +545,46 @@ internal static class UndoRuntimeStateCodecRegistry
     }
 
     private static bool TrySetPowerIntField(PowerModel power, string fieldName, int value, bool preferInternalData)
+    {
+        object? internalData = GetPowerInternalData(power);
+        if (preferInternalData && internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), fieldName) != null)
+            return UndoReflectionUtil.TrySetFieldValue(internalData, fieldName, value);
+
+        if (UndoReflectionUtil.FindField(power.GetType(), fieldName) != null)
+            return UndoReflectionUtil.TrySetFieldValue(power, fieldName, value);
+
+        if (!preferInternalData && internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), fieldName) != null)
+            return UndoReflectionUtil.TrySetFieldValue(internalData, fieldName, value);
+
+        return false;
+    }
+
+    private static bool TryGetPowerDecimalField(PowerModel power, string fieldName, bool preferInternalData, out decimal value)
+    {
+        object? internalData = GetPowerInternalData(power);
+        if (preferInternalData && internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), fieldName)?.GetValue(internalData) is decimal internalValue)
+        {
+            value = internalValue;
+            return true;
+        }
+
+        if (UndoReflectionUtil.FindField(power.GetType(), fieldName)?.GetValue(power) is decimal fieldValue)
+        {
+            value = fieldValue;
+            return true;
+        }
+
+        if (!preferInternalData && internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), fieldName)?.GetValue(internalData) is decimal fallbackInternalValue)
+        {
+            value = fallbackInternalValue;
+            return true;
+        }
+
+        value = 0m;
+        return false;
+    }
+
+    private static bool TrySetPowerDecimalField(PowerModel power, string fieldName, decimal value, bool preferInternalData)
     {
         object? internalData = GetPowerInternalData(power);
         if (preferInternalData && internalData != null && UndoReflectionUtil.FindField(internalData.GetType(), fieldName) != null)
@@ -1060,6 +1113,60 @@ internal static class UndoRuntimeStateCodecRegistry
             bool restoredAny = false;
             foreach (UndoNamedIntRuntimeEntry entry in state.Entries)
                 restoredAny |= TrySetPowerIntField(power, entry.Name, entry.Value, _preferInternalData);
+
+            if (restoredAny)
+                InvokeDisplayAmountChanged(power);
+        }
+    }
+
+    private sealed class PowerDecimalFieldsCodec<TPower> : UndoPowerRuntimeCodec<UndoNamedDecimalFieldsRuntimeComplexState>
+        where TPower : PowerModel
+    {
+        private readonly string _codecId;
+        private readonly bool _preferInternalData;
+        private readonly IReadOnlyList<string> _fieldNames;
+
+        public PowerDecimalFieldsCodec(string codecId, bool preferInternalData, params string[] fieldNames)
+        {
+            _codecId = codecId;
+            _preferInternalData = preferInternalData;
+            _fieldNames = fieldNames;
+        }
+
+        public override string CodecId => _codecId;
+
+        public override bool CanHandle(PowerModel power)
+        {
+            return power is TPower && _fieldNames.All(fieldName => TryGetPowerDecimalField(power, fieldName, _preferInternalData, out _));
+        }
+
+        public override UndoNamedDecimalFieldsRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
+        {
+            List<UndoNamedDecimalRuntimeEntry> entries = [];
+            foreach (string fieldName in _fieldNames)
+            {
+                if (!TryGetPowerDecimalField(power, fieldName, _preferInternalData, out decimal value))
+                    return null;
+
+                entries.Add(new UndoNamedDecimalRuntimeEntry
+                {
+                    Name = fieldName,
+                    Value = value
+                });
+            }
+
+            return new UndoNamedDecimalFieldsRuntimeComplexState
+            {
+                CodecId = CodecId,
+                Entries = entries
+            };
+        }
+
+        public override void Restore(PowerModel power, UndoNamedDecimalFieldsRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            bool restoredAny = false;
+            foreach (UndoNamedDecimalRuntimeEntry entry in state.Entries)
+                restoredAny |= TrySetPowerDecimalField(power, entry.Name, entry.Value, _preferInternalData);
 
             if (restoredAny)
                 InvokeDisplayAmountChanged(power);
