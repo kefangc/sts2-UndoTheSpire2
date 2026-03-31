@@ -61,13 +61,11 @@ public sealed partial class UndoController
 
     private static T GetStaticFieldValue<T>(Type type, string fieldName)
     {
-        object? value = FindField(type, fieldName)?.GetValue(null);
-        return value is T typed ? typed : default!;
+        return UndoReflectionUtil.GetStaticFieldValue<T>(type, fieldName)!;
     }
     private static T GetPrivatePropertyValue<T>(object instance, string propertyName)
     {
-        object? value = FindProperty(instance.GetType(), propertyName)?.GetValue(instance);
-        return value is T typed ? typed : default!;
+        return UndoReflectionUtil.GetPropertyValue<T>(instance, propertyName)!;
     }
     private static NCard CreateCardNode(CardModel card, PileType pileType)
     {
@@ -235,57 +233,21 @@ public sealed partial class UndoController
 
     private static FieldInfo? FindField(Type? type, string name)
     {
-        while (type != null)
-        {
-            FieldInfo? field = type.GetField(name, BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-            if (field != null)
-                return field;
-
-            type = type.BaseType;
-        }
-
-        return null;
+        return UndoReflectionUtil.FindField(type, name);
     }
 
     private static PropertyInfo? FindProperty(Type? type, string name)
     {
-        while (type != null)
-        {
-            PropertyInfo? property = type.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            if (property != null)
-                return property;
-
-            type = type.BaseType;
-        }
-
-        return null;
+        return UndoReflectionUtil.FindProperty(type, name);
     }
     private static MethodInfo? FindMethod(Type? type, string name)
     {
-        while (type != null)
-        {
-            MethodInfo? method = type.GetMethod(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            if (method != null)
-                return method;
-
-            type = type.BaseType;
-        }
-
-        return null;
+        return UndoReflectionUtil.FindMethod(type, name);
     }
 
     private static MethodInfo? FindMethod(Type? type, string name, Type[] parameterTypes)
     {
-        while (type != null)
-        {
-            MethodInfo? method = type.GetMethod(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, parameterTypes, null);
-            if (method != null)
-                return method;
-
-            type = type.BaseType;
-        }
-
-        return null;
+        return UndoReflectionUtil.FindMethod(type, name, parameterTypes);
     }
 
     private static UndoCombatFullState CreateDerivedCombatState(

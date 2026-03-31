@@ -78,13 +78,9 @@ internal sealed class OrbRef
 
 internal static class UndoStableRefs
 {
-    private static readonly PileType[] CombatPileOrder =
+    private static readonly IReadOnlyList<PileType> CombatPileOrder =
     [
-        PileType.Hand,
-        PileType.Draw,
-        PileType.Discard,
-        PileType.Exhaust,
-        PileType.Play,
+        .. UndoSharedConstants.CombatPileOrder,
         PileType.Deck
     ];
 

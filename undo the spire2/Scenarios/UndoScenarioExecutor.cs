@@ -66,16 +66,9 @@ internal sealed class UndoScenarioPreconditionResult
     public string Detail { get; init; } = string.Empty;
 }
 
-internal static class UndoScenarioExecutor
+internal static partial class UndoScenarioExecutor
 {
-    private static readonly PileType[] CombatPileOrder =
-    [
-        PileType.Hand,
-        PileType.Draw,
-        PileType.Discard,
-        PileType.Exhaust,
-        PileType.Play
-    ];
+    private static readonly IReadOnlyList<PileType> CombatPileOrder = UndoSharedConstants.CombatPileOrder;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -488,147 +481,6 @@ internal static class UndoScenarioExecutor
         return completion();
     }
 
-    private static UndoScenarioPreconditionResult EvaluatePreconditions(string scenarioId, RunState runState, CombatState combatState)
-    {
-        Player? me = LocalContext.GetMe(combatState);
-        return scenarioId switch
-        {
-            "well-laid-plans" => Require(me != null
-                    && CreatureHasPower(me.Creature, "WellLaidPlansPower")
-                    && TryCaptureActiveChoiceSpec(MainFile.Controller)?.Kind == UndoChoiceKind.HandSelection,
-                "well_laid_plans_choice_boundary_required"),
-            "toolbox-combat-start" => Require(me != null
-                    && PlayerHasRelic(me, "Toolbox")
-                    && GetLatestUndoSnapshot(MainFile.Controller)?.IsChoiceAnchor == true
-                    && GetLatestUndoSnapshot(MainFile.Controller)?.ChoiceSpec?.Kind == UndoChoiceKind.ChooseACard,
-                "toolbox_choice_anchor_required"),
-            "forgotten-ritual" => Require(ContainsCombatCard(runState, "ForgottenRitual"), "forgotten_ritual_card_required"),
-            "automation-power" => Require(me != null && CreatureHasPower(me.Creature, "AutomationPower"), "automation_power_required"),
-            "infested-prism" => Require(AnyMonsterType(combatState, "InfestedPrism") || AnyCreatureHasPower(combatState, "VitalSparkPower"), "infested_prism_required"),
-            "decimillipede" => Require(AnyMonsterType(combatState, "DecimillipedeSegment"), "decimillipede_required"),
-            "door-maker" => Require(AnyMonsterType(combatState, "Door") || AnyMonsterType(combatState, "Doormaker"), "door_or_doormaker_required"),
-            "paels-legion" => Require(me != null && PlayerHasRelic(me, "PaelsLegion") && combatState.Allies.Any(creature => creature.PetOwner == me && HasTypeName(creature.Monster, "PaelsLegion")), "paels_legion_pet_required"),
-            "tunneler" => Require(AnyMonsterType(combatState, "Tunneler"), "tunneler_required"),
-            "owl-magistrate-flight" => Require(AnyMonsterType(combatState, "OwlMagistrate"), "owl_magistrate_required"),
-            "queen-soulbound" => Require(me != null && AnyMonsterType(combatState, "Queen") && CreatureHasPower(me.Creature, "ChainsOfBindingPower"), "queen_soulbound_required"),
-            "queen-amalgam-branch" => Require(AnyMonsterType(combatState, "Queen") && AnyMonsterType(combatState, "TorchHeadAmalgam"), "queen_and_amalgam_required"),
-            "osty-summon-roundtrip" => Require(me != null && IsLocalNecrobinder(me) && combatState.Allies.Any(creature => creature.PetOwner == me && HasTypeName(creature.Monster, "Osty")), "local_osty_pet_required"),
-            "osty-revive-roundtrip" => Require(me != null && IsLocalNecrobinder(me) && combatState.Allies.Any(creature => creature.PetOwner == me && HasTypeName(creature.Monster, "Osty")), "local_osty_pet_required"),
-            "osty-enemy-hit-roundtrip" => Require(me != null && IsLocalNecrobinder(me) && combatState.Allies.Any(creature => creature.PetOwner == me && HasTypeName(creature.Monster, "Osty")), "local_osty_pet_required"),
-            "slumbering-beetle" => Require(AnyMonsterType(combatState, "SlumberingBeetle"), "slumbering_beetle_required"),
-            "lagavulin-matriarch" => Require(AnyMonsterType(combatState, "LagavulinMatriarch"), "lagavulin_matriarch_required"),
-            "bowlbug-rock" => Require(AnyMonsterType(combatState, "BowlbugRock"), "bowlbug_rock_required"),
-            "thieving-hopper" => Require(AnyMonsterType(combatState, "ThievingHopper"), "thieving_hopper_required"),
-            "fat-gremlin" => Require(AnyMonsterType(combatState, "FatGremlin"), "fat_gremlin_required"),
-            "sneaky-gremlin" => Require(AnyMonsterType(combatState, "SneakyGremlin"), "sneaky_gremlin_required"),
-            "ceremonial-beast" => Require(AnyMonsterType(combatState, "CeremonialBeast"), "ceremonial_beast_required"),
-            "wriggler" => Require(AnyMonsterType(combatState, "Wriggler"), "wriggler_required"),
-            "throwing-axe" => Require(me != null && PlayerHasRelic(me, "ThrowingAxe"), "throwing_axe_required"),
-            "happy-flower" => Require(me != null && PlayerHasRelic(me, "HappyFlower"), "happy_flower_required"),
-            "history-course" => Require(me != null && PlayerHasRelic(me, "HistoryCourse"), "history_course_required"),
-            "pen-nib" => Require(me != null && PlayerHasRelic(me, "PenNib"), "pen_nib_required"),
-            "art-of-war" => Require(me != null && PlayerHasRelic(me, "ArtOfWar"), "art_of_war_required"),
-            "swipe-power" => Require(AnyCreatureHasPower(combatState, "SwipePower"), "swipe_power_required"),
-            "death-march" => Require(ContainsCombatCard(runState, "DeathMarch"), "death_march_card_required"),
-            _ => Require(true, "matched")
-        };
-    }
-
-    private static UndoScenarioPreconditionResult Require(bool matched, string detail)
-    {
-        return new UndoScenarioPreconditionResult
-        {
-            Matched = matched,
-            Detail = detail
-        };
-    }
-
-    private static UndoCombatFullState? TryCaptureCurrentCombatFullState(UndoController controller)
-    {
-        MethodInfo? method = typeof(UndoController).GetMethod("CaptureCurrentCombatFullState", BindingFlags.Instance | BindingFlags.NonPublic);
-        return method?.Invoke(controller, null) as UndoCombatFullState;
-    }
-
-    private static UndoSnapshot? GetLatestUndoSnapshot(UndoController controller)
-    {
-        return (typeof(UndoController).GetField("_pastSnapshots", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(controller) as LinkedList<UndoSnapshot>)?.First?.Value;
-    }
-
-    private static UndoChoiceSpec? TryCaptureActiveChoiceSpec(UndoController controller)
-    {
-        object? session = typeof(UndoController).GetField("_syntheticChoiceSession", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(controller);
-        UndoChoiceSpec? sessionChoice = session?.GetType().GetProperty("ChoiceSpec", BindingFlags.Instance | BindingFlags.Public)?.GetValue(session) as UndoChoiceSpec;
-        if (sessionChoice != null)
-            return sessionChoice;
-
-        MethodInfo? method = typeof(UndoController).GetMethod("TryCaptureCurrentChoiceSpecFromUi", BindingFlags.Static | BindingFlags.NonPublic);
-        return method?.Invoke(null, null) as UndoChoiceSpec;
-    }
-
-    private static RestoreCapabilityReport GetLastRestoreCapabilityReport(UndoController controller)
-    {
-        return typeof(UndoController).GetField("_lastRestoreCapabilityReport", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(controller) as RestoreCapabilityReport
-            ?? RestoreCapabilityReport.SupportedReport();
-    }
-
-    private static string? GetLastRestoreFailureReason(UndoController controller)
-    {
-        return typeof(UndoController).GetField("_lastRestoreFailureReason", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(controller) as string;
-    }
-
-    private static bool HasSyntheticChoiceSession(UndoController controller)
-    {
-        return typeof(UndoController).GetField("_syntheticChoiceSession", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(controller) != null;
-    }
-
-    private static bool IsSupportedChoiceUiActive()
-    {
-        NCombatUi? combatUi = NCombatRoom.Instance?.Ui;
-        if (combatUi?.Hand?.IsInCardSelection == true)
-            return true;
-
-        return NOverlayStack.Instance?.Peek() is NChooseACardSelectionScreen or NCardGridSelectionScreen;
-    }
-
-    private static bool ContainsCombatCard(RunState runState, string typeName)
-    {
-        foreach (Player player in runState.Players)
-        {
-            foreach (PileType pileType in CombatPileOrder)
-            {
-                CardPile? pile = CardPile.Get(pileType, player);
-                if (pile?.Cards.Any(card => HasTypeName(card, typeName)) == true)
-                    return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static bool PlayerHasRelic(Player player, string typeName)
-    {
-        return player.Relics.Any(relic => HasTypeName(relic, typeName));
-    }
-
-    private static bool CreatureHasPower(Creature creature, string typeName)
-    {
-        return creature.Powers.Any(power => HasTypeName(power, typeName));
-    }
-
-    private static bool AnyCreatureHasPower(CombatState combatState, string typeName)
-    {
-        return combatState.Creatures.Any(creature => CreatureHasPower(creature, typeName));
-    }
-
-    private static bool AnyMonsterType(CombatState combatState, string typeName)
-    {
-        return combatState.Creatures.Any(creature => HasTypeName(creature.Monster, typeName));
-    }
-
-    private static bool HasTypeName(object? value, string typeName)
-    {
-        return value?.GetType().Name.Equals(typeName, StringComparison.Ordinal) == true;
-    }
 
     private static List<UndoScenarioAssertionResult> BuildRoundtripAssertions(
         UndoScenarioDefinition scenario,
@@ -1287,51 +1139,6 @@ internal static class UndoScenarioExecutor
         };
     }
 
-    private static List<string> GetCapabilityGaps(UndoScenarioDefinition scenario)
-    {
-        HashSet<string> implemented = UndoRuntimeStateCodecRegistry.GetImplementedCodecIds();
-        implemented.UnionWith(UndoCreatureTopologyCodecRegistry.GetImplementedCodecIds());
-        implemented.UnionWith(UndoCreatureStatusCodecRegistry.GetImplementedCodecIds());
-        implemented.UnionWith(UndoCreatureReconciliationCodecRegistry.GetImplementedCodecIds());
-        implemented.UnionWith(UndoActionCodecRegistry.GetImplementedCodecIds());
-
-        List<string> required = scenario.Id switch
-        {
-            "well-laid-plans" => ["action:WellLaidPlans.choice"],
-            "toolbox-combat-start" => ["action:Toolbox.choice"],
-            "forgotten-ritual" => ["history:CombatHistory.entries"],
-            "automation-power" => ["power:AutomationPower.cardsLeft"],
-            "infested-prism" => ["power:VitalSparkPower.playersTriggeredThisTurn", "topology:InfestedPrism"],
-            "decimillipede" => ["topology:Decimillipede"],
-            "door-maker" => ["topology:DoorAndDoormaker", "power:DoorRevivalPower.isHalfDead"],
-            "paels-legion" => ["relic:PaelsLegion.affectedCardPlay"],
-            "tunneler" => ["reconcile:Tunneler.BurrowIntent"],
-            "owl-magistrate-flight" => ["status:OwlMagistrate.IsFlying", "reconcile:OwlMagistrate.FlightState"],
-            "queen-soulbound" => ["power:ChainsOfBindingPower.boundCardPlayed"],
-            "queen-amalgam-branch" => ["status:Queen.HasAmalgamDied", "topology:QueenAmalgam", "reconcile:Queen.AmalgamBranch"],
-            "osty-summon-roundtrip" => ["reconcile:Osty.LocalPetConsistency"],
-            "osty-revive-roundtrip" => ["reconcile:Osty.LocalPetConsistency"],
-            "osty-enemy-hit-roundtrip" => ["reconcile:Osty.LocalPetConsistency"],
-            "slumbering-beetle" => ["status:SlumberingBeetle.IsAwake", "reconcile:SlumberingBeetle.MoveIntent"],
-            "lagavulin-matriarch" => ["status:LagavulinMatriarch.IsAwake", "reconcile:LagavulinMatriarch.MoveIntent"],
-            "bowlbug-rock" => ["status:BowlbugRock.IsOffBalance", "reconcile:GenericTransientStun"],
-            "thieving-hopper" => ["status:ThievingHopper.IsHovering", "reconcile:GenericTransientStun"],
-            "fat-gremlin" => ["status:FatGremlin.IsAwake", "reconcile:GenericTransientStun"],
-            "sneaky-gremlin" => ["status:SneakyGremlin.IsAwake", "reconcile:GenericTransientStun"],
-            "ceremonial-beast" => ["status:CeremonialBeast.IsStunnedByPlowRemoval", "status:CeremonialBeast.InMidCharge", "reconcile:CeremonialBeast.TransientStun"],
-            "wriggler" => ["status:Wriggler.StartStunned", "reconcile:Wriggler.StartStunned"],
-            "throwing-axe" => [],
-            "happy-flower" => [],
-            "history-course" => ["history:CombatHistory.entries"],
-            "pen-nib" => ["relic:PenNib.AttackToDouble"],
-            "art-of-war" => [],
-            "swipe-power" => [],
-            "death-march" => ["history:CombatHistory.entries"],
-            _ => []
-        };
-
-        return required.Where(requiredId => !implemented.Contains(requiredId)).ToList();
-    }
 }
 
 

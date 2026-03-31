@@ -58,14 +58,7 @@ namespace UndoTheSpire2;
 
 public sealed partial class UndoController
 {
-    private static readonly PileType[] CombatPileOrder =
-    [
-        PileType.Hand,
-        PileType.Draw,
-        PileType.Discard,
-        PileType.Exhaust,
-        PileType.Play
-    ];
+    private static readonly IReadOnlyList<PileType> CombatPileOrder = UndoSharedConstants.CombatPileOrder;
 
     private static readonly MethodInfo? NotifyCombatStateChangedMethod =
         typeof(CombatStateTracker).GetMethod("NotifyCombatStateChanged", BindingFlags.Instance | BindingFlags.NonPublic);
