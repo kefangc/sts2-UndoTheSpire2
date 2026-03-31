@@ -185,14 +185,17 @@ public sealed partial class UndoController
 
     private PendingPlayActionSnapshotState? GetVisiblePendingPlayUndoState()
     {
-        UndoSnapshot? currentChoiceAnchor = GetCurrentChoiceAnchorSnapshot();
-        if (currentChoiceAnchor?.ChoiceSpec == null
-            || !IsCurrentStateAtChoiceAnchor(currentChoiceAnchor))
-        {
+        if (_pendingPlayActionSnapshots.Count == 0)
             return null;
+
+        for (int i = _pendingPlayActionSnapshots.Count - 1; i >= 0; i--)
+        {
+            PendingPlayActionSnapshotState pendingSnapshot = _pendingPlayActionSnapshots[i];
+            if (pendingSnapshot.FinishObserved || pendingSnapshot.ActionId != null || pendingSnapshot.Card != null)
+                return pendingSnapshot;
         }
 
-        return _pendingPlayActionSnapshots.FirstOrDefault(static snapshot => !snapshot.FinishObserved);
+        return _pendingPlayActionSnapshots[^1];
     }
 
     private UndoSnapshot? GetVisibleInFlightSyntheticChoiceUndoSnapshot()
@@ -2194,6 +2197,16 @@ public sealed partial class UndoController
 
                 if (!await WaitForPendingPlayActionSnapshotStableBoundaryAsync(pendingSnapshot))
                 {
+                    if (!IsHeadPendingPlayActionSnapshot(pendingSnapshot))
+                    {
+                        UndoDebugLog.Write(
+                            $"play_snapshot_flush_skipped seq={pendingSnapshot.Snapshot.SequenceId}"
+                            + $" label={pendingSnapshot.Snapshot.ActionLabel}"
+                            + $" actionId={pendingSnapshot.ActionId?.ToString() ?? "null"}"
+                            + $" reason=head_changed_after_wait_timeout");
+                        continue;
+                    }
+
                     if (PromoteFinishedPendingPlaySnapshotsToHistory("stable_boundary_timeout"))
                         continue;
 
@@ -2201,8 +2214,17 @@ public sealed partial class UndoController
                     break;
                 }
 
+                if (!TryTakeHeadPendingPlayActionSnapshot(pendingSnapshot))
+                {
+                    UndoDebugLog.Write(
+                        $"play_snapshot_flush_skipped seq={pendingSnapshot.Snapshot.SequenceId}"
+                        + $" label={pendingSnapshot.Snapshot.ActionLabel}"
+                        + $" actionId={pendingSnapshot.ActionId?.ToString() ?? "null"}"
+                        + $" reason=head_changed_after_wait_success");
+                    continue;
+                }
+
                 UndoSnapshot committedSnapshot = CreateCommittedPlaySnapshot(pendingSnapshot);
-                _pendingPlayActionSnapshots.RemoveAt(0);
                 int preservedChoiceAnchors = AddCommittedPlaySnapshotToHistory(committedSnapshot, pendingSnapshot);
                 TryPersistImmediateChoiceBranchSnapshot(committedSnapshot);
                 UndoDebugLog.Write(
@@ -2252,6 +2274,21 @@ public sealed partial class UndoController
             NotifyStateChanged();
 
         return promotedAny;
+    }
+
+    private bool IsHeadPendingPlayActionSnapshot(PendingPlayActionSnapshotState pendingSnapshot)
+    {
+        return _pendingPlayActionSnapshots.Count > 0
+            && ReferenceEquals(_pendingPlayActionSnapshots[0], pendingSnapshot);
+    }
+
+    private bool TryTakeHeadPendingPlayActionSnapshot(PendingPlayActionSnapshotState pendingSnapshot)
+    {
+        if (!IsHeadPendingPlayActionSnapshot(pendingSnapshot))
+            return false;
+
+        _pendingPlayActionSnapshots.RemoveAt(0);
+        return true;
     }
 
     private static UndoSnapshot CreateCommittedPlaySnapshot(PendingPlayActionSnapshotState pendingSnapshot)

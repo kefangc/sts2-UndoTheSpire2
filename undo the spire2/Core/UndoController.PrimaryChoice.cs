@@ -1354,19 +1354,96 @@ public sealed partial class UndoController
             && IsOfficialFromHandDiscardChoice(choiceSpec);
     }
 
+    private static bool HasDetachableOfficialHandDiscardChoiceSource(PausedChoiceState? pausedChoiceState, UndoChoiceSpec choiceSpec)
+    {
+        return pausedChoiceState?.SourceActionRef?.ActionId != null
+            && IsOfficialFromHandDiscardChoice(choiceSpec);
+    }
+
+    private static bool MatchesOfficialHandDiscardActionCandidate(
+        GameAction action,
+        PausedChoiceState? pausedChoiceState,
+        IReadOnlySet<uint> trackedIds)
+    {
+        if (action.Id is uint actionId && trackedIds.Contains(actionId))
+            return true;
+
+        if (action.State != GameActionState.GatheringPlayerChoice)
+            return false;
+
+        if (pausedChoiceState?.OwnerNetId is ulong ownerNetId && action.OwnerId != ownerNetId)
+            return false;
+
+        string? expectedTypeName = pausedChoiceState?.SourceActionRef?.TypeName;
+        if (!string.IsNullOrWhiteSpace(expectedTypeName))
+            return string.Equals(action.GetType().FullName, expectedTypeName, StringComparison.Ordinal);
+
+        return true;
+    }
+
+    private static bool HasPendingOfficialHandDiscardChoiceSource(PausedChoiceState? pausedChoiceState, IReadOnlySet<uint> trackedIds)
+    {
+        ActionExecutor actionExecutor = RunManager.Instance.ActionExecutor;
+        if (actionExecutor.CurrentlyRunningAction is { } currentAction
+            && MatchesOfficialHandDiscardActionCandidate(currentAction, pausedChoiceState, trackedIds))
+        {
+            return true;
+        }
+
+        if (FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionQueues")?.GetValue(RunManager.Instance.ActionQueueSet) is System.Collections.IEnumerable rawQueues)
+        {
+            foreach (object rawQueue in rawQueues)
+            {
+                if (FindField(rawQueue.GetType(), "actions")?.GetValue(rawQueue) is not System.Collections.IEnumerable actions)
+                    continue;
+
+                foreach (GameAction action in actions.OfType<GameAction>())
+                {
+                    if (MatchesOfficialHandDiscardActionCandidate(action, pausedChoiceState, trackedIds))
+                        return true;
+                }
+            }
+        }
+
+        if (FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionsWaitingForResumption")?.GetValue(RunManager.Instance.ActionQueueSet) is not System.Collections.IEnumerable rawWaiting)
+            return false;
+
+        foreach (object waiting in rawWaiting)
+        {
+            object? oldIdValue = FindField(waiting.GetType(), "oldId")?.GetValue(waiting);
+            object? newIdValue = FindField(waiting.GetType(), "newId")?.GetValue(waiting);
+            if ((oldIdValue is uint oldId && trackedIds.Contains(oldId))
+                || (newIdValue is uint newId && trackedIds.Contains(newId)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private bool TryDetachOfficialHandDiscardSourceAction(UndoSyntheticChoiceSession session)
     {
         PausedChoiceState? pausedChoiceState = session.AnchorSnapshot.CombatState.ActionKernelState.PausedChoiceState;
-        if (!IsTrackedOfficialFromHandDiscardChoice(pausedChoiceState, session.ChoiceSpec))
+        if (!HasDetachableOfficialHandDiscardChoiceSource(pausedChoiceState, session.ChoiceSpec))
             return false;
 
         uint? sourceActionId = pausedChoiceState!.SourceActionRef?.ActionId;
         uint? resumeActionId = pausedChoiceState.ResumeActionId;
+        HashSet<uint> trackedIds = [];
+        if (sourceActionId is uint sourceId)
+            trackedIds.Add(sourceId);
+        if (resumeActionId is uint resumeId)
+            trackedIds.Add(resumeId);
+
         bool removedAny = false;
         ActionExecutor actionExecutor = RunManager.Instance.ActionExecutor;
         if (actionExecutor.CurrentlyRunningAction is { } currentAction
-            && MatchesTrackedAction(currentAction, sourceActionId, resumeActionId))
+            && MatchesOfficialHandDiscardActionCandidate(currentAction, pausedChoiceState, trackedIds))
         {
+            if (currentAction.Id is uint currentActionId)
+                trackedIds.Add(currentActionId);
+
             QuarantineActionForRestore(currentAction);
             UndoReflectionUtil.TrySetPropertyValue(actionExecutor, "CurrentlyRunningAction", null);
             removedAny = true;
@@ -1382,10 +1459,13 @@ public sealed partial class UndoController
                 for (int i = actions.Count - 1; i >= 0; i--)
                 {
                     if (actions[i] is not GameAction action
-                        || !MatchesTrackedAction(action, sourceActionId, resumeActionId))
+                        || !MatchesOfficialHandDiscardActionCandidate(action, pausedChoiceState, trackedIds))
                     {
                         continue;
                     }
+
+                    if (action.Id is uint actionId)
+                        trackedIds.Add(actionId);
 
                     QuarantineActionForRestore(action);
                     actions.RemoveAt(i);
@@ -1403,8 +1483,8 @@ public sealed partial class UndoController
                 object? newIdValue = FindField(waiting.GetType(), "newId")?.GetValue(waiting);
                 uint? oldId = oldIdValue is uint oldIdTyped ? oldIdTyped : null;
                 uint? newId = newIdValue is uint newIdTyped ? newIdTyped : null;
-                if ((sourceActionId != null && (oldId == sourceActionId || newId == sourceActionId))
-                    || (resumeActionId != null && (oldId == resumeActionId || newId == resumeActionId)))
+                if ((oldId != null && trackedIds.Contains(oldId.Value))
+                    || (newId != null && trackedIds.Contains(newId.Value)))
                 {
                     waitingForResumption.RemoveAt(i);
                     removedAny = true;
@@ -1413,9 +1493,7 @@ public sealed partial class UndoController
         }
 
         bool detached = removedAny
-            || (!IsTrackedActionPresent(sourceActionId)
-                && !IsTrackedActionPresent(resumeActionId)
-                && !IsResumeActionPending(pausedChoiceState));
+            || !HasPendingOfficialHandDiscardChoiceSource(pausedChoiceState, trackedIds);
         if (!detached)
             return false;
 
