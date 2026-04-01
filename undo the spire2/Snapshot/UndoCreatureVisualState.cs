@@ -8,6 +8,8 @@ internal sealed class UndoCreatureVisualState
 {
     public required string CreatureKey { get; init; }
 
+    public Vector2? NodePosition { get; init; }
+
     public float? VisualDefaultScale { get; init; }
 
     public float? VisualHue { get; init; }

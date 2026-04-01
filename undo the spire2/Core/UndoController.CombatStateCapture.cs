@@ -285,6 +285,7 @@ public sealed partial class UndoController
             states.Add(new UndoCreatureVisualState
             {
                 CreatureKey = BuildCreatureKey(creature, i),
+                NodePosition = creatureNode.Position,
                 VisualDefaultScale = creatureVisuals.DefaultScale,
                 VisualHue = visualHue,
                 TempScale = tempScale,

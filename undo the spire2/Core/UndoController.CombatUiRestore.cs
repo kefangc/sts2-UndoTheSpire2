@@ -96,7 +96,7 @@ public sealed partial class UndoController
                     ClearCreatureIntentUi(creatureNode);
             }
 
-            SnapEnemyCreatureNodesToSlots(combatState);
+            SnapEnemyCreatureNodesToSlots(combatState, snapshotState);
             UndoSpecialCreatureVisualNormalizer.Refresh(combatState, combatRoom);
             ApplySnapshotPresentationState(combatState, snapshotState);
             RefreshCreatureStateDisplays(combatState, snapshotState);
@@ -107,7 +107,7 @@ public sealed partial class UndoController
             ApplySnapshotCreatureNodeVisuals(combatState, snapshotState);
             ReconcileSovereignBladeVfx(combatState, NCombatRoom.Instance);
             ForceCombatUiInteractiveState(NCombatRoom.Instance.Ui, combatState, LocalContext.GetMe(combatState));
-            SnapEnemyCreatureNodesToSlots(combatState);
+            SnapEnemyCreatureNodesToSlots(combatState, snapshotState);
             UndoSpecialCreatureVisualNormalizer.Refresh(combatState, NCombatRoom.Instance);
             ApplySnapshotPresentationState(combatState, snapshotState);
             RefreshCreatureStateDisplays(combatState, snapshotState);
@@ -819,7 +819,8 @@ public sealed partial class UndoController
             return;
 
         Dictionary<string, UndoCreatureVisualState> creatureVisualStatesByKey = snapshotState.CreatureVisualStates
-            .Where(static state => state.VisualDefaultScale.HasValue
+            .Where(static state => state.NodePosition.HasValue
+                || state.VisualDefaultScale.HasValue
                 || state.VisualHue.HasValue
                 || state.TempScale.HasValue
                 || state.TrackStates.Count > 0
@@ -865,7 +866,7 @@ public sealed partial class UndoController
             RestoreCreatureAnimatorState(creatureNode, creatureVisualState.AnimatorState);
         }
 
-        RelayoutEnemyCreatureNodes(combatRoom, combatState);
+        ApplySnapshotCreatureNodePositions(combatRoom, combatState, creatureVisualStatesByKey);
     }
 
     private static void ApplySnapshotPresentationState(CombatState combatState, UndoCombatFullState? snapshotState)
@@ -1271,6 +1272,54 @@ public sealed partial class UndoController
             return;
 
         InvokePrivateMethod(combatRoom, "PositionEnemies", enemyNodes, GetCombatRoomEncounterScaling(combatRoom));
+    }
+
+    private static void ApplySnapshotCreatureNodePositions(
+        NCombatRoom combatRoom,
+        CombatState combatState,
+        IReadOnlyDictionary<string, UndoCreatureVisualState> creatureVisualStatesByKey)
+    {
+        bool needsEnemyFallbackLayout = false;
+        for (int creatureIndex = 0; creatureIndex < combatState.Creatures.Count; creatureIndex++)
+        {
+            Creature creature = combatState.Creatures[creatureIndex];
+            if (!creature.IsEnemy)
+                continue;
+
+            if (!creatureVisualStatesByKey.TryGetValue(BuildCreatureKey(creature, creatureIndex), out UndoCreatureVisualState? state)
+                || state.NodePosition is not Vector2)
+            {
+                needsEnemyFallbackLayout = true;
+                break;
+            }
+        }
+
+        if (needsEnemyFallbackLayout)
+            RelayoutEnemyCreatureNodes(combatRoom, combatState);
+
+        bool updatedAnyNodePosition = false;
+        for (int creatureIndex = 0; creatureIndex < combatState.Creatures.Count; creatureIndex++)
+        {
+            Creature creature = combatState.Creatures[creatureIndex];
+            if (!creatureVisualStatesByKey.TryGetValue(BuildCreatureKey(creature, creatureIndex), out UndoCreatureVisualState? state)
+                || state.NodePosition is not Vector2 nodePosition)
+            {
+                continue;
+            }
+
+            NCreature? creatureNode = combatRoom.GetCreatureNode(creature);
+            if (creatureNode == null)
+                continue;
+
+            creatureNode.Position = nodePosition;
+            updatedAnyNodePosition = true;
+        }
+
+        if (!updatedAnyNodePosition)
+            return;
+
+        InvokePrivateMethod(combatRoom, "AdjustCreatureScaleForAspectRatio");
+        InvokePrivateMethod(combatRoom, "UpdateCreatureNavigation");
     }
 
     private static void ReconcileSovereignBladeVfx(CombatState combatState, NCombatRoom combatRoom)
@@ -1906,7 +1955,7 @@ public sealed partial class UndoController
         ClearNodeChildren(creatureNode.IntentContainer);
     }
 
-    private static void SnapEnemyCreatureNodesToSlots(CombatState combatState)
+    private static void SnapEnemyCreatureNodesToSlots(CombatState combatState, UndoCombatFullState? snapshotState = null)
     {
         NCombatRoom? combatRoom = NCombatRoom.Instance;
         if (combatRoom == null)
@@ -1917,17 +1966,38 @@ public sealed partial class UndoController
         if (encounterSlots == null)
             return;
 
-        foreach (Creature creature in combatState.Enemies)
+        Dictionary<string, UndoCreatureVisualState> creatureVisualStatesByKey = snapshotState?.CreatureVisualStates
+            .Where(static state => state.NodePosition.HasValue)
+            .ToDictionary(static state => state.CreatureKey, static state => state, StringComparer.Ordinal)
+            ?? [];
+        bool updatedAnyNodePosition = false;
+        for (int creatureIndex = 0; creatureIndex < combatState.Creatures.Count; creatureIndex++)
         {
-            if (string.IsNullOrWhiteSpace(creature.SlotName) || !encounterSlots.HasNode(creature.SlotName))
+            Creature creature = combatState.Creatures[creatureIndex];
+            if (!creature.IsEnemy)
                 continue;
 
             NCreature? node = combatRoom.GetCreatureNode(creature);
             if (node == null)
                 continue;
 
+            if (creatureVisualStatesByKey.TryGetValue(BuildCreatureKey(creature, creatureIndex), out UndoCreatureVisualState? state)
+                && state.NodePosition is Vector2 nodePosition)
+            {
+                node.Position = nodePosition;
+                updatedAnyNodePosition = true;
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(creature.SlotName) || !encounterSlots.HasNode(creature.SlotName))
+                continue;
+
             node.GlobalPosition = encounterSlots.GetNode<Marker2D>(creature.SlotName).GlobalPosition;
+            updatedAnyNodePosition = true;
         }
+
+        if (updatedAnyNodePosition)
+            InvokePrivateMethod(combatRoom, "UpdateCreatureNavigation");
     }
     private void DetachPendingHandSelectionSource(NPlayerHand hand)
     {

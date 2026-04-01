@@ -527,6 +527,7 @@ public sealed partial class UndoController
             .. creatureVisualStates.Select(static state => new UndoCreatureVisualState
             {
                 CreatureKey = state.CreatureKey,
+                NodePosition = state.NodePosition,
                 VisualDefaultScale = state.VisualDefaultScale,
                 VisualHue = state.VisualHue,
                 TempScale = state.TempScale,
