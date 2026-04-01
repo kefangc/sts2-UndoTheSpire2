@@ -60,15 +60,23 @@
   <ItemGroup>
     <Compile Remove="bin\**" />
     <Compile Remove="obj\**" />
+    <Compile Remove="obj_local\**" />
+    <Compile Remove="buildtmp\**" />
     <Compile Remove=".godot\**" />
     <EmbeddedResource Remove="bin\**" />
     <EmbeddedResource Remove="obj\**" />
+    <EmbeddedResource Remove="obj_local\**" />
+    <EmbeddedResource Remove="buildtmp\**" />
     <EmbeddedResource Remove=".godot\**" />
     <None Remove="bin\**" />
     <None Remove="obj\**" />
+    <None Remove="obj_local\**" />
+    <None Remove="buildtmp\**" />
     <None Remove=".godot\**" />
     <Content Remove="bin\**" />
     <Content Remove="obj\**" />
+    <Content Remove="obj_local\**" />
+    <Content Remove="buildtmp\**" />
     <Content Remove=".godot\**" />
   </ItemGroup>
 

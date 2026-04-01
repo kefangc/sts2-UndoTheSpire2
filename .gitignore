@@ -11,6 +11,8 @@
 # .NET build outputs
 bin/
 obj/
+obj_local/
+buildtmp/
 Debug/
 Release/
 TestResults/
@@ -22,6 +24,7 @@ TestResults/
 *.uid
 mono_crash.*.json
 export_credentials.cfg
+/.agents/
 
 # Debug / profiling artifacts
 *.log
@@ -37,3 +40,6 @@ export_credentials.cfg
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Local development docs
+doc/

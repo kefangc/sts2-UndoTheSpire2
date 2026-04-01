@@ -19,6 +19,7 @@ using MegaCrit.Sts2.Core.Entities.UI;
 using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Helpers;
+using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
@@ -1074,34 +1075,41 @@ public sealed partial class UndoController
                 return false;
 
             BlockingPlayerChoiceContext choiceContext = new();
-            if (IsSourceChoice(choiceSpec, typeof(GamblingChip))
-                || IsSourceChoice(choiceSpec, typeof(GamblersBrew)))
+            CardModel? detachedSourceCard = BeginDetachedPlayedCardChoiceContext(player, choiceSpec, choiceContext);
+            try
             {
-                await CardCmd.DiscardAndDraw(choiceContext, selectedCards, selectedCards.Count);
-            }
-            else
-            {
-                await CardCmd.Discard(choiceContext, selectedCards);
-            }
-
-            if (IsSourceChoice(choiceSpec, typeof(HiddenDaggers)))
-            {
-                CardModel? sourceCard = ResolveSourceCardFromPlayPile(player, choiceSpec);
-                CombatState? shivCombatState = sourceCard?.CombatState ?? player.Creature.CombatState;
-                if (shivCombatState == null)
-                    return false;
-
-                int shivCount = sourceCard?.DynamicVars["Shivs"].IntValue ?? 0;
-                IEnumerable<CardModel> shivs = await Shiv.CreateInHand(player, shivCount, shivCombatState);
-                if (sourceCard?.IsUpgraded == true)
+                if (IsSourceChoice(choiceSpec, typeof(GamblingChip))
+                    || IsSourceChoice(choiceSpec, typeof(GamblersBrew)))
                 {
-                    foreach (CardModel shiv in shivs)
-                        CardCmd.Upgrade(shiv, CardPreviewStyle.HorizontalLayout);
+                    await CardCmd.DiscardAndDraw(choiceContext, selectedCards, selectedCards.Count);
                 }
-            }
+                else
+                {
+                    await CardCmd.Discard(choiceContext, selectedCards);
+                }
 
-            if (choiceSpec.SourceCombatCard != null)
-                await FinalizeDetachedPlayedCardAsync(player, choiceContext, choiceSpec, sourceActionDetached: true);
+                if (IsSourceChoice(choiceSpec, typeof(HiddenDaggers)))
+                {
+                    CombatState? shivCombatState = detachedSourceCard?.CombatState ?? player.Creature.CombatState;
+                    if (shivCombatState == null)
+                        return false;
+
+                    int shivCount = detachedSourceCard?.DynamicVars["Shivs"].IntValue ?? 0;
+                    IEnumerable<CardModel> shivs = await Shiv.CreateInHand(player, shivCount, shivCombatState);
+                    if (detachedSourceCard?.IsUpgraded == true)
+                    {
+                        foreach (CardModel shiv in shivs)
+                            CardCmd.Upgrade(shiv, CardPreviewStyle.HorizontalLayout);
+                    }
+                }
+
+                if (choiceSpec.SourceCombatCard != null)
+                    await FinalizeDetachedPlayedCardAsync(player, choiceContext, choiceSpec, detachedSourceCard, sourceActionDetached: true);
+            }
+            finally
+            {
+                EndDetachedPlayedCardChoiceContext(choiceContext, detachedSourceCard);
+            }
 
             completed = true;
             return true;
@@ -1135,42 +1143,49 @@ public sealed partial class UndoController
             return false;
 
         BlockingPlayerChoiceContext choiceContext = new();
-        CardModel? sourceCard = ResolveSourceCardFromPlayPile(player, choiceSpec);
-        if (IsSourceChoice(choiceSpec, typeof(Nightmare)))
+        CardModel? sourceCard = BeginDetachedPlayedCardChoiceContext(player, choiceSpec, choiceContext);
+        try
         {
-            NightmarePower nightmarePower = await PowerCmd.Apply<NightmarePower>(player.Creature, 3m, player.Creature, sourceCard, false);
-            nightmarePower.SetSelectedCard(selectedCard);
-        }
-        else if (IsSourceChoice(choiceSpec, typeof(HandTrick)))
-        {
-            CardCmd.ApplySingleTurnSly(selectedCard);
-        }
-        else if (IsSourceChoice(choiceSpec, typeof(Snap)))
-        {
-            CardCmd.ApplyKeyword(selectedCard, CardKeyword.Retain);
-        }
-        else if (IsSourceChoice(choiceSpec, typeof(SculptingStrike)))
-        {
-            CardCmd.ApplyKeyword(selectedCard, CardKeyword.Ethereal);
-        }
-        else if (IsSourceChoice(choiceSpec, typeof(Transfigure)))
-        {
-            if (!selectedCard.EnergyCost.CostsX && selectedCard.EnergyCost.GetWithModifiers(CostModifiers.None) >= 0)
-                selectedCard.EnergyCost.AddThisCombat(1, false);
+            if (IsSourceChoice(choiceSpec, typeof(Nightmare)))
+            {
+                NightmarePower nightmarePower = await PowerCmd.Apply<NightmarePower>(player.Creature, 3m, player.Creature, sourceCard, false);
+                nightmarePower.SetSelectedCard(selectedCard);
+            }
+            else if (IsSourceChoice(choiceSpec, typeof(HandTrick)))
+            {
+                CardCmd.ApplySingleTurnSly(selectedCard);
+            }
+            else if (IsSourceChoice(choiceSpec, typeof(Snap)))
+            {
+                CardCmd.ApplyKeyword(selectedCard, CardKeyword.Retain);
+            }
+            else if (IsSourceChoice(choiceSpec, typeof(SculptingStrike)))
+            {
+                CardCmd.ApplyKeyword(selectedCard, CardKeyword.Ethereal);
+            }
+            else if (IsSourceChoice(choiceSpec, typeof(Transfigure)))
+            {
+                if (!selectedCard.EnergyCost.CostsX && selectedCard.EnergyCost.GetWithModifiers(CostModifiers.None) >= 0)
+                    selectedCard.EnergyCost.AddThisCombat(1, false);
 
-            selectedCard.BaseReplayCount++;
-        }
-        else if (IsSourceChoice(choiceSpec, typeof(TouchOfInsanity)))
-        {
-            selectedCard.SetToFreeThisCombat();
-        }
-        else
-        {
-            return false;
-        }
+                selectedCard.BaseReplayCount++;
+            }
+            else if (IsSourceChoice(choiceSpec, typeof(TouchOfInsanity)))
+            {
+                selectedCard.SetToFreeThisCombat();
+            }
+            else
+            {
+                return false;
+            }
 
-        if (choiceSpec.SourceCombatCard != null)
-            await FinalizeDetachedPlayedCardAsync(player, choiceContext, choiceSpec);
+            if (choiceSpec.SourceCombatCard != null)
+                await FinalizeDetachedPlayedCardAsync(player, choiceContext, choiceSpec, sourceCard);
+        }
+        finally
+        {
+            EndDetachedPlayedCardChoiceContext(choiceContext, sourceCard);
+        }
 
         return true;
     }
@@ -1207,18 +1222,86 @@ public sealed partial class UndoController
         return playCards.LastOrDefault();
     }
 
-    private static async Task FinalizeDetachedPlayedCardAsync(Player player, PlayerChoiceContext choiceContext, UndoChoiceSpec choiceSpec, bool sourceActionDetached = true)
+    private static CardModel? BeginDetachedPlayedCardChoiceContext(Player player, UndoChoiceSpec choiceSpec, PlayerChoiceContext choiceContext)
+    {
+        if (choiceSpec.SourceCombatCard == null)
+            return null;
+
+        CardModel? sourceCard = ResolveSourceCardFromPlayPile(player, choiceSpec);
+        if (sourceCard != null)
+            choiceContext.PushModel(sourceCard);
+
+        return sourceCard;
+    }
+
+    private static void EndDetachedPlayedCardChoiceContext(PlayerChoiceContext choiceContext, CardModel? sourceCard)
+    {
+        if (sourceCard != null && ReferenceEquals(choiceContext.LastInvolvedModel, sourceCard))
+            choiceContext.PopModel(sourceCard);
+    }
+
+    private static async Task FinalizeDetachedPlayedCardAsync(
+        Player player,
+        PlayerChoiceContext choiceContext,
+        UndoChoiceSpec choiceSpec,
+        CardModel? playedCard = null,
+        bool sourceActionDetached = true)
     {
         if (!sourceActionDetached)
             return;
 
-        CardModel? playedCard = ResolveSourceCardFromPlayPile(player, choiceSpec);
+        playedCard ??= ResolveSourceCardFromPlayPile(player, choiceSpec);
         if (playedCard == null)
             return;
 
+        CombatState? combatState = playedCard.CombatState ?? player.Creature.CombatState;
+        CardPlay? pendingCardPlay = combatState == null ? null : TryResolveDetachedPendingCardPlay(combatState, playedCard);
+
         playedCard.InvokeExecutionFinished();
+        if (combatState != null && pendingCardPlay != null)
+        {
+            CombatManager.Instance.History.CardPlayFinished(combatState, pendingCardPlay);
+            if (CombatManager.Instance.IsInProgress)
+                await Hook.AfterCardPlayed(combatState, choiceContext, pendingCardPlay);
+        }
+
         await playedCard.MoveToResultPileWithoutPlaying(choiceContext);
         await CombatManager.Instance.CheckForEmptyHand(choiceContext, player);
+        CleanupDetachedPlayedCardTail(playedCard);
+        EndDetachedPlayedCardChoiceContext(choiceContext, playedCard);
+    }
+
+    private static CardPlay? TryResolveDetachedPendingCardPlay(CombatState combatState, CardModel playedCard)
+    {
+        List<CardPlay> startedCardPlays =
+        [
+            .. CombatManager.Instance.History.CardPlaysStarted
+                .Where(entry => entry.HappenedThisTurn(combatState) && ReferenceEquals(entry.CardPlay.Card, playedCard))
+                .Select(entry => entry.CardPlay)
+        ];
+        if (startedCardPlays.Count == 0)
+            return null;
+
+        int finishedCardPlayCount = CombatManager.Instance.History.CardPlaysFinished.Count(entry =>
+            entry.HappenedThisTurn(combatState)
+            && ReferenceEquals(entry.CardPlay.Card, playedCard));
+        if (finishedCardPlayCount < startedCardPlays.Count)
+            return startedCardPlays[finishedCardPlayCount];
+
+        return startedCardPlays[^1];
+    }
+
+    private static void CleanupDetachedPlayedCardTail(CardModel playedCard)
+    {
+        if (playedCard.EnergyCost.AfterCardPlayedCleanup())
+            playedCard.InvokeEnergyCostChanged();
+
+        List<TemporaryCardCost>? temporaryStarCosts = FindField(typeof(CardModel), "_temporaryStarCosts")?.GetValue(playedCard) as List<TemporaryCardCost>;
+        if (temporaryStarCosts != null && temporaryStarCosts.RemoveAll(static cost => cost.ClearsWhenCardIsPlayed) > 0)
+            (FindField(typeof(CardModel), "StarCostChanged")?.GetValue(playedCard) as Action)?.Invoke();
+
+        SetPrivatePropertyValue(playedCard, "CurrentTarget", null);
+        (FindField(typeof(CardModel), "Played")?.GetValue(playedCard) as Action)?.Invoke();
     }
 
     private async Task<bool> TryExecuteDecisionsDecisionsChoiceAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey)
@@ -1250,13 +1333,21 @@ public sealed partial class UndoController
 
         CardModel selectedCard = handCards[handIndex];
         BlockingPlayerChoiceContext choiceContext = new();
+        CardModel? sourceCard = BeginDetachedPlayedCardChoiceContext(player, choiceSpec, choiceContext);
 
         // 这张牌的选择结果不会写进独立的 runtime 字段，而是直接把选中的技能连续自动打出 3 次。
         // 因此 undo 重选时不能再走 hand-selection 的合成分支，而要把官方 AutoPlay 链真正执行一遍。
-        for (int i = 0; i < 3; i++)
-            await CardCmd.AutoPlay(choiceContext, selectedCard, null, AutoPlayType.Default, false, false);
+        try
+        {
+            for (int i = 0; i < 3; i++)
+                await CardCmd.AutoPlay(choiceContext, selectedCard, null, AutoPlayType.Default, false, false);
 
-        await FinalizeDetachedPlayedCardAsync(player, choiceContext, choiceSpec);
+            await FinalizeDetachedPlayedCardAsync(player, choiceContext, choiceSpec, sourceCard);
+        }
+        finally
+        {
+            EndDetachedPlayedCardChoiceContext(choiceContext, sourceCard);
+        }
         return true;
     }
 
@@ -1354,19 +1445,96 @@ public sealed partial class UndoController
             && IsOfficialFromHandDiscardChoice(choiceSpec);
     }
 
+    private static bool HasDetachableOfficialHandDiscardChoiceSource(PausedChoiceState? pausedChoiceState, UndoChoiceSpec choiceSpec)
+    {
+        return pausedChoiceState?.SourceActionRef?.ActionId != null
+            && IsOfficialFromHandDiscardChoice(choiceSpec);
+    }
+
+    private static bool MatchesOfficialHandDiscardActionCandidate(
+        GameAction action,
+        PausedChoiceState? pausedChoiceState,
+        IReadOnlySet<uint> trackedIds)
+    {
+        if (action.Id is uint actionId && trackedIds.Contains(actionId))
+            return true;
+
+        if (action.State != GameActionState.GatheringPlayerChoice)
+            return false;
+
+        if (pausedChoiceState?.OwnerNetId is ulong ownerNetId && action.OwnerId != ownerNetId)
+            return false;
+
+        string? expectedTypeName = pausedChoiceState?.SourceActionRef?.TypeName;
+        if (!string.IsNullOrWhiteSpace(expectedTypeName))
+            return string.Equals(action.GetType().FullName, expectedTypeName, StringComparison.Ordinal);
+
+        return true;
+    }
+
+    private static bool HasPendingOfficialHandDiscardChoiceSource(PausedChoiceState? pausedChoiceState, IReadOnlySet<uint> trackedIds)
+    {
+        ActionExecutor actionExecutor = RunManager.Instance.ActionExecutor;
+        if (actionExecutor.CurrentlyRunningAction is { } currentAction
+            && MatchesOfficialHandDiscardActionCandidate(currentAction, pausedChoiceState, trackedIds))
+        {
+            return true;
+        }
+
+        if (FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionQueues")?.GetValue(RunManager.Instance.ActionQueueSet) is System.Collections.IEnumerable rawQueues)
+        {
+            foreach (object rawQueue in rawQueues)
+            {
+                if (FindField(rawQueue.GetType(), "actions")?.GetValue(rawQueue) is not System.Collections.IEnumerable actions)
+                    continue;
+
+                foreach (GameAction action in actions.OfType<GameAction>())
+                {
+                    if (MatchesOfficialHandDiscardActionCandidate(action, pausedChoiceState, trackedIds))
+                        return true;
+                }
+            }
+        }
+
+        if (FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionsWaitingForResumption")?.GetValue(RunManager.Instance.ActionQueueSet) is not System.Collections.IEnumerable rawWaiting)
+            return false;
+
+        foreach (object waiting in rawWaiting)
+        {
+            object? oldIdValue = FindField(waiting.GetType(), "oldId")?.GetValue(waiting);
+            object? newIdValue = FindField(waiting.GetType(), "newId")?.GetValue(waiting);
+            if ((oldIdValue is uint oldId && trackedIds.Contains(oldId))
+                || (newIdValue is uint newId && trackedIds.Contains(newId)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private bool TryDetachOfficialHandDiscardSourceAction(UndoSyntheticChoiceSession session)
     {
         PausedChoiceState? pausedChoiceState = session.AnchorSnapshot.CombatState.ActionKernelState.PausedChoiceState;
-        if (!IsTrackedOfficialFromHandDiscardChoice(pausedChoiceState, session.ChoiceSpec))
+        if (!HasDetachableOfficialHandDiscardChoiceSource(pausedChoiceState, session.ChoiceSpec))
             return false;
 
         uint? sourceActionId = pausedChoiceState!.SourceActionRef?.ActionId;
         uint? resumeActionId = pausedChoiceState.ResumeActionId;
+        HashSet<uint> trackedIds = [];
+        if (sourceActionId is uint sourceId)
+            trackedIds.Add(sourceId);
+        if (resumeActionId is uint resumeId)
+            trackedIds.Add(resumeId);
+
         bool removedAny = false;
         ActionExecutor actionExecutor = RunManager.Instance.ActionExecutor;
         if (actionExecutor.CurrentlyRunningAction is { } currentAction
-            && MatchesTrackedAction(currentAction, sourceActionId, resumeActionId))
+            && MatchesOfficialHandDiscardActionCandidate(currentAction, pausedChoiceState, trackedIds))
         {
+            if (currentAction.Id is uint currentActionId)
+                trackedIds.Add(currentActionId);
+
             QuarantineActionForRestore(currentAction);
             UndoReflectionUtil.TrySetPropertyValue(actionExecutor, "CurrentlyRunningAction", null);
             removedAny = true;
@@ -1382,10 +1550,13 @@ public sealed partial class UndoController
                 for (int i = actions.Count - 1; i >= 0; i--)
                 {
                     if (actions[i] is not GameAction action
-                        || !MatchesTrackedAction(action, sourceActionId, resumeActionId))
+                        || !MatchesOfficialHandDiscardActionCandidate(action, pausedChoiceState, trackedIds))
                     {
                         continue;
                     }
+
+                    if (action.Id is uint actionId)
+                        trackedIds.Add(actionId);
 
                     QuarantineActionForRestore(action);
                     actions.RemoveAt(i);
@@ -1403,8 +1574,8 @@ public sealed partial class UndoController
                 object? newIdValue = FindField(waiting.GetType(), "newId")?.GetValue(waiting);
                 uint? oldId = oldIdValue is uint oldIdTyped ? oldIdTyped : null;
                 uint? newId = newIdValue is uint newIdTyped ? newIdTyped : null;
-                if ((sourceActionId != null && (oldId == sourceActionId || newId == sourceActionId))
-                    || (resumeActionId != null && (oldId == resumeActionId || newId == resumeActionId)))
+                if ((oldId != null && trackedIds.Contains(oldId.Value))
+                    || (newId != null && trackedIds.Contains(newId.Value)))
                 {
                     waitingForResumption.RemoveAt(i);
                     removedAny = true;
@@ -1413,9 +1584,7 @@ public sealed partial class UndoController
         }
 
         bool detached = removedAny
-            || (!IsTrackedActionPresent(sourceActionId)
-                && !IsTrackedActionPresent(resumeActionId)
-                && !IsResumeActionPending(pausedChoiceState));
+            || !HasPendingOfficialHandDiscardChoiceSource(pausedChoiceState, trackedIds);
         if (!detached)
             return false;
 
@@ -1607,7 +1776,8 @@ public sealed partial class UndoController
             anchorNode.Value.SequenceId,
             anchorNode.Value.ActionLabel,
             isChoiceAnchor: true,
-            choiceSpec: anchorNode.Value.ChoiceSpec);
+            choiceSpec: anchorNode.Value.ChoiceSpec,
+            historyOrderReplayEventCount: anchorNode.Value.HistoryOrderReplayEventCount);
     }
 
     private IReadOnlyList<UndoChoiceBranchState> CaptureSavedChoiceBranchStates(UndoSyntheticChoiceSession session)

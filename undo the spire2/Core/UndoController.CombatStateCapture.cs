@@ -285,6 +285,7 @@ public sealed partial class UndoController
             states.Add(new UndoCreatureVisualState
             {
                 CreatureKey = BuildCreatureKey(creature, i),
+                NodePosition = creatureNode.Position,
                 VisualDefaultScale = creatureVisuals.DefaultScale,
                 VisualHue = visualHue,
                 TempScale = tempScale,
@@ -844,7 +845,7 @@ public sealed partial class UndoController
                     RelicId = relic.Id,
                     Ordinal = ordinal,
                     Status = relic.Status,
-                    IsActivating = FindProperty(relic.GetType(), "IsActivating")?.GetValue(relic) is bool activating ? activating : null,
+                    IsActivating = UndoRuntimeStateCodecRegistry.CaptureRelicIsActivatingForSavestate(relic),
                     BoolProperties = CaptureRuntimeBoolProperties(relic, "IsActivating"),
                     IntProperties = CaptureRuntimeIntProperties(relic),
                     EnumProperties = CaptureRuntimeEnumProperties(relic),

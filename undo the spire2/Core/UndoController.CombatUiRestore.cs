@@ -96,7 +96,7 @@ public sealed partial class UndoController
                     ClearCreatureIntentUi(creatureNode);
             }
 
-            SnapEnemyCreatureNodesToSlots(combatState);
+            SnapEnemyCreatureNodesToSlots(combatState, snapshotState);
             UndoSpecialCreatureVisualNormalizer.Refresh(combatState, combatRoom);
             ApplySnapshotPresentationState(combatState, snapshotState);
             RefreshCreatureStateDisplays(combatState, snapshotState);
@@ -107,7 +107,7 @@ public sealed partial class UndoController
             ApplySnapshotCreatureNodeVisuals(combatState, snapshotState);
             ReconcileSovereignBladeVfx(combatState, NCombatRoom.Instance);
             ForceCombatUiInteractiveState(NCombatRoom.Instance.Ui, combatState, LocalContext.GetMe(combatState));
-            SnapEnemyCreatureNodesToSlots(combatState);
+            SnapEnemyCreatureNodesToSlots(combatState, snapshotState);
             UndoSpecialCreatureVisualNormalizer.Refresh(combatState, NCombatRoom.Instance);
             ApplySnapshotPresentationState(combatState, snapshotState);
             RefreshCreatureStateDisplays(combatState, snapshotState);
@@ -819,7 +819,8 @@ public sealed partial class UndoController
             return;
 
         Dictionary<string, UndoCreatureVisualState> creatureVisualStatesByKey = snapshotState.CreatureVisualStates
-            .Where(static state => state.VisualDefaultScale.HasValue
+            .Where(static state => state.NodePosition.HasValue
+                || state.VisualDefaultScale.HasValue
                 || state.VisualHue.HasValue
                 || state.TempScale.HasValue
                 || state.TrackStates.Count > 0
@@ -865,7 +866,7 @@ public sealed partial class UndoController
             RestoreCreatureAnimatorState(creatureNode, creatureVisualState.AnimatorState);
         }
 
-        RelayoutEnemyCreatureNodes(combatRoom, combatState);
+        ApplySnapshotCreatureNodePositions(combatRoom, combatState, creatureVisualStatesByKey);
     }
 
     private static void ApplySnapshotPresentationState(CombatState combatState, UndoCombatFullState? snapshotState)
@@ -1005,9 +1006,6 @@ public sealed partial class UndoController
             {
                 if (string.IsNullOrWhiteSpace(trackState.AnimationName))
                 {
-                    UndoDebugLog.Write(
-                        $"creature_track_restore_skipped_empty path={relativePath}"
-                        + $" track={trackState.TrackIndex}");
                     TryClearCreatureTrack(animationState, trackState.TrackIndex);
                     continue;
                 }
@@ -1023,10 +1021,6 @@ public sealed partial class UndoController
 
                 if (!hasAnimation)
                 {
-                    UndoDebugLog.Write(
-                        $"creature_track_restore_skipped_invalid path={relativePath}"
-                        + $" track={trackState.TrackIndex}"
-                        + $" animation={trackState.AnimationName}");
                     TryClearCreatureTrack(animationState, trackState.TrackIndex);
                     continue;
                 }
@@ -1278,6 +1272,54 @@ public sealed partial class UndoController
             return;
 
         InvokePrivateMethod(combatRoom, "PositionEnemies", enemyNodes, GetCombatRoomEncounterScaling(combatRoom));
+    }
+
+    private static void ApplySnapshotCreatureNodePositions(
+        NCombatRoom combatRoom,
+        CombatState combatState,
+        IReadOnlyDictionary<string, UndoCreatureVisualState> creatureVisualStatesByKey)
+    {
+        bool needsEnemyFallbackLayout = false;
+        for (int creatureIndex = 0; creatureIndex < combatState.Creatures.Count; creatureIndex++)
+        {
+            Creature creature = combatState.Creatures[creatureIndex];
+            if (!creature.IsEnemy)
+                continue;
+
+            if (!creatureVisualStatesByKey.TryGetValue(BuildCreatureKey(creature, creatureIndex), out UndoCreatureVisualState? state)
+                || state.NodePosition is not Vector2)
+            {
+                needsEnemyFallbackLayout = true;
+                break;
+            }
+        }
+
+        if (needsEnemyFallbackLayout)
+            RelayoutEnemyCreatureNodes(combatRoom, combatState);
+
+        bool updatedAnyNodePosition = false;
+        for (int creatureIndex = 0; creatureIndex < combatState.Creatures.Count; creatureIndex++)
+        {
+            Creature creature = combatState.Creatures[creatureIndex];
+            if (!creatureVisualStatesByKey.TryGetValue(BuildCreatureKey(creature, creatureIndex), out UndoCreatureVisualState? state)
+                || state.NodePosition is not Vector2 nodePosition)
+            {
+                continue;
+            }
+
+            NCreature? creatureNode = combatRoom.GetCreatureNode(creature);
+            if (creatureNode == null)
+                continue;
+
+            creatureNode.Position = nodePosition;
+            updatedAnyNodePosition = true;
+        }
+
+        if (!updatedAnyNodePosition)
+            return;
+
+        InvokePrivateMethod(combatRoom, "AdjustCreatureScaleForAspectRatio");
+        InvokePrivateMethod(combatRoom, "UpdateCreatureNavigation");
     }
 
     private static void ReconcileSovereignBladeVfx(CombatState combatState, NCombatRoom combatRoom)
@@ -1913,7 +1955,7 @@ public sealed partial class UndoController
         ClearNodeChildren(creatureNode.IntentContainer);
     }
 
-    private static void SnapEnemyCreatureNodesToSlots(CombatState combatState)
+    private static void SnapEnemyCreatureNodesToSlots(CombatState combatState, UndoCombatFullState? snapshotState = null)
     {
         NCombatRoom? combatRoom = NCombatRoom.Instance;
         if (combatRoom == null)
@@ -1924,82 +1966,39 @@ public sealed partial class UndoController
         if (encounterSlots == null)
             return;
 
-        foreach (Creature creature in combatState.Enemies)
+        Dictionary<string, UndoCreatureVisualState> creatureVisualStatesByKey = snapshotState?.CreatureVisualStates
+            .Where(static state => state.NodePosition.HasValue)
+            .ToDictionary(static state => state.CreatureKey, static state => state, StringComparer.Ordinal)
+            ?? [];
+        bool updatedAnyNodePosition = false;
+        for (int creatureIndex = 0; creatureIndex < combatState.Creatures.Count; creatureIndex++)
         {
-            if (string.IsNullOrWhiteSpace(creature.SlotName) || !encounterSlots.HasNode(creature.SlotName))
+            Creature creature = combatState.Creatures[creatureIndex];
+            if (!creature.IsEnemy)
                 continue;
 
             NCreature? node = combatRoom.GetCreatureNode(creature);
             if (node == null)
                 continue;
 
+            if (creatureVisualStatesByKey.TryGetValue(BuildCreatureKey(creature, creatureIndex), out UndoCreatureVisualState? state)
+                && state.NodePosition is Vector2 nodePosition)
+            {
+                node.Position = nodePosition;
+                updatedAnyNodePosition = true;
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(creature.SlotName) || !encounterSlots.HasNode(creature.SlotName))
+                continue;
+
             node.GlobalPosition = encounterSlots.GetNode<Marker2D>(creature.SlotName).GlobalPosition;
-        }
-    }
-    private static void ClearTransientCardVisuals()
-    {
-        NCombatRoom? combatRoom = NCombatRoom.Instance;
-        if (combatRoom != null)
-        {
-            ClearNodeChildren(combatRoom.BackCombatVfxContainer);
-            ClearNodeChildren(combatRoom.CombatVfxContainer);
-            ClearNodeChildren(combatRoom.Ui.CardPreviewContainer);
-            ClearNodeChildren(combatRoom.Ui.MessyCardPreviewContainer);
+            updatedAnyNodePosition = true;
         }
 
-        var globalUi = NRun.Instance?.GlobalUi;
-        if (globalUi == null)
-            return;
-
-        ClearNodeChildren(globalUi.CardPreviewContainer);
-        ClearNodeChildren(globalUi.MessyCardPreviewContainer);
-        ClearNodeChildren(globalUi.GridCardPreviewContainer);
-        ClearNodeChildren(globalUi.EventCardPreviewContainer);
-        RemoveCardFlyVfxNodes(globalUi.TopBar?.TrailContainer);
+        if (updatedAnyNodePosition)
+            InvokePrivateMethod(combatRoom, "UpdateCreatureNavigation");
     }
-
-    private static void RemoveCardFlyVfxNodes(Node? root)
-    {
-        if (root == null || !GodotObject.IsInstanceValid(root))
-            return;
-
-        foreach (Node child in root.GetChildren().Cast<Node>().ToList())
-        {
-            RemoveCardFlyVfxNodes(child);
-            if (child is NCardTrailVfx orphanTrailVfx)
-            {
-                orphanTrailVfx.GetParent()?.RemoveChild(orphanTrailVfx);
-                QueueFreeNodeSafelyOnce(orphanTrailVfx);
-                continue;
-            }
-
-            if (child is NCard orphanCardNode)
-            {
-                orphanCardNode.GetParent()?.RemoveChild(orphanCardNode);
-                QueueFreeNodeSafelyOnce(orphanCardNode);
-                continue;
-            }
-
-            if (child is not NCardFlyVfx flyVfx)
-                continue;
-
-            if (GetPrivateFieldValue<Node>(flyVfx, "_vfx") is { } trailVfx && GodotObject.IsInstanceValid(trailVfx))
-            {
-                trailVfx.GetParent()?.RemoveChild(trailVfx);
-                QueueFreeNodeSafelyOnce(trailVfx);
-            }
-
-            if (GetPrivateFieldValue<NCard>(flyVfx, "_card") is { } cardNode && GodotObject.IsInstanceValid(cardNode))
-            {
-                cardNode.GetParent()?.RemoveChild(cardNode);
-                QueueFreeNodeSafelyOnce(cardNode);
-            }
-
-            flyVfx.GetParent()?.RemoveChild(flyVfx);
-            QueueFreeNodeSafelyOnce(flyVfx);
-        }
-    }
-
     private void DetachPendingHandSelectionSource(NPlayerHand hand)
     {
         if (_pendingHandChoiceSource == null)
@@ -2026,49 +2025,5 @@ public sealed partial class UndoController
     // restore/撤销清理旧选牌 UI 时，不要把已选牌临时加回手牌。
     // hand.Add(...) 会立刻触发官方 RefreshLayout，若此时手牌 holder 还没清空，
     // 就会出现日志里的 "Hand size 12 is greater than 11"。
-    private static void ClearSelectedHandCardsUi(NPlayerHand hand)
-    {
-        NSelectedHandCardContainer? selectedContainer = GetPrivateFieldValue<NSelectedHandCardContainer>(hand, "_selectedHandCardContainer")
-            ?? hand.GetNodeOrNull<NSelectedHandCardContainer>("%SelectedHandCardContainer");
-        if (selectedContainer == null || !GodotObject.IsInstanceValid(selectedContainer))
-            return;
-
-        foreach (NSelectedHandCardHolder selectedHolder in selectedContainer.Holders.ToList())
-        {
-            selectedHolder.SetClickable(false);
-            selectedHolder.FocusMode = Control.FocusModeEnum.None;
-            selectedHolder.MouseFilter = Control.MouseFilterEnum.Ignore;
-            selectedHolder.Hitbox.SetEnabled(false);
-            selectedHolder.Hitbox.MouseFilter = Control.MouseFilterEnum.Ignore;
-            ClearObjectTweenFields(selectedHolder);
-            if (selectedHolder.CardNode != null)
-                ClearObjectTweenFields(selectedHolder.CardNode);
-            selectedHolder.GetParent()?.RemoveChild(selectedHolder);
-            QueueFreeNodeSafelyOnce(selectedHolder);
-        }
-    }
-
-    private static void ResetSelectedHandCardContainerState(NPlayerHand hand)
-    {
-        NSelectedHandCardContainer? selectedContainer = GetPrivateFieldValue<NSelectedHandCardContainer>(hand, "_selectedHandCardContainer")
-            ?? hand.GetNodeOrNull<NSelectedHandCardContainer>("%SelectedHandCardContainer");
-        if (selectedContainer == null || !GodotObject.IsInstanceValid(selectedContainer))
-            return;
-
-        ClearObjectTweenFields(selectedContainer);
-        selectedContainer.Hand = hand;
-        ulong id = selectedContainer.GetInstanceId();
-        if (SelectedHandContainerDefaultPositions.TryGetValue(id, out Vector2 defaultPosition))
-            selectedContainer.Position = defaultPosition;
-        if (SelectedHandContainerDefaultScales.TryGetValue(id, out Vector2 defaultScale))
-            selectedContainer.Scale = defaultScale;
-        else
-            selectedContainer.Scale = Vector2.One;
-        selectedContainer.FocusMode = Control.FocusModeEnum.None;
-        selectedContainer.MouseFilter = Control.MouseFilterEnum.Ignore;
-        ClearNodeChildren(selectedContainer);
-        InvokePrivateMethod(selectedContainer, "RefreshHolderPositions");
-        InvokePrivateMethod(hand, "UpdateSelectedCardContainer", 0);
-    }
 }
 
