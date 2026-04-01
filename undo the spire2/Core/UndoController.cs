@@ -1995,6 +1995,7 @@ public sealed partial class UndoController
                 isChoiceAnchor,
                 choiceSpec,
                 choiceResultKey);
+            FlushStaleOfficialHandChoiceDeferredSnapshotsIfNeeded();
             if (ShouldDeferActionSnapshotCapture(snapshot))
             {
                 _deferredActionSnapshots.Add(new DeferredActionSnapshotState(snapshot));
@@ -2139,18 +2140,19 @@ public sealed partial class UndoController
             or "fallback_choice";
     }
 
-    private void FlushDeferredActionSnapshots(int minimumReplayEventCount)
+    private void FlushDeferredActionSnapshots(int? minimumReplayEventCount = null)
     {
         if (_deferredActionSnapshots.Count == 0)
             return;
 
         foreach (DeferredActionSnapshotState deferred in _deferredActionSnapshots)
         {
-            UndoSnapshot snapshot = deferred.Snapshot.ReplayEventCount >= minimumReplayEventCount
+            UndoSnapshot snapshot = minimumReplayEventCount is not int minimum
+                || deferred.Snapshot.ReplayEventCount >= minimum
                 ? deferred.Snapshot
                 : new UndoSnapshot(
                     deferred.Snapshot.CombatState,
-                    minimumReplayEventCount,
+                    minimum,
                     deferred.Snapshot.ActionKind,
                     deferred.Snapshot.SequenceId,
                     deferred.Snapshot.ActionLabel,
@@ -2169,6 +2171,34 @@ public sealed partial class UndoController
 
         _deferredActionSnapshots.Clear();
         NotifyStateChanged();
+    }
+
+    private void FlushStaleOfficialHandChoiceDeferredSnapshotsIfNeeded()
+    {
+        UndoSyntheticChoiceSession? session = _syntheticChoiceSession;
+        if (session == null
+            || !IsOfficialFromHandDiscardChoice(session.ChoiceSpec)
+            || _detachedHandDiscardExecutionGuardDepth > 0)
+        {
+            return;
+        }
+
+        NCombatUi? combatUi = NCombatRoom.Instance?.Ui;
+        if (combatUi != null && IsSupportedChoiceUiActive(combatUi))
+            return;
+
+        int currentReplayEventCount = GetCurrentReplayEventCount();
+        if (_deferredActionSnapshots.Count == 0 && currentReplayEventCount <= session.AnchorSnapshot.ReplayEventCount)
+            return;
+
+        _syntheticChoiceSession = null;
+        ClearPendingHandChoiceSourceTracking(canceled: true);
+        UndoDebugLog.Write(
+            $"official_hand_choice_session_stale_flushed source={session.ChoiceSpec.SourceModelTypeName ?? "unknown"}"
+            + $" anchorReplayEvents={session.AnchorSnapshot.ReplayEventCount}"
+            + $" currentReplayEvents={currentReplayEventCount}"
+            + $" deferredCount={_deferredActionSnapshots.Count}");
+        FlushDeferredActionSnapshots();
     }
 
     private void DiscardDeferredActionSnapshots(string reason)
