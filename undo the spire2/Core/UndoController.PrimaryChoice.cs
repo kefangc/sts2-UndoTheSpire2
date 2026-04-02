@@ -108,8 +108,7 @@ public sealed partial class UndoController
             branchSnapshot,
             requiresAuthoritativeBranchExecution: ShouldRequireAuthoritativeSyntheticChoiceExecution(choiceSpec));
         _syntheticChoiceSession = primarySession;
-        _lastResolvedChoiceSpec = choiceSpec;
-        _lastResolvedChoiceResultKey = null;
+        RememberResolvedChoiceBranch(choiceSpec, null, allowImmediateContinuation: false);
         RememberSavedChoiceBranches(primarySession, snapshot.CombatState.ChoiceBranchStates);
         if (branchSnapshot?.ChoiceResultKey != null)
             primarySession.RememberBranch(branchSnapshot.ChoiceResultKey, branchSnapshot);
@@ -244,7 +243,7 @@ public sealed partial class UndoController
                 NSimpleCardSelectScreen screen = NSimpleCardSelectScreen.Create(options, choiceSpec.SelectionPrefs);
                 NOverlayStack.Instance.Push(screen);
                 IEnumerable<CardModel> selected = await screen.CardsSelected();
-                return choiceSpec.TryMapDisplayedOptionSelection(options, selected);
+                return choiceSpec.TryMapDisplayedSimpleGridSelection(options, selected);
             }
             default:
                 return null;
@@ -489,8 +488,6 @@ public sealed partial class UndoController
 
         if (ReferenceEquals(_syntheticChoiceSession, session))
             _syntheticChoiceSession = null;
-        _lastResolvedChoiceSpec = session.ChoiceSpec;
-        _lastResolvedChoiceResultKey = selectedKey;
         session.RememberBranch(selectedKey, branchSnapshot);
         _futureSnapshots.Clear();
         RewriteReplayChoiceBranch(session.AnchorSnapshot, branchSnapshot);
@@ -498,28 +495,59 @@ public sealed partial class UndoController
         TruncateReplayChecksumsFrom(branchSnapshot.CombatState.NextChecksumId);
         DisableReplayChecksumComparison(branchSnapshot.CombatState.NextChecksumId);
 
-        if (_pastSnapshots.First?.Value is UndoSnapshot existing
-            && existing.IsChoiceAnchor
-            && existing.ReplayEventCount == session.AnchorSnapshot.ReplayEventCount)
+        UndoChoiceSpec? continuationChoiceSpec = GetSnapshotChoiceSpec(branchSnapshot);
+        bool rearmedNestedChoice = false;
+        RememberResolvedChoiceBranch(
+            session.ChoiceSpec,
+            selectedKey,
+            allowImmediateContinuation: branchSnapshot.ReplayEventCount > session.AnchorSnapshot.ReplayEventCount
+                && IsSupportedChoiceAnchorKind(continuationChoiceSpec));
+        if (branchSnapshot.ReplayEventCount > session.AnchorSnapshot.ReplayEventCount
+            && IsSupportedChoiceAnchorKind(continuationChoiceSpec))
         {
-            _pastSnapshots.RemoveFirst();
+            PreserveChoiceAnchorInPastHistory(
+                session.AnchorSnapshot,
+                WithChoiceBranchStates(session.AnchorSnapshot.CombatState, CaptureSavedChoiceBranchStates(session)));
+            EnsurePlayerChoiceUndoAnchor(
+                branchSnapshot,
+                continuationChoiceSpec,
+                forceRefresh: true,
+                anchorCombatStateOverride: branchSnapshot.CombatState);
+            rearmedNestedChoice = true;
+        }
+        else
+        {
+            if (_pastSnapshots.First?.Value is UndoSnapshot existing
+                && existing.IsChoiceAnchor
+                && existing.ReplayEventCount == session.AnchorSnapshot.ReplayEventCount)
+            {
+                _pastSnapshots.RemoveFirst();
+            }
+
+            UndoSnapshot rearmedAnchor = new(
+                WithChoiceBranchStates(session.AnchorSnapshot.CombatState, CaptureSavedChoiceBranchStates(session)),
+                session.AnchorSnapshot.ReplayEventCount,
+                UndoActionKind.PlayerChoice,
+                _nextSequenceId++,
+                session.AnchorSnapshot.ActionLabel,
+                isChoiceAnchor: true,
+                choiceSpec: session.ChoiceSpec);
+
+            _pastSnapshots.AddFirst(rearmedAnchor);
+            TrimSnapshots(_pastSnapshots);
+            MainFile.Logger.Info($"Re-armed player choice undo anchor. ReplayEvents={rearmedAnchor.ReplayEventCount}, UndoCount={_pastSnapshots.Count}, ChoiceKind={session.ChoiceSpec.Kind} forceRefresh=True");
         }
 
-        UndoSnapshot rearmedAnchor = new(
-            WithChoiceBranchStates(session.AnchorSnapshot.CombatState, CaptureSavedChoiceBranchStates(session)),
-            session.AnchorSnapshot.ReplayEventCount,
-            UndoActionKind.PlayerChoice,
-            _nextSequenceId++,
-            session.AnchorSnapshot.ActionLabel,
-            isChoiceAnchor: true,
-            choiceSpec: session.ChoiceSpec);
-
-        _pastSnapshots.AddFirst(rearmedAnchor);
-        TrimSnapshots(_pastSnapshots);
         FlushDeferredActionSnapshots(branchSnapshot.ReplayEventCount);
         if (isTrackedOfficialHandDiscard && CombatManager.Instance.DebugOnlyGetState() is CombatState liveCombatState)
             await RefreshCombatUiAfterHandDiscardChoiceAsync(liveCombatState, officialHandChoiceUiSettled: true);
-        MainFile.Logger.Info($"Re-armed player choice undo anchor. ReplayEvents={rearmedAnchor.ReplayEventCount}, UndoCount={_pastSnapshots.Count}, ChoiceKind={session.ChoiceSpec.Kind} forceRefresh=True");
+        if (rearmedNestedChoice)
+        {
+            UndoDebugLog.Write(
+                $"nested_choice_anchor_rearmed parentReplayEvents={session.AnchorSnapshot.ReplayEventCount}"
+                + $" childReplayEvents={branchSnapshot.ReplayEventCount}"
+                + $" childKind={continuationChoiceSpec?.Kind}");
+        }
         NotifyStateChanged();
         return true;
     }
@@ -530,33 +558,7 @@ public sealed partial class UndoController
         if (!IsTrackedOfficialFromHandDiscardChoice(pausedChoiceState, choiceSpec))
             return false;
 
-        GameAction? sourceAction = FindTrackedAction(pausedChoiceState!.SourceActionRef?.ActionId);
-        if (sourceAction == null)
-        {
-            reason = "source_action_missing";
-            return false;
-        }
-
-        if (sourceAction.State != GameActionState.GatheringPlayerChoice)
-        {
-            reason = $"state_{sourceAction.State}";
-            return false;
-        }
-
-        if (FindField(sourceAction.GetType(), "_executeAfterResumptionTaskSource")?.GetValue(sourceAction) == null)
-        {
-            reason = "missing_resume_task_source";
-            return false;
-        }
-
-        object? executionTaskObject = FindField(sourceAction.GetType(), "_executionTask")?.GetValue(sourceAction);
-        if (executionTaskObject is not Task executionTask || executionTask.IsCompleted)
-        {
-            reason = executionTaskObject == null ? "missing_execution_task" : "execution_task_completed";
-            return false;
-        }
-
-        return true;
+        return UndoActionCodecRegistry.CanResumeRestoredChoiceSourceAction(pausedChoiceState, out reason);
     }
 
     private static bool CanResumeTrackedOfficialHandDiscardLive(UndoSyntheticChoiceSession session, out string? reason)
@@ -823,8 +825,6 @@ public sealed partial class UndoController
             choiceResultKey: selectedKey);
 
         _syntheticChoiceSession = null;
-        _lastResolvedChoiceSpec = session.ChoiceSpec;
-        _lastResolvedChoiceResultKey = selectedKey;
         session.RememberBranch(selectedKey, branchSnapshot);
         _futureSnapshots.Clear();
         RewriteReplayChoiceBranch(session.AnchorSnapshot, branchSnapshot);
@@ -847,11 +847,36 @@ public sealed partial class UndoController
             }
         }
 
-        EnsurePlayerChoiceUndoAnchor(
-            session.AnchorSnapshot,
+        UndoChoiceSpec? continuationChoiceSpec = GetSnapshotChoiceSpec(branchSnapshot);
+        RememberResolvedChoiceBranch(
             session.ChoiceSpec,
-            forceRefresh: true,
-            anchorCombatStateOverride: WithChoiceBranchStates(session.AnchorSnapshot.CombatState, CaptureSavedChoiceBranchStates(session)));
+            selectedKey,
+            allowImmediateContinuation: branchSnapshot.ReplayEventCount > session.AnchorSnapshot.ReplayEventCount
+                && IsSupportedChoiceAnchorKind(continuationChoiceSpec));
+        if (branchSnapshot.ReplayEventCount > session.AnchorSnapshot.ReplayEventCount
+            && IsSupportedChoiceAnchorKind(continuationChoiceSpec))
+        {
+            PreserveChoiceAnchorInPastHistory(
+                session.AnchorSnapshot,
+                WithChoiceBranchStates(session.AnchorSnapshot.CombatState, CaptureSavedChoiceBranchStates(session)));
+            EnsurePlayerChoiceUndoAnchor(
+                branchSnapshot,
+                continuationChoiceSpec,
+                forceRefresh: true,
+                anchorCombatStateOverride: branchSnapshot.CombatState);
+            UndoDebugLog.Write(
+                $"nested_choice_anchor_rearmed parentReplayEvents={session.AnchorSnapshot.ReplayEventCount}"
+                + $" childReplayEvents={branchSnapshot.ReplayEventCount}"
+                + $" childKind={continuationChoiceSpec?.Kind}");
+        }
+        else
+        {
+            EnsurePlayerChoiceUndoAnchor(
+                session.AnchorSnapshot,
+                session.ChoiceSpec,
+                forceRefresh: true,
+                anchorCombatStateOverride: WithChoiceBranchStates(session.AnchorSnapshot.CombatState, CaptureSavedChoiceBranchStates(session)));
+        }
         FlushDeferredActionSnapshots(branchSnapshot.ReplayEventCount);
         NotifyStateChanged();
         await WaitOneFrameAsync();
@@ -874,6 +899,9 @@ public sealed partial class UndoController
 
         if (IsOfficialFromHandDiscardChoice(choiceSpec))
             return false;
+
+        if (UndoActionCodecRegistry.CanResumeRestoredChoiceSourceAction(pausedChoiceState, out _))
+            return true;
 
         if (stateAlreadyApplied)
             return true;
@@ -1746,18 +1774,18 @@ public sealed partial class UndoController
             session.RememberBranch(branchState.ChoiceResultKey, MaterializeChoiceBranchSnapshot(branchState), preferAsTemplate: false);
     }
 
-    private void TryPersistImmediateChoiceBranchSnapshot(UndoSnapshot snapshot)
+    private void TryPersistImmediateChoiceBranchSnapshot(
+        UndoSnapshot snapshot,
+        UndoChoiceSpec? anchorChoiceSpecOverride = null,
+        UndoChoiceResultKey? choiceResultKeyOverride = null)
     {
-        if (_lastResolvedChoiceResultKey == null)
+        UndoChoiceResultKey? resolvedChoiceResultKey = choiceResultKeyOverride ?? _lastResolvedChoiceResultKey;
+        if (resolvedChoiceResultKey == null)
             return;
 
-        LinkedListNode<UndoSnapshot>? anchorNode = _pastSnapshots.First?.Next;
-        if (anchorNode?.Value.IsChoiceAnchor != true
-            || !IsSupportedChoiceAnchorKind(anchorNode.Value.ChoiceSpec)
-            || snapshot.ReplayEventCount < anchorNode.Value.ReplayEventCount)
-        {
+        LinkedListNode<UndoSnapshot>? anchorNode = ResolveImmediateChoiceBranchAnchorNode(snapshot, anchorChoiceSpecOverride);
+        if (anchorNode == null)
             return;
-        }
 
         UndoSnapshot branchSnapshot = new(
             snapshot.CombatState,
@@ -1765,10 +1793,13 @@ public sealed partial class UndoController
             snapshot.ActionKind,
             snapshot.SequenceId,
             snapshot.ActionLabel,
-            choiceResultKey: _lastResolvedChoiceResultKey);
+            snapshot.IsChoiceAnchor,
+            snapshot.ChoiceSpec,
+            resolvedChoiceResultKey,
+            snapshot.HistoryOrderReplayEventCount);
         Dictionary<UndoChoiceResultKey, UndoChoiceBranchState> savedBranches = anchorNode.Value.CombatState.ChoiceBranchStates
             .ToDictionary(static branch => branch.ChoiceResultKey, static branch => branch);
-        savedBranches[_lastResolvedChoiceResultKey] = CaptureChoiceBranchState(branchSnapshot);
+        savedBranches[resolvedChoiceResultKey] = CaptureChoiceBranchState(branchSnapshot);
         anchorNode.Value = new UndoSnapshot(
             WithChoiceBranchStates(anchorNode.Value.CombatState, [.. savedBranches.Values.OrderBy(static branch => branch.ReplayEventCount)]),
             anchorNode.Value.ReplayEventCount,
@@ -1778,6 +1809,28 @@ public sealed partial class UndoController
             isChoiceAnchor: true,
             choiceSpec: anchorNode.Value.ChoiceSpec,
             historyOrderReplayEventCount: anchorNode.Value.HistoryOrderReplayEventCount);
+    }
+
+    private LinkedListNode<UndoSnapshot>? ResolveImmediateChoiceBranchAnchorNode(UndoSnapshot snapshot, UndoChoiceSpec? anchorChoiceSpecOverride)
+    {
+        LinkedListNode<UndoSnapshot>? node = _pastSnapshots.First?.Next;
+        while (node != null)
+        {
+            if (!node.Value.IsChoiceAnchor
+                || !IsSupportedChoiceAnchorKind(node.Value.ChoiceSpec)
+                || snapshot.ReplayEventCount < node.Value.ReplayEventCount)
+            {
+                node = node.Next;
+                continue;
+            }
+
+            if (anchorChoiceSpecOverride == null || AreEquivalentChoiceSpecs(node.Value.ChoiceSpec, anchorChoiceSpecOverride))
+                return node;
+
+            node = node.Next;
+        }
+
+        return null;
     }
 
     private IReadOnlyList<UndoChoiceBranchState> CaptureSavedChoiceBranchStates(UndoSyntheticChoiceSession session)
@@ -1801,8 +1854,11 @@ public sealed partial class UndoController
             ChoiceResultKey = snapshot.ChoiceResultKey,
             CombatState = snapshot.CombatState,
             ReplayEventCount = snapshot.ReplayEventCount,
+            HistoryOrderReplayEventCount = snapshot.HistoryOrderReplayEventCount,
             ActionKind = snapshot.ActionKind,
-            ActionLabel = snapshot.ActionLabel
+            ActionLabel = snapshot.ActionLabel,
+            IsChoiceAnchor = snapshot.IsChoiceAnchor,
+            ChoiceSpec = snapshot.ChoiceSpec
         };
     }
 
@@ -1814,7 +1870,51 @@ public sealed partial class UndoController
             branchState.ActionKind,
             _nextSequenceId++,
             branchState.ActionLabel,
-            choiceResultKey: branchState.ChoiceResultKey);
+            branchState.IsChoiceAnchor,
+            branchState.ChoiceSpec,
+            branchState.ChoiceResultKey,
+            branchState.HistoryOrderReplayEventCount);
+    }
+
+    private void PersistChoiceAnchorBranches(UndoSnapshot anchorSnapshot, IReadOnlyList<UndoChoiceBranchState> branchStates)
+    {
+        LinkedListNode<UndoSnapshot>? anchorNode = FindChoiceAnchorNode(anchorSnapshot);
+        if (anchorNode == null)
+            return;
+
+        UndoSnapshot existingAnchor = anchorNode.Value;
+        anchorNode.Value = new UndoSnapshot(
+            WithChoiceBranchStates(existingAnchor.CombatState, branchStates),
+            existingAnchor.ReplayEventCount,
+            existingAnchor.ActionKind,
+            existingAnchor.SequenceId,
+            existingAnchor.ActionLabel,
+            existingAnchor.IsChoiceAnchor,
+            existingAnchor.ChoiceSpec,
+            existingAnchor.ChoiceResultKey,
+            existingAnchor.HistoryOrderReplayEventCount);
+    }
+
+    private LinkedListNode<UndoSnapshot>? FindChoiceAnchorNode(UndoSnapshot anchorSnapshot)
+    {
+        for (LinkedListNode<UndoSnapshot>? node = _pastSnapshots.First; node != null; node = node.Next)
+        {
+            if (node.Value.SequenceId == anchorSnapshot.SequenceId)
+                return node;
+        }
+
+        for (LinkedListNode<UndoSnapshot>? node = _pastSnapshots.First; node != null; node = node.Next)
+        {
+            if (node.Value.IsChoiceAnchor
+                && node.Value.ReplayEventCount == anchorSnapshot.ReplayEventCount
+                && string.Equals(node.Value.ActionLabel, anchorSnapshot.ActionLabel, StringComparison.Ordinal)
+                && AreEquivalentChoiceSpecs(node.Value.ChoiceSpec, anchorSnapshot.ChoiceSpec))
+            {
+                return node;
+            }
+        }
+
+        return null;
     }
 
     private static UndoCombatFullState WithChoiceBranchStates(UndoCombatFullState source, IReadOnlyList<UndoChoiceBranchState> choiceBranchStates)

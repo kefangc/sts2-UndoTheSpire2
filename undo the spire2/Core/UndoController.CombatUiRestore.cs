@@ -207,7 +207,7 @@ public sealed partial class UndoController
     private static bool TryCompletePendingHandDiscardChoiceUiViaOfficialPath(NPlayerHand hand)
     {
         AbstractModel? pendingSource = MainFile.Controller._pendingHandChoiceSource;
-        if (!GodotObject.IsInstanceValid(hand)
+        if (!CanSafelyMutateHandUi(hand)
             || pendingSource == null
             || MainFile.Controller._pendingHandChoiceUiSettle?.CallbackObserved == true
             || GetSelectedHandHolderCount(hand) == 0)
@@ -236,7 +236,7 @@ public sealed partial class UndoController
 
     private static bool NeedsHandDiscardChoiceUiRecovery(NPlayerHand hand, Player player)
     {
-        if (!GodotObject.IsInstanceValid(hand))
+        if (!CanSafelyMutateHandUi(hand))
             return false;
 
         if (HasValidCurrentCardPlay(hand))
@@ -481,6 +481,9 @@ public sealed partial class UndoController
     // 并把卡留在左上角默认位置。这里优先复用已在场上的节点，只有不匹配时才重建。
     private static bool TrySyncExistingHandUi(NPlayerHand hand, Player player, bool normalizeLayout = false)
     {
+        if (!CanSafelyMutateHandUi(hand))
+            return false;
+
         if (!TryGetReusableHandHolders(hand, player, out List<NHandCardHolder> holders))
             return TryReconcileHandUiInPlace(hand, player, normalizeLayout);
 
@@ -496,7 +499,7 @@ public sealed partial class UndoController
 
     private static bool TryReconcileHandUiInPlace(NPlayerHand hand, Player player, bool normalizeLayout = false)
     {
-        if (!GodotObject.IsInstanceValid(hand))
+        if (!CanSafelyMutateHandUi(hand))
             return false;
 
         ClearDetachedHandHolderNodes(hand);
@@ -626,7 +629,7 @@ public sealed partial class UndoController
     private static bool TryGetReusableHandHolders(NPlayerHand hand, Player player, out List<NHandCardHolder> holders)
     {
         holders = [];
-        if (!GodotObject.IsInstanceValid(hand))
+        if (!CanSafelyMutateHandUi(hand))
             return false;
 
         if (HasDetachedHandHolders(hand)

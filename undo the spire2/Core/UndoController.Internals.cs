@@ -179,7 +179,8 @@ public sealed partial class UndoController
             return;
         }
 
-                property?.SetValue(instance, value);
+        if (property != null && TrySetPrivateAutoPropertyBackingField(instance, propertyName, value))
+            return;
     }
 
     private static bool TrySetRuntimePropertyValue(object instance, PropertyInfo property, string propertyName, object? value)
@@ -268,6 +269,7 @@ public sealed partial class UndoController
     {
         IReadOnlyList<UndoPlayerPileCardCostState> effectiveCardCostStates = cardCostStates ?? source.CardCostStates;
         IReadOnlyList<UndoPlayerPileCardRuntimeState> effectiveCardRuntimeStates = cardRuntimeStates ?? source.CardRuntimeStates;
+        ActionKernelState derivedActionKernelState = CreateDerivedActionKernelState(source, fallbackSource);
         UndoSelectionSessionState? derivedSelectionSessionState = CreateDerivedSelectionSessionState(source);
         UndoCombatCardDbState derivedCombatCardDbState = RebuildDerivedCombatCardDbState(source, fallbackSource, fullState);
         IReadOnlyList<UndoCreatureVisualState> derivedCreatureVisualStates = SanitizeDerivedCreatureVisualStates(source.CreatureVisualStates);
@@ -280,7 +282,7 @@ public sealed partial class UndoController
             source.NextHookId,
             source.NextChecksumId,
             source.CombatHistoryState,
-            source.ActionKernelState,
+            derivedActionKernelState,
             source.MonsterStates,
             effectiveCardCostStates,
             effectiveCardRuntimeStates,
@@ -394,6 +396,51 @@ public sealed partial class UndoController
             OverlayScreenType = null,
             ChoiceSpec = null
         };
+    }
+
+    private static ActionKernelState CreateDerivedActionKernelState(
+        UndoCombatFullState source,
+        UndoCombatFullState? fallbackSource)
+    {
+        ActionKernelState sourceKernelState = source.ActionKernelState;
+        PausedChoiceState? sourcePausedChoiceState = sourceKernelState.PausedChoiceState;
+        if (sourcePausedChoiceState == null)
+            return sourceKernelState;
+
+        if (!ShouldStripDerivedPausedChoiceState(sourcePausedChoiceState, fallbackSource?.ActionKernelState.PausedChoiceState))
+            return sourceKernelState;
+
+        IReadOnlyList<ActionQueueState> unpausedQueues = sourceKernelState.Queues.Count == 0
+            ? []
+            : [.. sourceKernelState.Queues.Select(static queue => new ActionQueueState
+            {
+                OwnerNetId = queue.OwnerNetId,
+                IsPaused = false,
+                PendingActionCount = queue.PendingActionCount,
+                PendingActions = queue.PendingActions
+            })];
+
+        return new ActionKernelState
+        {
+            SchemaVersion = sourceKernelState.SchemaVersion,
+            BoundaryKind = ActionKernelBoundaryKind.StableBoundary,
+            Queues = unpausedQueues
+        };
+    }
+
+    private static bool ShouldStripDerivedPausedChoiceState(
+        PausedChoiceState sourcePausedChoiceState,
+        PausedChoiceState? fallbackPausedChoiceState)
+    {
+        if (fallbackPausedChoiceState == null)
+            return true;
+
+        return sourcePausedChoiceState.ChoiceKind == fallbackPausedChoiceState.ChoiceKind
+            && sourcePausedChoiceState.MinSelections == fallbackPausedChoiceState.MinSelections
+            && sourcePausedChoiceState.MaxSelections == fallbackPausedChoiceState.MaxSelections
+            && string.Equals(sourcePausedChoiceState.SourceActionCodecId, fallbackPausedChoiceState.SourceActionCodecId, StringComparison.Ordinal)
+            && Nullable.Equals(sourcePausedChoiceState.SourceActionRef?.ActionId, fallbackPausedChoiceState.SourceActionRef?.ActionId)
+            && AreEquivalentChoiceSpecs(sourcePausedChoiceState.ChoiceSpec, fallbackPausedChoiceState.ChoiceSpec);
     }
 
     private static UndoCombatCardDbState RebuildDerivedCombatCardDbState(

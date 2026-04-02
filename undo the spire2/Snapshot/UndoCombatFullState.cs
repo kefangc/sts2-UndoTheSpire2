@@ -198,7 +198,13 @@ internal sealed class UndoChoiceBranchState
 
     public required int ReplayEventCount { get; init; }
 
+    public required int HistoryOrderReplayEventCount { get; init; }
+
     public required UndoActionKind ActionKind { get; init; }
 
     public required string ActionLabel { get; init; }
+
+    public bool IsChoiceAnchor { get; init; }
+
+    public UndoChoiceSpec? ChoiceSpec { get; init; }
 }

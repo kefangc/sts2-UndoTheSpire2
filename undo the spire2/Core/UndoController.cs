@@ -111,6 +111,7 @@ public sealed partial class UndoController
     private bool _isFlushingPendingPlayActionSnapshots;
     private int _detachedHandDiscardExecutionGuardDepth;
     private UndoChoiceResultKey? _lastResolvedChoiceResultKey;
+    private bool _allowImmediateChoiceContinuation;
     private UndoSyntheticChoiceSession? _syntheticChoiceSession;
     private bool _blockUndoUntilNextPlayerTurn;
     private int _blockedTurnRound = -1;
@@ -187,6 +188,13 @@ public sealed partial class UndoController
     {
         if (_pendingPlayActionSnapshots.Count == 0)
             return null;
+
+        UndoSnapshot? currentChoiceAnchor = GetCurrentChoiceAnchorSnapshot();
+        if (currentChoiceAnchor?.ChoiceSpec != null
+            && IsCurrentStateAtChoiceAnchor(currentChoiceAnchor))
+        {
+            return null;
+        }
 
         for (int i = _pendingPlayActionSnapshots.Count - 1; i >= 0; i--)
         {
@@ -269,8 +277,16 @@ public sealed partial class UndoController
             choiceResultKey = targetSnapshot.IsChoiceAnchor ? _lastResolvedChoiceResultKey : null;
         }
 
+        UndoCombatFullState currentCombatState = CaptureCurrentCombatFullState(isCurrentChoiceAnchor ? currentChoiceAnchor?.ChoiceSpec : null);
+        if (isCurrentChoiceAnchor)
+        {
+            IReadOnlyList<UndoChoiceBranchState> branchStates = CaptureCurrentChoiceAnchorBranchStates(currentChoiceAnchor);
+            if (branchStates.Count > 0)
+                currentCombatState = WithChoiceBranchStates(currentCombatState, branchStates);
+        }
+
         return new UndoSnapshot(
-            CaptureCurrentCombatFullState(isCurrentChoiceAnchor ? currentChoiceAnchor?.ChoiceSpec : null),
+            currentCombatState,
             GetCurrentReplayEventCount(),
             actionKind,
             _nextSequenceId++,
@@ -832,7 +848,7 @@ public sealed partial class UndoController
         if (player != null)
             _pendingHandChoiceUiSettle.ExpectedHandCount = PileType.Hand.GetPile(player).Cards.Count;
 
-        if (hand == null || !GodotObject.IsInstanceValid(hand))
+        if (!CanSafelyMutateHandUi(hand))
             return false;
 
         if (!_pendingHandChoiceUiSettle.CallbackObserved)
@@ -870,7 +886,7 @@ public sealed partial class UndoController
     private void TryCompletePendingHandChoiceUiInstantly(NPlayerHand hand, Player? player, bool allowBeforeOfficialCallback = false)
     {
         if (_pendingHandChoiceUiSettle == null
-            || !GodotObject.IsInstanceValid(hand)
+            || !CanSafelyMutateHandUi(hand)
             || (_syntheticChoiceSession == null && !allowBeforeOfficialCallback)
             || (!allowBeforeOfficialCallback && _pendingHandChoiceUiSettle.CallbackObserved != true)
             || _pendingHandChoiceUiSettle.InstantCompletionApplied)
@@ -934,7 +950,7 @@ public sealed partial class UndoController
 
     private void ForceCompletePendingHandChoiceUi(NPlayerHand hand, Player? player)
     {
-        if (_pendingHandChoiceUiSettle == null || !GodotObject.IsInstanceValid(hand))
+        if (_pendingHandChoiceUiSettle == null || !CanSafelyMutateHandUi(hand))
             return;
 
         ClearHandChoiceUiTweens(hand);
@@ -1023,8 +1039,25 @@ public sealed partial class UndoController
         if (branchKey == null)
             return;
 
-        _lastResolvedChoiceResultKey = branchKey;
+        RememberResolvedChoiceBranch(_lastResolvedChoiceSpec, branchKey, allowImmediateContinuation: true);
         MainFile.Logger.Info($"Captured choice branch key {branchKey} for {_lastResolvedChoiceSpec.Kind}.");
+    }
+
+    private void RememberResolvedChoiceBranch(
+        UndoChoiceSpec? choiceSpec,
+        UndoChoiceResultKey? branchKey,
+        bool allowImmediateContinuation)
+    {
+        _lastResolvedChoiceSpec = choiceSpec;
+        _lastResolvedChoiceResultKey = branchKey;
+        _allowImmediateChoiceContinuation = allowImmediateContinuation
+            && choiceSpec != null
+            && branchKey != null;
+    }
+
+    private void CloseImmediateChoiceContinuationWindow()
+    {
+        _allowImmediateChoiceContinuation = false;
     }
 
     private static bool ShouldTrackLocalChoice(Player player)
@@ -1083,12 +1116,25 @@ public sealed partial class UndoController
         try
         {
             int replayEventCount = Math.Max(0, GetReplayEventCountBeforeCurrentAction());
+            if (_allowImmediateChoiceContinuation
+                && !ShouldKeepImmediateChoiceContinuationForPlayAction(action))
+            {
+                UndoDebugLog.Write(
+                    $"immediate_choice_continuation_closed_before_play"
+                    + $" label={DescribeAction(UndoActionKind.PlayCard, action)}"
+                    + $" replayEvents={replayEventCount}"
+                    + $" source={_lastResolvedChoiceSpec?.SourceModelTypeName ?? "unknown"}");
+                CloseImmediateChoiceContinuationWindow();
+            }
+
+            int historyOrderReplayEventCount = Math.Max(replayEventCount, GetCurrentReplayEventCount());
             UndoSnapshot snapshot = new(
                 CaptureCurrentCombatFullState(),
                 replayEventCount,
                 UndoActionKind.PlayCard,
                 _nextSequenceId++,
-                DescribeAction(UndoActionKind.PlayCard, action));
+                DescribeAction(UndoActionKind.PlayCard, action),
+                historyOrderReplayEventCount: historyOrderReplayEventCount);
             _pendingPlayActionSnapshots.Add(new PendingPlayActionSnapshotState(snapshot, action.Id, TryResolvePlayedCardModel(action)));
             _futureSnapshots.Clear();
             UndoDebugLog.Write(
@@ -1121,14 +1167,17 @@ public sealed partial class UndoController
             return;
         }
 
-        _lastResolvedChoiceSpec = choiceSpec;
-        _lastResolvedChoiceResultKey = null;
+        UndoChoiceSpec? previousResolvedChoiceSpec = _allowImmediateChoiceContinuation ? _lastResolvedChoiceSpec : null;
+        UndoChoiceResultKey? previousResolvedChoiceResultKey = _allowImmediateChoiceContinuation ? _lastResolvedChoiceResultKey : null;
+        RememberResolvedChoiceBranch(choiceSpec, null, allowImmediateContinuation: false);
         TryCaptureSnapshot(
             UndoActionKind.PlayerChoice,
             GetCurrentReplayEventCount(),
             DescribeAction(UndoActionKind.PlayerChoice, action),
             isChoiceAnchor: true,
-            choiceSpec: choiceSpec);
+            choiceSpec: choiceSpec,
+            immediateBranchAnchorChoiceSpec: previousResolvedChoiceSpec,
+            immediateBranchChoiceResultKey: previousResolvedChoiceResultKey);
     }
 
     public bool ShouldShowHud(NCombatUi combatUi)
@@ -1568,6 +1617,7 @@ public sealed partial class UndoController
         if (!CanRestoreState())
             return;
 
+        PreservePendingPlaySnapshotForChoiceRestore(source.First?.Value, "restore_begin");
         DiscardPendingPlayActionSnapshots("restore_begin");
 
         UndoSnapshot? currentChoiceAnchor = GetCurrentChoiceAnchorSnapshot();
@@ -1978,7 +2028,9 @@ public sealed partial class UndoController
         string actionLabel,
         bool isChoiceAnchor = false,
         UndoChoiceSpec? choiceSpec = null,
-        UndoChoiceResultKey? choiceResultKey = null)
+        UndoChoiceResultKey? choiceResultKey = null,
+        UndoChoiceSpec? immediateBranchAnchorChoiceSpec = null,
+        UndoChoiceResultKey? immediateBranchChoiceResultKey = null)
     {
         if (!CanCaptureSnapshot())
             return;
@@ -2009,8 +2061,9 @@ public sealed partial class UndoController
             _pastSnapshots.AddFirst(snapshot);
             TrimSnapshots(_pastSnapshots);
             _futureSnapshots.Clear();
-            if (!isChoiceAnchor)
-                TryPersistImmediateChoiceBranchSnapshot(snapshot);
+            TryPersistImmediateChoiceBranchSnapshot(snapshot, immediateBranchAnchorChoiceSpec, immediateBranchChoiceResultKey);
+            if (!snapshot.IsChoiceAnchor)
+                CloseImmediateChoiceContinuationWindow();
             MainFile.Logger.Info($"Captured snapshot #{snapshot.SequenceId}: {snapshot.ActionLabel}. ReplayEvents={snapshot.ReplayEventCount}, UndoCount={_pastSnapshots.Count}");
             UndoDebugLog.Write($"snapshot captured seq={snapshot.SequenceId} label={snapshot.ActionLabel} replayEvents={snapshot.ReplayEventCount} undoCount={_pastSnapshots.Count}");
             NotifyStateChanged();
@@ -2091,6 +2144,7 @@ public sealed partial class UndoController
 
         try
         {
+            PreservePendingPlaySnapshotForChoiceRestore(session.AnchorSnapshot, "restore_begin");
             DiscardPendingPlayActionSnapshots("restore_begin");
             string restoreMode = await RestoreSnapshotAsync(
                 session.AnchorSnapshot,
@@ -2163,7 +2217,10 @@ public sealed partial class UndoController
             _pastSnapshots.AddFirst(snapshot);
             TrimSnapshots(_pastSnapshots);
             if (!snapshot.IsChoiceAnchor)
+            {
                 TryPersistImmediateChoiceBranchSnapshot(snapshot);
+                CloseImmediateChoiceContinuationWindow();
+            }
             UndoDebugLog.Write(
                 $"snapshot flushed seq={snapshot.SequenceId} label={snapshot.ActionLabel}"
                 + $" replayEvents={deferred.Snapshot.ReplayEventCount}->{snapshot.ReplayEventCount}");
@@ -2257,6 +2314,7 @@ public sealed partial class UndoController
                 UndoSnapshot committedSnapshot = CreateCommittedPlaySnapshot(pendingSnapshot);
                 int preservedChoiceAnchors = AddCommittedPlaySnapshotToHistory(committedSnapshot, pendingSnapshot);
                 TryPersistImmediateChoiceBranchSnapshot(committedSnapshot);
+                CloseImmediateChoiceContinuationWindow();
                 UndoDebugLog.Write(
                     $"play_snapshot_committed seq={committedSnapshot.SequenceId}"
                     + $" label={committedSnapshot.ActionLabel}"
@@ -2289,6 +2347,7 @@ public sealed partial class UndoController
             _pendingPlayActionSnapshots.RemoveAt(0);
             int preservedChoiceAnchors = AddCommittedPlaySnapshotToHistory(committedSnapshot, pendingSnapshot);
             TryPersistImmediateChoiceBranchSnapshot(committedSnapshot);
+            CloseImmediateChoiceContinuationWindow();
             UndoDebugLog.Write(
                 $"play_snapshot_promoted seq={committedSnapshot.SequenceId}"
                 + $" label={committedSnapshot.ActionLabel}"
@@ -2321,6 +2380,62 @@ public sealed partial class UndoController
         return true;
     }
 
+    private bool PreservePendingPlaySnapshotForChoiceRestore(UndoSnapshot? targetSnapshot, string reason)
+    {
+        if (_pendingPlayActionSnapshots.Count == 0 || targetSnapshot?.IsChoiceAnchor != true)
+            return false;
+
+        UndoChoiceSpec? choiceSpec = GetSnapshotChoiceSpec(targetSnapshot);
+        uint? sourceActionId = targetSnapshot.CombatState.ActionKernelState.PausedChoiceState?.SourceActionRef?.ActionId;
+        if (choiceSpec?.SourceCombatCard == null && sourceActionId == null)
+            return false;
+
+        for (int i = _pendingPlayActionSnapshots.Count - 1; i >= 0; i--)
+        {
+            PendingPlayActionSnapshotState pendingSnapshot = _pendingPlayActionSnapshots[i];
+            if (!ShouldPreservePendingPlaySnapshotForChoiceRestore(pendingSnapshot, choiceSpec, sourceActionId))
+                continue;
+
+            _pendingPlayActionSnapshots.RemoveAt(i);
+            UndoSnapshot committedSnapshot = CreateCommittedPlaySnapshot(pendingSnapshot);
+            int preservedChoiceAnchors = AddCommittedPlaySnapshotToHistory(committedSnapshot, pendingSnapshot);
+            CloseImmediateChoiceContinuationWindow();
+            UndoDebugLog.Write(
+                $"play_snapshot_preserved_for_choice_restore seq={committedSnapshot.SequenceId}"
+                + $" label={committedSnapshot.ActionLabel}"
+                + $" actionId={pendingSnapshot.ActionId?.ToString() ?? "null"}"
+                + $" targetReplayEvents={targetSnapshot.ReplayEventCount}"
+                + $" preservedChoiceAnchors={preservedChoiceAnchors}"
+                + $" undoCount={_pastSnapshots.Count}"
+                + $" reason={reason}");
+            NotifyStateChanged();
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool ShouldPreservePendingPlaySnapshotForChoiceRestore(
+        PendingPlayActionSnapshotState pendingSnapshot,
+        UndoChoiceSpec? choiceSpec,
+        uint? sourceActionId)
+    {
+        if (sourceActionId != null && pendingSnapshot.ActionId == sourceActionId)
+            return true;
+
+        if (pendingSnapshot.Card == null || choiceSpec?.SourceCombatCard == null)
+            return false;
+
+        try
+        {
+            return choiceSpec.SourceCombatCard.Value.Equals(NetCombatCard.FromModel(pendingSnapshot.Card));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static UndoSnapshot CreateCommittedPlaySnapshot(PendingPlayActionSnapshotState pendingSnapshot)
     {
         return pendingSnapshot.Snapshot;
@@ -2341,7 +2456,7 @@ public sealed partial class UndoController
             bool keepSameBoundaryChoiceAhead =
                 node.Value.HistoryOrderReplayEventCount == historyOrderReplayEventCount
                 && node.Value.IsChoiceAnchor
-                && ShouldPreserveChoiceAnchorAheadOfCommittedPlay(node.Value, pendingSnapshot.Card);
+                && ShouldPreserveChoiceAnchorAheadOfCommittedPlay(node.Value, pendingSnapshot);
             if (!keepLaterSnapshotAhead && !keepSameBoundaryChoiceAhead)
                 break;
 
@@ -2360,11 +2475,20 @@ public sealed partial class UndoController
         return preservedChoiceAnchors;
     }
 
-    private static bool ShouldPreserveChoiceAnchorAheadOfCommittedPlay(UndoSnapshot choiceAnchor, CardModel? pendingCard)
+    private bool ShouldPreserveChoiceAnchorAheadOfCommittedPlay(UndoSnapshot choiceAnchor, PendingPlayActionSnapshotState pendingSnapshot)
     {
         if (!choiceAnchor.IsChoiceAnchor)
             return false;
 
+        UndoSnapshot? currentChoiceAnchor = GetCurrentChoiceAnchorSnapshot();
+        if (currentChoiceAnchor?.ChoiceSpec == null
+            || !IsEquivalentActiveChoiceSnapshot(choiceAnchor, currentChoiceAnchor)
+            || !IsCurrentStateAtChoiceAnchor(currentChoiceAnchor, includeResolvedChoiceBranch: true))
+        {
+            return false;
+        }
+
+        CardModel? pendingCard = pendingSnapshot.Card;
         if (pendingCard == null)
             return true;
 
@@ -2380,6 +2504,76 @@ public sealed partial class UndoController
         {
             return false;
         }
+    }
+
+    private bool ShouldKeepImmediateChoiceContinuationForPlayAction(PlayCardAction action)
+    {
+        if (!_allowImmediateChoiceContinuation)
+            return false;
+
+        UndoChoiceSpec? resolvedChoiceSpec = _lastResolvedChoiceSpec;
+        UndoChoiceResultKey? resolvedChoiceResultKey = _lastResolvedChoiceResultKey;
+        CardModel? playedCard = TryResolvePlayedCardModel(action);
+        if (resolvedChoiceSpec == null || resolvedChoiceResultKey == null || playedCard == null)
+            return false;
+
+        return DoesChoiceSpecSourceMatchPlayedCard(resolvedChoiceSpec, playedCard)
+            || DoesResolvedChoiceResultContainPlayedCard(resolvedChoiceSpec, resolvedChoiceResultKey, playedCard);
+    }
+
+    private static bool DoesChoiceSpecSourceMatchPlayedCard(UndoChoiceSpec choiceSpec, CardModel playedCard)
+    {
+        if (choiceSpec.SourceCombatCard == null)
+            return false;
+
+        try
+        {
+            return choiceSpec.SourceCombatCard.Value.Equals(NetCombatCard.FromModel(playedCard));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool DoesResolvedChoiceResultContainPlayedCard(
+        UndoChoiceSpec choiceSpec,
+        UndoChoiceResultKey resolvedChoiceResultKey,
+        CardModel playedCard)
+    {
+        SerializableCard? playedSerializableCard = null;
+        NetCombatCard? playedCombatCard = null;
+        try
+        {
+            playedSerializableCard = playedCard.ToSerializable();
+            playedCombatCard = NetCombatCard.FromModel(playedCard);
+        }
+        catch
+        {
+            return false;
+        }
+
+        foreach (int optionIndex in resolvedChoiceResultKey.OptionIndexes)
+        {
+            if (optionIndex < 0)
+                continue;
+
+            if (optionIndex < choiceSpec.SourcePileCombatCards.Count
+                && playedCombatCard != null
+                && choiceSpec.SourcePileCombatCards[optionIndex].Equals(playedCombatCard.Value))
+            {
+                return true;
+            }
+
+            if (optionIndex < choiceSpec.OptionCards.Count
+                && playedSerializableCard != null
+                && UndoSerializationUtil.PacketDataEquals(choiceSpec.OptionCards[optionIndex], playedSerializableCard))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private async Task<bool> WaitForPendingPlayActionSnapshotStableBoundaryAsync(PendingPlayActionSnapshotState pendingSnapshot, int maxFrames = 120, int requiredStableFrames = 2)
@@ -2434,6 +2628,29 @@ public sealed partial class UndoController
         }
 
         NotifyStateChanged();
+    }
+
+    private static bool CanSafelyMutateHandUi(NPlayerHand? hand)
+    {
+        return hand != null
+            && GodotObject.IsInstanceValid(hand)
+            && hand.IsInsideTree()
+            && GodotObject.IsInstanceValid(hand.CardHolderContainer)
+            && hand.CardHolderContainer.IsInsideTree();
+    }
+
+    private IReadOnlyList<UndoChoiceBranchState> CaptureCurrentChoiceAnchorBranchStates(UndoSnapshot? currentChoiceAnchor)
+    {
+        if (currentChoiceAnchor == null)
+            return [];
+
+        if (_syntheticChoiceSession != null
+            && IsEquivalentActiveChoiceSnapshot(_syntheticChoiceSession.AnchorSnapshot, currentChoiceAnchor))
+        {
+            return CaptureSavedChoiceBranchStates(_syntheticChoiceSession);
+        }
+
+        return currentChoiceAnchor.CombatState.ChoiceBranchStates;
     }
 
     private UndoChoiceSpec? TakePendingChoiceSpec(GameAction action, bool clearWhenNotCaptured = true)
@@ -2609,7 +2826,23 @@ public sealed partial class UndoController
             removedAnchors.Add(snapshot);
         }
 
-        destination.AddFirst(removedAnchors[0]);
+        UndoSnapshot movedAnchor = removedAnchors[0];
+        IReadOnlyList<UndoChoiceBranchState> branchStates = CaptureCurrentChoiceAnchorBranchStates(currentChoiceAnchor);
+        if (branchStates.Count > 0)
+        {
+            movedAnchor = new UndoSnapshot(
+                WithChoiceBranchStates(movedAnchor.CombatState, branchStates),
+                movedAnchor.ReplayEventCount,
+                movedAnchor.ActionKind,
+                movedAnchor.SequenceId,
+                movedAnchor.ActionLabel,
+                movedAnchor.IsChoiceAnchor,
+                movedAnchor.ChoiceSpec,
+                movedAnchor.ChoiceResultKey,
+                movedAnchor.HistoryOrderReplayEventCount);
+        }
+
+        destination.AddFirst(movedAnchor);
         TrimSnapshots(destination);
         if (removedAnchors.Count > 1)
         {
@@ -2891,7 +3124,7 @@ public sealed partial class UndoController
         HideControl(hand, "%UpgradePreviewContainer");
         HideControl(hand, "%SelectionHeader");
         DisableControl(hand, "%SelectModeConfirmButton");
-        if (wasInSelection)
+        if (wasInSelection && CanSafelyMutateHandUi(hand))
             NCombatRoom.Instance?.Ui?.OnHandSelectModeExited();
         if (player != null
             && (hand.CardHolderContainer.GetChildCount() != PileType.Hand.GetPile(player).Cards.Count
@@ -3140,6 +3373,7 @@ public sealed partial class UndoController
         _combatReplay = null;
         _pendingChoiceSpec = null;
         _lastResolvedChoiceSpec = null;
+        _allowImmediateChoiceContinuation = false;
         ClearPendingHandChoiceSourceTracking(canceled: true);
         DiscardPendingPlayActionSnapshots("history_cleared");
         UndoAudioLoopTracker.Clear();

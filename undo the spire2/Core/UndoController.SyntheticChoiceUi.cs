@@ -483,6 +483,6 @@ public sealed partial class UndoController
         NSimpleCardSelectScreen screen = NSimpleCardSelectScreen.Create(options, choiceSpec.SelectionPrefs);
         NOverlayStack.Instance.Push(screen);
         IEnumerable<CardModel> selected = await screen.CardsSelected();
-        return choiceSpec.TryMapDisplayedOptionSelection(options, selected);
+        return choiceSpec.TryMapDisplayedSimpleGridSelection(options, selected);
     }
 }

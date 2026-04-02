@@ -856,12 +856,16 @@ public sealed partial class UndoController
 
     private static bool AreEquivalentChoiceSpecs(UndoChoiceSpec? left, UndoChoiceSpec? right)
     {
+        if (ReferenceEquals(left, right))
+            return true;
+
         if (left == null || right == null)
             return false;
 
         if (left.Kind != right.Kind
             || left.SourcePileType != right.SourcePileType
             || left.CanSkip != right.CanSkip
+            || !AreEquivalentSelectionPrefs(left.SelectionPrefs, right.SelectionPrefs)
             || !string.Equals(left.SourceModelTypeName, right.SourceModelTypeName, StringComparison.Ordinal)
             || !string.Equals(left.SourceModelId, right.SourceModelId, StringComparison.Ordinal))
         {
@@ -871,8 +875,78 @@ public sealed partial class UndoController
         if (!Nullable.Equals(left.SourceCombatCard, right.SourceCombatCard))
             return false;
 
-        return left.OptionCards.Count == right.OptionCards.Count
-            && left.SourcePileCombatCards.Count == right.SourcePileCombatCards.Count;
+        if (UsesStableSourcePileIdentity(left) || UsesStableSourcePileIdentity(right))
+            return AreEquivalentSourcePileChoiceSpecs(left, right);
+
+        return AreEquivalentGeneratedChoiceOptions(left, right);
+    }
+
+    private static bool AreEquivalentSelectionPrefs(CardSelectorPrefs left, CardSelectorPrefs right)
+    {
+        return left.MinSelect == right.MinSelect
+            && left.MaxSelect == right.MaxSelect
+            && left.RequireManualConfirmation == right.RequireManualConfirmation
+            && left.Cancelable == right.Cancelable
+            && left.UnpoweredPreviews == right.UnpoweredPreviews
+            && left.PretendCardsCanBePlayed == right.PretendCardsCanBePlayed
+            && AreEquivalentPrompt(left.Prompt, right.Prompt);
+    }
+
+    private static bool AreEquivalentPrompt(LocString? left, LocString? right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+
+        if (left == null || right == null)
+            return false;
+
+        return string.Equals(left.LocTable, right.LocTable, StringComparison.Ordinal)
+            && string.Equals(left.LocEntryKey, right.LocEntryKey, StringComparison.Ordinal);
+    }
+
+    private static bool UsesStableSourcePileIdentity(UndoChoiceSpec spec)
+    {
+        return spec.Kind == UndoChoiceKind.HandSelection
+            || spec.SourcePileType != null
+            || spec.SourcePileCombatCards.Count > 0
+            || spec.SourcePileOptionIndexes.Count > 0;
+    }
+
+    private static bool AreEquivalentSourcePileChoiceSpecs(UndoChoiceSpec left, UndoChoiceSpec right)
+    {
+        if (left.SourcePileCombatCards.Count != right.SourcePileCombatCards.Count
+            || left.SourcePileOptionIndexes.Count != right.SourcePileOptionIndexes.Count)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < left.SourcePileCombatCards.Count; i++)
+        {
+            if (!left.SourcePileCombatCards[i].Equals(right.SourcePileCombatCards[i]))
+                return false;
+        }
+
+        for (int i = 0; i < left.SourcePileOptionIndexes.Count; i++)
+        {
+            if (left.SourcePileOptionIndexes[i] != right.SourcePileOptionIndexes[i])
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool AreEquivalentGeneratedChoiceOptions(UndoChoiceSpec left, UndoChoiceSpec right)
+    {
+        if (left.OptionCards.Count != right.OptionCards.Count)
+            return false;
+
+        for (int i = 0; i < left.OptionCards.Count; i++)
+        {
+            if (!PacketDataEquals(left.OptionCards[i], right.OptionCards[i]))
+                return false;
+        }
+
+        return true;
     }
 
     private UndoCombatFullState BuildChoiceAnchorCombatState(
