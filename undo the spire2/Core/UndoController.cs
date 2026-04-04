@@ -23,8 +23,11 @@ using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Cards;
+using MegaCrit.Sts2.Core.Models.Potions;
 using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Models.Orbs;
+using MegaCrit.Sts2.Core.Models.Relics;
 using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Multiplayer.Replay;
@@ -187,6 +190,10 @@ public sealed partial class UndoController
     private PendingPlayActionSnapshotState? GetVisiblePendingPlayUndoState()
     {
         if (_pendingPlayActionSnapshots.Count == 0)
+            return null;
+
+        NCombatUi? combatUi = NCombatRoom.Instance?.Ui;
+        if (combatUi != null && IsSupportedChoiceUiActive(combatUi))
             return null;
 
         UndoSnapshot? currentChoiceAnchor = GetCurrentChoiceAnchorSnapshot();
@@ -1230,8 +1237,7 @@ public sealed partial class UndoController
     {
         if (IsRestoring)
         {
-            if (HasUndo)
-                Undo();
+            UndoDebugLog.Write($"undo ignored source={source} reason=restore_in_progress");
             return;
         }
 
@@ -1251,8 +1257,7 @@ public sealed partial class UndoController
     {
         if (IsRestoring)
         {
-            if (HasRedo)
-                Redo();
+            UndoDebugLog.Write($"redo ignored source={source} reason=restore_in_progress");
             return;
         }
 
@@ -2925,14 +2930,21 @@ public sealed partial class UndoController
             return null;
 
         GameAction? action = RunManager.Instance.ActionExecutor.CurrentlyRunningAction;
+        if (action?.State != GameActionState.GatheringPlayerChoice)
+            return null;
+
         if (restoredSnapshot.ActionKind == UndoActionKind.EndTurn
-            && action?.State == GameActionState.GatheringPlayerChoice)
+            && action.State == GameActionState.GatheringPlayerChoice)
         {
             return TryCreateWellLaidPlansChoiceSpec(me)
-                ?? TryCreateEntropyChoiceSpec(me, action);
+                ?? TryCreateEntropyChoiceSpec(me, action)
+                ?? TryCreateCurrentHandChoiceSpec(me)
+                ?? TryCreateCurrentSimpleGridChoiceSpec(me);
         }
 
-        return TryCreateEntropyChoiceSpec(me, action);
+        return TryCreateEntropyChoiceSpec(me, action)
+            ?? TryCreateCurrentHandChoiceSpec(me)
+            ?? TryCreateCurrentSimpleGridChoiceSpec(me);
     }
 
     private static UndoChoiceSpec? TryCaptureChoiceSpecFromCurrentActionContext(GameAction action)
@@ -2946,7 +2958,9 @@ public sealed partial class UndoController
             return null;
 
         return TryCreateWellLaidPlansChoiceSpec(me)
-            ?? TryCreateEntropyChoiceSpec(me, action);
+            ?? TryCreateEntropyChoiceSpec(me, action)
+            ?? TryCreateCurrentHandChoiceSpec(me)
+            ?? TryCreateCurrentSimpleGridChoiceSpec(me);
     }
 
     private static UndoChoiceSpec? TryCreateWellLaidPlansChoiceSpec(Player me)
@@ -2976,6 +2990,263 @@ public sealed partial class UndoController
 
         CardSelectorPrefs prefs = new(CardSelectorPrefs.TransformSelectionPrompt, entropy.Amount);
         return UndoChoiceSpec.CreateHandSelection(me, prefs, null, entropy);
+    }
+
+    private static UndoChoiceSpec? TryCreateCurrentHandChoiceSpec(Player me, CardSelectorPrefs? prefsOverride = null, Func<CardModel, bool>? filterOverride = null)
+    {
+        if (TryResolvePlayedCardChoiceSource<BurningPact>(me) is { } burningPact
+            && MatchesChoicePrompt(burningPact, prefsOverride))
+        {
+            return UndoChoiceSpec.CreateHandSelection(
+                me,
+                prefsOverride ?? new CardSelectorPrefs(CardSelectorPrefs.ExhaustSelectionPrompt, 1),
+                filterOverride,
+                burningPact);
+        }
+
+        if (TryResolvePlayedCardChoiceSource<Brand>(me) is { } brand
+            && MatchesChoicePrompt(brand, prefsOverride))
+        {
+            return UndoChoiceSpec.CreateHandSelection(
+                me,
+                prefsOverride ?? new CardSelectorPrefs(CardSelectorPrefs.ExhaustSelectionPrompt, 1),
+                filterOverride,
+                brand);
+        }
+
+        if (TryResolvePlayedCardChoiceSource<Scavenge>(me) is { } scavenge
+            && MatchesChoicePrompt(scavenge, prefsOverride))
+        {
+            return UndoChoiceSpec.CreateHandSelection(
+                me,
+                prefsOverride ?? new CardSelectorPrefs(CardSelectorPrefs.ExhaustSelectionPrompt, 1),
+                filterOverride,
+                scavenge);
+        }
+
+        if (TryResolvePlayedCardChoiceSource<TrueGrit>(me, static card => card.IsUpgraded) is { } trueGrit
+            && MatchesChoicePrompt(trueGrit, prefsOverride))
+        {
+            return UndoChoiceSpec.CreateHandSelection(
+                me,
+                prefsOverride ?? new CardSelectorPrefs(CardSelectorPrefs.ExhaustSelectionPrompt, 1),
+                filterOverride,
+                trueGrit);
+        }
+
+        if (TryResolvePlayedCardChoiceSource<Purity>(me) is { } purity
+            && MatchesChoicePrompt(purity, prefsOverride))
+        {
+            return UndoChoiceSpec.CreateHandSelection(
+                me,
+                prefsOverride ?? new CardSelectorPrefs(GetSelectionScreenPromptOrDefault(purity), 0, purity.DynamicVars.Cards.IntValue),
+                filterOverride,
+                purity);
+        }
+
+        if (me.Creature.GetPower<TyrannyPower>() is { } tyranny
+            && MatchesChoicePrompt(tyranny, prefsOverride))
+        {
+            return UndoChoiceSpec.CreateHandSelection(
+                me,
+                prefsOverride ?? new CardSelectorPrefs(CardSelectorPrefs.ExhaustSelectionPrompt, tyranny.Amount),
+                filterOverride,
+                tyranny);
+        }
+
+        if (TryResolvePotionChoiceSource<Ashwater>(me) is { } ashwater
+            && MatchesChoicePrompt(ashwater, prefsOverride))
+        {
+            return UndoChoiceSpec.CreateHandSelection(
+                me,
+                prefsOverride ?? new CardSelectorPrefs(GetSelectionScreenPromptOrDefault(ashwater), 0, 999999999),
+                filterOverride,
+                ashwater);
+        }
+
+        return null;
+    }
+
+    private static UndoChoiceSpec? TryCreateCurrentSimpleGridChoiceSpec(Player me, IReadOnlyList<CardModel>? cards = null, CardSelectorPrefs? prefsOverride = null)
+    {
+        if (me.Creature.GetPower<StratagemPower>() is { } stratagem
+            && MatchesChoicePrompt(stratagem, prefsOverride))
+        {
+            return UndoChoiceSpec.CreateSimpleGridSelection(
+                me,
+                cards ?? BuildOrderedDrawPileOptions(me),
+                prefsOverride ?? new CardSelectorPrefs(GetSelectionScreenPromptOrDefault(stratagem), stratagem.Amount),
+                stratagem);
+        }
+
+        if (me.Creature.GetPower<ForegoneConclusionPower>() is { } foregoneConclusion
+            && MatchesChoicePrompt(foregoneConclusion, prefsOverride))
+        {
+            return UndoChoiceSpec.CreateSimpleGridSelection(
+                me,
+                cards ?? BuildOrderedDrawPileOptions(me),
+                prefsOverride ?? new CardSelectorPrefs(GetSelectionScreenPromptOrDefault(foregoneConclusion), foregoneConclusion.Amount),
+                foregoneConclusion);
+        }
+
+        if (TryResolvePotionChoiceSource<DropletOfPrecognition>(me) is { } droplet
+            && MatchesChoicePrompt(droplet, prefsOverride))
+        {
+            return UndoChoiceSpec.CreateSimpleGridSelection(
+                me,
+                cards ?? BuildOrderedDrawPileOptions(me),
+                prefsOverride ?? new CardSelectorPrefs(GetSelectionScreenPromptOrDefault(droplet), 1),
+                droplet);
+        }
+
+        if (TryResolvePotionChoiceSource<LiquidMemories>(me) is { } liquidMemories
+            && MatchesChoicePrompt(liquidMemories, prefsOverride))
+        {
+            return UndoChoiceSpec.CreateSimpleGridSelection(
+                me,
+                cards ?? PileType.Discard.GetPile(me).Cards,
+                prefsOverride ?? new CardSelectorPrefs(GetSelectionScreenPromptOrDefault(liquidMemories), 1),
+                liquidMemories);
+        }
+
+        if (TryResolvePlayedCardChoiceSource<Dredge>(me) is { } dredge
+            && MatchesChoicePrompt(dredge, prefsOverride))
+        {
+            int cardsToReturn = Math.Min(dredge.DynamicVars.Cards.IntValue, 10 - PileType.Hand.GetPile(me).Cards.Count);
+            if (cardsToReturn > 0)
+            {
+                return UndoChoiceSpec.CreateSimpleGridSelection(
+                    me,
+                    cards ?? PileType.Discard.GetPile(me).Cards,
+                    prefsOverride ?? new CardSelectorPrefs(GetSelectionScreenPromptOrDefault(dredge), cardsToReturn),
+                    dredge);
+            }
+        }
+
+        if (cards != null
+            && TryResolveRelicChoiceSource<ChoicesParadox>(me) is { } choicesParadox
+            && MatchesChoicePrompt(choicesParadox, prefsOverride))
+        {
+            return UndoChoiceSpec.CreateSimpleGridSelection(
+                me,
+                cards,
+                prefsOverride ?? new CardSelectorPrefs(GetChoicesParadoxPrompt(), 1),
+                choicesParadox);
+        }
+
+        return null;
+    }
+
+    private static IReadOnlyList<CardModel> BuildOrderedDrawPileOptions(Player me)
+    {
+        return PileType.Draw.GetPile(me).Cards
+            .OrderBy(card => card.Rarity)
+            .ThenBy(card => card.Id)
+            .ToList();
+    }
+
+    private static TCard? TryResolvePlayedCardChoiceSource<TCard>(Player me, Func<TCard, bool>? predicate = null)
+        where TCard : CardModel
+    {
+        foreach (CardModel card in PileType.Play.GetPile(me).Cards.Reverse())
+        {
+            if (card is not TCard typedCard)
+                continue;
+
+            if (predicate == null || predicate(typedCard))
+                return typedCard;
+        }
+
+        return null;
+    }
+
+    private static TPotion? TryResolvePotionChoiceSource<TPotion>(Player me)
+        where TPotion : PotionModel
+    {
+        for (int slotIndex = 0; slotIndex < me.MaxPotionCount; slotIndex++)
+        {
+            if (me.GetPotionAtSlotIndex(slotIndex) is TPotion potion)
+                return potion;
+        }
+
+        return null;
+    }
+
+    private static TRelic? TryResolveRelicChoiceSource<TRelic>(Player me)
+        where TRelic : RelicModel
+    {
+        return me.Relics.OfType<TRelic>().FirstOrDefault();
+    }
+
+    private static bool MatchesChoicePrompt(AbstractModel source, CardSelectorPrefs? prefs)
+    {
+        if (!prefs.HasValue)
+            return true;
+
+        return TryGetSelectionScreenPrompt(source, out LocString prompt)
+            && AreEquivalentChoicePrompt(prompt, prefs.Value.Prompt);
+    }
+
+    private static bool TryGetSelectionScreenPrompt(AbstractModel source, out LocString prompt)
+    {
+        if (TryGetKnownChoicePrompt(source, out prompt))
+            return true;
+
+        if (source is ChoicesParadox)
+        {
+            prompt = GetChoicesParadoxPrompt();
+            return true;
+        }
+
+        try
+        {
+            if (FindProperty(source.GetType(), "SelectionScreenPrompt")?.GetValue(source) is LocString selectionPrompt)
+            {
+                prompt = selectionPrompt;
+                return true;
+            }
+        }
+        catch
+        {
+            if (TryGetKnownChoicePrompt(source, out prompt))
+                return true;
+        }
+
+        prompt = new LocString(string.Empty, string.Empty);
+        return false;
+    }
+
+    private static bool TryGetKnownChoicePrompt(AbstractModel source, out LocString prompt)
+    {
+        if (source is BurningPact or Brand or Scavenge or TrueGrit or TyrannyPower)
+        {
+            prompt = CardSelectorPrefs.ExhaustSelectionPrompt;
+            return true;
+        }
+
+        prompt = default;
+        return false;
+    }
+
+    private static LocString GetChoicesParadoxPrompt()
+    {
+        return typeof(RelicModel)
+            .GetMethod("L10NLookup", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic, null, [typeof(string)], null)?
+            .Invoke(null, ["CHOICES_PARADOX.selectionScreenPrompt"]) as LocString
+            ?? new LocString(string.Empty, "CHOICES_PARADOX.selectionScreenPrompt");
+    }
+
+    private static bool AreEquivalentChoicePrompt(LocString left, LocString right)
+    {
+        return string.Equals(left.LocTable, right.LocTable, StringComparison.Ordinal)
+            && string.Equals(left.LocEntryKey, right.LocEntryKey, StringComparison.Ordinal);
+    }
+
+    private static LocString GetSelectionScreenPromptOrDefault(AbstractModel source)
+    {
+        return TryGetSelectionScreenPrompt(source, out LocString prompt)
+            ? prompt
+            : new LocString(string.Empty, string.Empty);
     }
 
     private UndoChoiceSpec? FindChoiceSpecInHistory(int replayEventCount)
@@ -3010,7 +3281,8 @@ public sealed partial class UndoController
             && FindField(combatUi.Hand.GetType(), "_prefs")?.GetValue(combatUi.Hand) is CardSelectorPrefs handPrefs)
         {
             Func<CardModel, bool>? handFilter = FindField(combatUi.Hand.GetType(), "_currentSelectionFilter")?.GetValue(combatUi.Hand) as Func<CardModel, bool>;
-            return UndoChoiceSpec.CreateHandSelection(me, handPrefs, handFilter);
+            return TryCreateCurrentHandChoiceSpec(me, handPrefs, handFilter)
+                ?? UndoChoiceSpec.CreateHandSelection(me, handPrefs, handFilter);
         }
 
         if (NOverlayStack.Instance?.Peek() is NChooseACardSelectionScreen chooseScreen
@@ -3024,7 +3296,8 @@ public sealed partial class UndoController
             && GetPrivateFieldValue<IReadOnlyList<CardModel>>(gridScreen, "_cards") is { } gridCards
             && FindField(gridScreen.GetType(), "_prefs")?.GetValue(gridScreen) is CardSelectorPrefs gridPrefs)
         {
-            return UndoChoiceSpec.CreateSimpleGridSelection(me, gridCards, gridPrefs);
+            return TryCreateCurrentSimpleGridChoiceSpec(me, gridCards, gridPrefs)
+                ?? UndoChoiceSpec.CreateSimpleGridSelection(me, gridCards, gridPrefs);
         }
 
         return null;
@@ -3155,14 +3428,19 @@ public sealed partial class UndoController
         }
     }
 
-    private async Task DismissSupportedChoiceUiIfPresentAsync()
+    private async Task DismissSupportedChoiceUiIfPresentAsync(UndoSyntheticChoiceSession? sessionToPreserve = null)
     {
         ReleaseDetachedHandDiscardExecutionGuard("dismiss_choice_ui");
 
-        if (_syntheticChoiceSession != null && IsOfficialFromHandDiscardChoice(_syntheticChoiceSession.ChoiceSpec))
+        if (_syntheticChoiceSession != null
+            && !ReferenceEquals(_syntheticChoiceSession, sessionToPreserve)
+            && IsOfficialFromHandDiscardChoice(_syntheticChoiceSession.ChoiceSpec))
+        {
             DiscardDeferredActionSnapshots("choice_ui_dismiss");
+        }
 
-        _syntheticChoiceSession = null;
+        if (!ReferenceEquals(_syntheticChoiceSession, sessionToPreserve))
+            _syntheticChoiceSession = null;
 
         bool removedOverlay = false;
         while (NOverlayStack.Instance?.Peek() is IOverlayScreen choiceScreen

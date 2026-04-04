@@ -139,11 +139,53 @@ internal sealed class UndoNamedPowerRefCollectionsRuntimeComplexState : UndoComp
     public IReadOnlyList<UndoNamedPowerRefCollectionRuntimeEntry> Collections { get; init; } = [];
 }
 
+internal sealed class UndoPowerScalarFieldsRuntimeComplexState : UndoComplexRuntimeState
+{
+    public IReadOnlyList<UndoNamedBoolState> DirectBoolFields { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedIntState> DirectIntFields { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedDecimalRuntimeEntry> DirectDecimalFields { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedEnumState> DirectEnumFields { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedBoolState> InternalBoolFields { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedIntState> InternalIntFields { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedDecimalRuntimeEntry> InternalDecimalFields { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedEnumState> InternalEnumFields { get; init; } = [];
+}
+
+internal sealed class UndoPowerCardRefFieldsRuntimeComplexState : UndoComplexRuntimeState
+{
+    public IReadOnlyList<UndoNamedCardRefRuntimeEntry> DirectEntries { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedCardRefRuntimeEntry> InternalEntries { get; init; } = [];
+}
+
+internal sealed class UndoPowerCardPlayFieldsRuntimeComplexState : UndoComplexRuntimeState
+{
+    public IReadOnlyList<UndoNamedCardPlayRuntimeEntry> DirectEntries { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedCardPlayRuntimeEntry> InternalEntries { get; init; } = [];
+}
+
+internal sealed class UndoPowerCardRefCollectionsRuntimeComplexState : UndoComplexRuntimeState
+{
+    public IReadOnlyList<UndoNamedCardRefCollectionRuntimeEntry> DirectCollections { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedCardRefCollectionRuntimeEntry> InternalCollections { get; init; } = [];
+}
+
 internal sealed class UndoRelicScalarFieldsRuntimeComplexState : UndoComplexRuntimeState
 {
     public IReadOnlyList<UndoNamedBoolState> BoolFields { get; init; } = [];
 
     public IReadOnlyList<UndoNamedIntState> IntFields { get; init; } = [];
+
+    public IReadOnlyList<UndoNamedDecimalRuntimeEntry> DecimalFields { get; init; } = [];
 
     public IReadOnlyList<UndoNamedEnumState> EnumFields { get; init; } = [];
 }

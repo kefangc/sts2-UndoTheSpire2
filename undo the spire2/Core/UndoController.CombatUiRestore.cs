@@ -140,6 +140,36 @@ public sealed partial class UndoController
             _ = ReconcileHandDiscardChoiceUiAfterSettleAsync(combatState);
     }
 
+    private static async Task RefreshCombatUiAfterDetachedPlayedCardChoiceAsync(CombatState combatState)
+    {
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatRoom == null)
+            return;
+
+        RefreshCreaturePowerDisplays(combatState);
+        Player? me = LocalContext.GetMe(combatState);
+        if (me != null)
+        {
+            ClearTransientHandUiStateForRestore(combatRoom.Ui.Hand);
+            ClearPlayQueueUi(combatRoom.Ui.PlayQueue);
+            TrySyncExistingHandUi(combatRoom.Ui.Hand, me);
+            RefreshCombatPileCounts(combatRoom.Ui, me);
+            SyncPlayContainerCards(combatRoom.Ui, me);
+        }
+
+        ForceCombatUiInteractiveState(combatRoom.Ui, combatState, me);
+        await WaitOneFrameAsync();
+        if (me != null && NCombatRoom.Instance != null)
+        {
+            ClearTransientHandUiStateForRestore(NCombatRoom.Instance.Ui.Hand);
+            ClearPlayQueueUi(NCombatRoom.Instance.Ui.PlayQueue);
+            TrySyncExistingHandUi(NCombatRoom.Instance.Ui.Hand, me);
+            SyncPlayContainerCards(NCombatRoom.Instance.Ui, me);
+            RefreshCombatPileCounts(NCombatRoom.Instance.Ui, me);
+            ForceCombatUiInteractiveState(NCombatRoom.Instance.Ui, combatState, me);
+        }
+    }
+
     private static async Task ReconcileHandDiscardChoiceUiAfterSettleAsync(CombatState combatState)
     {
         try

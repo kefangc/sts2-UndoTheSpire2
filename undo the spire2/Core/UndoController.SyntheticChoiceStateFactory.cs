@@ -157,7 +157,7 @@ public sealed partial class UndoController
             return false;
 
         // 计策在选牌后还会继续抽牌，直接套模板分支会把“被选中的牌”和“后续抽到的牌”重复保留下来。
-        if (IsSourceChoice(choiceSpec, typeof(StratagemPower))
+        if (IsOrderedDrawSelectionChoiceSource(choiceSpec)
             && TryCreateStratagemCombatState(anchorSnapshot, templateSnapshot, selectedKey, out combatState))
         {
             return true;
@@ -175,7 +175,7 @@ public sealed partial class UndoController
         combatState = null;
         UndoChoiceSpec? choiceSpec = anchorSnapshot.ChoiceSpec;
         if (choiceSpec == null
-            || !IsSourceChoice(choiceSpec, typeof(StratagemPower))
+            || !IsOrderedDrawSelectionChoiceSource(choiceSpec)
             || choiceSpec.Kind != UndoChoiceKind.SimpleGridSelection
             || choiceSpec.SourcePileType != PileType.Draw)
         {
@@ -272,6 +272,12 @@ public sealed partial class UndoController
         fullState.Players[playerIndex] = branchPlayerState;
         combatState = CreateDerivedCombatState(templateSnapshot.CombatState, anchorSnapshot.CombatState, fullState);
         return true;
+    }
+
+    private static bool IsOrderedDrawSelectionChoiceSource(UndoChoiceSpec choiceSpec)
+    {
+        return IsSourceChoice(choiceSpec, typeof(StratagemPower))
+            || IsSourceChoice(choiceSpec, typeof(ForegoneConclusionPower));
     }
 
     private static bool TryCreateSourcePileSelectionCombatState(
