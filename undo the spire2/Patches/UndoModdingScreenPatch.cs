@@ -49,7 +49,9 @@ internal static class UndoModdingScreenPatch
                 return true;
         }
 
-        object? manifest = UndoReflectionUtil.ReadMember(mod, "manifest") ?? UndoReflectionUtil.ReadMember(mod, "modManifest");
+        object? manifest = UndoReflectionUtil.TryReadMember(mod, "manifest", out object? resolvedManifest)
+            ? resolvedManifest
+            : (UndoReflectionUtil.TryReadMember(mod, "modManifest", out object? fallbackManifest) ? fallbackManifest : null);
         if (manifest == null)
             return false;
 

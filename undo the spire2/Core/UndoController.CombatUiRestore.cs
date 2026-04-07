@@ -137,7 +137,11 @@ public sealed partial class UndoController
         ForceCombatUiInteractiveState(combatRoom.Ui, combatState, me);
         await WaitOneFrameAsync();
         if (!officialHandChoiceUiSettled)
-            _ = ReconcileHandDiscardChoiceUiAfterSettleAsync(combatState);
+        {
+            MainFile.Controller.StartHandChoiceUiReconcileOperation(
+                "deferred_hand_discard_ui_reconcile",
+                lease => ReconcileHandDiscardChoiceUiAfterSettleAsync(lease, combatState));
+        }
     }
 
     private static async Task RefreshCombatUiAfterDetachedPlayedCardChoiceAsync(CombatState combatState)
@@ -170,13 +174,16 @@ public sealed partial class UndoController
         }
     }
 
-    private static async Task ReconcileHandDiscardChoiceUiAfterSettleAsync(CombatState combatState)
+    private static async Task ReconcileHandDiscardChoiceUiAfterSettleAsync(UndoOperationLease lease, CombatState combatState)
     {
         try
         {
             Player? me = LocalContext.GetMe(combatState);
             for (int frame = 0; frame < 120; frame++)
             {
+                if (MainFile.Controller.ShouldAbortTrackedOperation(lease, $"deferred_hand_discard_ui_reconcile:{frame}"))
+                    return;
+
                 NCombatRoom? combatRoom = NCombatRoom.Instance;
                 if (combatRoom == null || !CombatManager.Instance.IsInProgress)
                     return;
@@ -193,12 +200,19 @@ public sealed partial class UndoController
             }
 
             if (NCombatRoom.Instance?.Ui?.Hand is { } handAfterWait
+                && !MainFile.Controller.ShouldAbortTrackedOperation(lease, "deferred_hand_discard_ui_reconcile:official_path")
                 && MainFile.Controller.IsAwaitingOfficialHandChoiceSourceFinish(handAfterWait, me)
-                && TryCompletePendingHandDiscardChoiceUiViaOfficialPath(handAfterWait))
+                && MainFile.Controller.TryCompletePendingHandDiscardChoiceUiViaOfficialPath(handAfterWait))
             {
                 await WaitOneFrameAsync();
-                await MainFile.Controller.WaitForOfficialHandChoiceUiSettleAsync(handAfterWait, me, maxFrames: 60);
+                if (MainFile.Controller.ShouldAbortTrackedOperation(lease, "deferred_hand_discard_ui_reconcile:after_official_path"))
+                    return;
+
+                await MainFile.Controller.WaitForOfficialHandChoiceUiSettleAsync(handAfterWait, me, lease, maxFrames: 60);
             }
+
+            if (MainFile.Controller.ShouldAbortTrackedOperation(lease, "deferred_hand_discard_ui_reconcile:recover"))
+                return;
 
             RecoverHandDiscardChoiceUiIfNeeded(combatState);
         }
@@ -232,36 +246,6 @@ public sealed partial class UndoController
         SyncPlayContainerCards(ui, me);
         ForceCombatUiInteractiveState(ui, combatState, me, normalizeHandLayout: true);
         NotifyCombatStateChangedMethod?.Invoke(CombatManager.Instance.StateTracker, ["UndoHandDiscardChoiceUiRecovery"]);
-    }
-
-    private static bool TryCompletePendingHandDiscardChoiceUiViaOfficialPath(NPlayerHand hand)
-    {
-        AbstractModel? pendingSource = MainFile.Controller._pendingHandChoiceSource;
-        if (!CanSafelyMutateHandUi(hand)
-            || pendingSource == null
-            || MainFile.Controller._pendingHandChoiceUiSettle?.CallbackObserved == true
-            || GetSelectedHandHolderCount(hand) == 0)
-        {
-            return false;
-        }
-
-        MethodInfo? handlerMethod = FindMethod(hand.GetType(), "OnSelectModeSourceFinished");
-        if (handlerMethod == null)
-            return false;
-
-        try
-        {
-            handlerMethod.Invoke(hand, [pendingSource]);
-            UndoDebugLog.Write(
-                $"hand_discard_ui_recovered_via_official source={pendingSource.GetType().Name}"
-                + $" holders={hand.CardHolderContainer.GetChildCount()} selected={GetSelectedHandHolderCount(hand)}");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            UndoDebugLog.Write($"hand_discard_ui_official_recover_failed:{ex}");
-            return false;
-        }
     }
 
     private static bool NeedsHandDiscardChoiceUiRecovery(NPlayerHand hand, Player player)
@@ -322,6 +306,9 @@ public sealed partial class UndoController
         foreach (Creature creature in combatState.Creatures)
         {
             NCreature? creatureNode = combatRoom.GetCreatureNode(creature);
+            if (creatureNode == null)
+                continue;
+
             NCreatureStateDisplay? stateDisplay = GetPrivateFieldValue<NCreatureStateDisplay>(creatureNode, "_stateDisplay");
             NPowerContainer? powerContainer = stateDisplay == null
                 ? null
@@ -1187,7 +1174,8 @@ public sealed partial class UndoController
         {
             try
             {
-                if (UndoReflectionUtil.FindProperty(animationState.GetType(), "BoundObject")?.GetValue(animationState) is GodotObject boundObject
+                if (UndoReflectionUtil.TryGetPropertyValue(animationState, "BoundObject", out GodotObject? boundObject)
+                    && boundObject != null
                     && boundObject.HasMethod("clear_track"))
                 {
                     boundObject.Call("clear_track", trackIndex);
@@ -1242,7 +1230,7 @@ public sealed partial class UndoController
 
         if (snapshotState?.CurrentPosition is Vector2 snapshotCurrentPosition)
             stateDisplay.Position = snapshotCurrentPosition;
-        else if (UndoReflectionUtil.FindField(stateDisplay.GetType(), "_originalPosition")?.GetValue(stateDisplay) is Vector2 originalPosition)
+        else if (UndoReflectionUtil.TryGetFieldValue(stateDisplay, "_originalPosition", out Vector2 originalPosition))
             stateDisplay.Position = originalPosition;
 
         if (snapshotState?.Visible is bool visible)
@@ -1271,7 +1259,7 @@ public sealed partial class UndoController
         {
             if (snapshotState?.CurrentBlockPosition is Vector2 snapshotCurrentBlockPosition)
                 blockContainer.Position = snapshotCurrentBlockPosition;
-            else if (UndoReflectionUtil.FindField(healthBar.GetType(), "_originalBlockPosition")?.GetValue(healthBar) is Vector2 originalBlockPosition)
+            else if (UndoReflectionUtil.TryGetFieldValue(healthBar, "_originalBlockPosition", out Vector2 originalBlockPosition))
                 blockContainer.Position = originalBlockPosition;
 
             if (snapshotState?.BlockVisible is bool blockVisible)
@@ -1502,8 +1490,12 @@ public sealed partial class UndoController
     private static float GetCombatRoomEncounterScaling(NCombatRoom combatRoom)
     {
         object? visuals = GetPrivateFieldValue<object>(combatRoom, "_visuals");
-        object? encounter = visuals == null ? null : FindProperty(visuals.GetType(), "Encounter")?.GetValue(visuals);
-        object? scaling = encounter == null ? null : FindMethod(encounter.GetType(), "GetCameraScaling")?.Invoke(encounter, null);
+        object? encounter = visuals != null && UndoReflectionUtil.TryGetPropertyValue(visuals, "Encounter", out object? resolvedEncounter)
+            ? resolvedEncounter
+            : null;
+        object? scaling = encounter != null && UndoReflectionUtil.TryInvokeMethod(encounter, "GetCameraScaling", out object? resolvedScaling)
+            ? resolvedScaling
+            : null;
         return scaling is float floatScaling ? floatScaling : 1f;
     }
 
@@ -1695,8 +1687,7 @@ public sealed partial class UndoController
 
     private static void SetHandPresentation(NPlayerHand hand, bool shouldBeEnabled)
     {
-        object? disabledValue = FindField(hand.GetType(), "_isDisabled")?.GetValue(hand);
-        bool isCurrentlyDisabled = disabledValue is bool disabled && disabled;
+        bool isCurrentlyDisabled = UndoReflectionUtil.TryGetFieldValue(hand, "_isDisabled", out bool disabled) && disabled;
         if (isCurrentlyDisabled != !shouldBeEnabled)
         {
             ClearTween(hand, "_animInTween");
@@ -2031,29 +2022,6 @@ public sealed partial class UndoController
 
         if (updatedAnyNodePosition)
             InvokePrivateMethod(combatRoom, "UpdateCreatureNavigation");
-    }
-    private void DetachPendingHandSelectionSource(NPlayerHand hand)
-    {
-        if (_pendingHandChoiceSource == null)
-            return;
-
-        MethodInfo? handlerMethod = FindMethod(hand.GetType(), "OnSelectModeSourceFinished");
-        if (handlerMethod == null)
-        {
-            _pendingHandChoiceSource = null;
-            return;
-        }
-
-        try
-        {
-            Action<AbstractModel> handler = (Action<AbstractModel>)handlerMethod.CreateDelegate(typeof(Action<AbstractModel>), hand);
-            _pendingHandChoiceSource.ExecutionFinished -= handler;
-        }
-        catch
-        {
-        }
-
-        _pendingHandChoiceSource = null;
     }
     // restore/撤销清理旧选牌 UI 时，不要把已选牌临时加回手牌。
     // hand.Add(...) 会立刻触发官方 RefreshLayout，若此时手牌 holder 还没清空，

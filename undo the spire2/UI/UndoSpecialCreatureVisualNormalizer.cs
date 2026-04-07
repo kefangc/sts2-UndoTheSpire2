@@ -78,13 +78,15 @@ internal static class UndoSpecialCreatureVisualNormalizer
     {
         if (!TryGetPaelsLegionExpectation(creature, out PaelsLegionVisualExpectation? expectation, out _))
             return;
+        if (creature.Monster is not PaelsLegionMonster monster || expectation == null)
+            return;
 
         NCreature? creatureNode = combatRoom.GetCreatureNode(creature);
         if (creatureNode == null)
             return;
 
         NormalizeCreatureNodeVisibility(creature, creatureNode);
-        creatureNode.Visuals.SetUpSkin(creature.Monster);
+        creatureNode.Visuals.SetUpSkin(monster);
         creatureNode.SetAnimationTrigger(expectation.Trigger);
     }
 
@@ -260,16 +262,21 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
     private static void RebindStateDisplayTracking(NCreature creatureNode, Creature? creatureToTrack)
     {
-        object? stateDisplay = UndoReflectionUtil.FindField(creatureNode.GetType(), "_stateDisplay")?.GetValue(creatureNode);
+        if (!UndoReflectionUtil.TryGetFieldValue(creatureNode, "_stateDisplay", out object? stateDisplay))
+            return;
         if (stateDisplay is not GodotObject stateDisplayObject || !GodotObject.IsInstanceValid(stateDisplayObject))
             return;
 
-        Creature? previousTrackedCreature = UndoReflectionUtil.FindField(stateDisplay.GetType(), "_blockTrackingCreature")?.GetValue(stateDisplay) as Creature;
+        Creature? previousTrackedCreature = UndoReflectionUtil.TryGetFieldValue(stateDisplay, "_blockTrackingCreature", out Creature? trackedCreature)
+            ? trackedCreature
+            : null;
         if (previousTrackedCreature != null)
             TryUnsubscribeBlockTracking(stateDisplay, previousTrackedCreature);
 
         UndoReflectionUtil.TrySetFieldValue(stateDisplay, "_blockTrackingCreature", null);
-        object? healthBar = UndoReflectionUtil.FindField(stateDisplay.GetType(), "_healthBar")?.GetValue(stateDisplay);
+        object? healthBar = UndoReflectionUtil.TryGetFieldValue(stateDisplay, "_healthBar", out object? resolvedHealthBar)
+            ? resolvedHealthBar
+            : null;
         if (healthBar != null)
             UndoReflectionUtil.TrySetFieldValue(healthBar, "_blockTrackingCreature", null);
 
@@ -567,7 +574,8 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
     private static void NormalizeStateDisplayVisibility(NCreature creatureNode, bool showStateDisplay)
     {
-        object? stateDisplay = UndoReflectionUtil.FindField(creatureNode.GetType(), "_stateDisplay")?.GetValue(creatureNode);
+        if (!UndoReflectionUtil.TryGetFieldValue(creatureNode, "_stateDisplay", out object? stateDisplay))
+            return;
         if (stateDisplay is not Control stateDisplayControl || !GodotObject.IsInstanceValid(stateDisplayControl))
             return;
 
@@ -608,14 +616,18 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
     private static void HideInfinityHealthIndicator(object stateDisplay)
     {
-        object? healthBar = UndoReflectionUtil.FindField(stateDisplay.GetType(), "_healthBar")?.GetValue(stateDisplay);
+        object? healthBar = UndoReflectionUtil.TryGetFieldValue(stateDisplay, "_healthBar", out object? resolvedHealthBar)
+            ? resolvedHealthBar
+            : null;
         if (healthBar == null)
             return;
 
-        if (UndoReflectionUtil.FindField(healthBar.GetType(), "_infinityTex")?.GetValue(healthBar) is TextureRect infinityTex)
+        if (UndoReflectionUtil.TryGetFieldValue(healthBar, "_infinityTex", out TextureRect? infinityTex)
+            && infinityTex != null)
             infinityTex.Visible = false;
 
-        if (UndoReflectionUtil.FindField(healthBar.GetType(), "_hpLabel")?.GetValue(healthBar) is Control hpLabel)
+        if (UndoReflectionUtil.TryGetFieldValue(healthBar, "_hpLabel", out Control? hpLabel)
+            && hpLabel != null)
             hpLabel.Visible = true;
     }
 
@@ -745,12 +757,7 @@ internal static class UndoSpecialCreatureVisualNormalizer
     {
         try
         {
-            var method = UndoReflectionUtil.FindMethod(target.GetType(), name);
-            if (method == null)
-                return false;
-
-            method.Invoke(target, args);
-            return true;
+            return UndoReflectionUtil.TryInvokeMethod(target, name, out _, args);
         }
         catch
         {
@@ -760,7 +767,10 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
     private static void SetLagavulinEyes(NCreature creatureNode, string animationName, bool addLoop)
     {
-        var animationState = creatureNode.Visuals.SpineBody.GetAnimationState();
+        var animationState = creatureNode.Visuals?.SpineBody?.GetAnimationState();
+        if (animationState == null)
+            return;
+
         animationState.SetAnimation(animationName, addLoop ? false : true, 1);
         if (addLoop)
             animationState.AddAnimation("_tracks/eyes_open_loop", 0f, true, 1);
@@ -786,15 +796,17 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
         try
         {
-            object? trackEntry = UndoReflectionUtil.FindMethod(animationState.GetType(), "GetCurrent")?.Invoke(animationState, [trackIndex]);
-            if (trackEntry == null)
+            if (!UndoReflectionUtil.TryInvokeMethod(animationState, "GetCurrent", out object? trackEntry, trackIndex)
+                || trackEntry == null)
                 return null;
 
-            object? animation = UndoReflectionUtil.FindMethod(trackEntry.GetType(), "GetAnimation")?.Invoke(trackEntry, null);
-            if (animation == null)
+            if (!UndoReflectionUtil.TryInvokeMethod(trackEntry, "GetAnimation", out object? animation)
+                || animation == null)
                 return null;
 
-            return UndoReflectionUtil.FindMethod(animation.GetType(), "GetName")?.Invoke(animation, null) as string;
+            return UndoReflectionUtil.TryInvokeMethod(animation, "GetName", out object? animationName)
+                ? animationName as string
+                : null;
         }
         catch
         {
@@ -819,7 +831,10 @@ internal static class UndoSpecialCreatureVisualNormalizer
         if (marker == null)
             return;
 
-        NSleepingVfx sleepingVfx = NSleepingVfx.Create(marker.GlobalPosition, true);
+        NSleepingVfx? sleepingVfx = NSleepingVfx.Create(marker.GlobalPosition, true);
+        if (sleepingVfx == null)
+            return;
+
         marker.AddChild(sleepingVfx);
         sleepingVfx.Position = Vector2.Zero;
         if (!UndoReflectionUtil.TrySetPropertyValue(monster, "SleepingVfx", sleepingVfx))
@@ -849,26 +864,33 @@ internal static class UndoSpecialCreatureVisualNormalizer
     }
     private static NSleepingVfx? GetSleepingVfx(object monster)
     {
-        return UndoReflectionUtil.FindProperty(monster.GetType(), "SleepingVfx")?.GetValue(monster) as NSleepingVfx
-            ?? UndoReflectionUtil.FindField(monster.GetType(), "_sleepingVfx")?.GetValue(monster) as NSleepingVfx;
+        if (UndoReflectionUtil.TryGetPropertyValue(monster, "SleepingVfx", out NSleepingVfx? sleepingVfx)
+            && sleepingVfx != null)
+        {
+            return sleepingVfx;
+        }
+
+        return UndoReflectionUtil.TryGetFieldValue(monster, "_sleepingVfx", out NSleepingVfx? sleepingVfxField)
+            ? sleepingVfxField
+            : null;
     }
 
     private static bool ReadBoolMonsterProperty(object monster, string propertyName)
     {
-        if (UndoReflectionUtil.FindProperty(monster.GetType(), propertyName)?.GetValue(monster) is bool propertyValue)
+        if (UndoReflectionUtil.TryGetPropertyValue(monster, propertyName, out bool propertyValue))
             return propertyValue;
 
         string fieldName = '_' + char.ToLowerInvariant(propertyName[0]) + propertyName[1..];
-        return UndoReflectionUtil.FindField(monster.GetType(), fieldName)?.GetValue(monster) is bool fieldValue && fieldValue;
+        return UndoReflectionUtil.TryGetFieldValue(monster, fieldName, out bool fieldValue) && fieldValue;
     }
 
     private static int ReadIntMonsterProperty(object monster, string propertyName)
     {
-        if (UndoReflectionUtil.FindProperty(monster.GetType(), propertyName)?.GetValue(monster) is int propertyValue)
+        if (UndoReflectionUtil.TryGetPropertyValue(monster, propertyName, out int propertyValue))
             return propertyValue;
 
         string fieldName = '_' + char.ToLowerInvariant(propertyName[0]) + propertyName[1..];
-        return UndoReflectionUtil.FindField(monster.GetType(), fieldName)?.GetValue(monster) as int? ?? 0;
+        return UndoReflectionUtil.TryGetFieldValue(monster, fieldName, out int fieldValue) ? fieldValue : 0;
     }
 
     private static bool TryGetPaelsLegionExpectation(Creature creature, out PaelsLegionVisualExpectation? expectation, out PaelsLegionRelic? relic)
@@ -922,8 +944,8 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
     private static string GetPaelsLegionVisualTrigger(PaelsLegionRelic relic)
     {
-        int cooldown = UndoReflectionUtil.FindProperty(relic.GetType(), "Cooldown")?.GetValue(relic) is int value ? value : 0;
-        bool triggeredBlockLastTurn = UndoReflectionUtil.FindProperty(relic.GetType(), "TriggeredBlockLastTurn")?.GetValue(relic) is bool triggered && triggered;
+        int cooldown = UndoReflectionUtil.TryGetPropertyValue(relic, "Cooldown", out int value) ? value : 0;
+        bool triggeredBlockLastTurn = UndoReflectionUtil.TryGetPropertyValue(relic, "TriggeredBlockLastTurn", out bool triggered) && triggered;
         if (cooldown <= 0)
             return "Idle";
 

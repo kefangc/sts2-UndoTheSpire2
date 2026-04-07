@@ -180,7 +180,8 @@ public sealed partial class UndoController
 
     private static void RestoreSpecialPowerRuntimeState(PowerModel power, UndoPowerRuntimeState runtimeState, CombatState combatState)
     {
-        if (FindField(typeof(PowerModel), "_internalData")?.GetValue(power) is not { } internalData)
+        if (!UndoReflectionUtil.TryGetFieldValue(power, "_internalData", out object? internalData)
+            || internalData == null)
             return;
 
         UndoNamedBoolState? isRevivingState = runtimeState.BoolProperties.FirstOrDefault(static state => state.Name == "IsReviving");
@@ -191,7 +192,9 @@ public sealed partial class UndoController
         if (power is not VitalSparkPower)
             return;
 
-        object? triggeredPlayersValue = FindField(internalData.GetType(), "playersTriggeredThisTurn")?.GetValue(internalData);
+        object? triggeredPlayersValue = UndoReflectionUtil.TryGetFieldValue(internalData, "playersTriggeredThisTurn", out object? resolvedPlayers)
+            ? resolvedPlayers
+            : null;
         if (triggeredPlayersValue == null)
             return;
 
@@ -623,6 +626,8 @@ public sealed partial class UndoController
 
         RestorePlayers(runState, combatState, snapshot);
         RestoreCreatures(runState, combatState, snapshot);
+        UndoCombatRewardRuntime.ClearLiveExtraRewards(runState);
+        UndoDelayedCombatRewardService.RestoreSnapshot(snapshot.PendingCombatRewardStates);
 
         combatState.RoundNumber = snapshot.RoundNumber;
         combatState.CurrentSide = snapshot.CurrentSide;
@@ -699,10 +704,12 @@ public sealed partial class UndoController
     private static void ResetActionSynchronizerForRestore()
     {
         ActionQueueSynchronizer synchronizer = RunManager.Instance.ActionQueueSynchronizer;
-        if (UndoReflectionUtil.FindField(synchronizer.GetType(), "_hookActions")?.GetValue(synchronizer) is System.Collections.IList hookActions)
+        if (UndoReflectionUtil.TryGetFieldValue(synchronizer, "_hookActions", out System.Collections.IList? hookActions)
+            && hookActions != null)
             hookActions.Clear();
 
-        if (UndoReflectionUtil.FindField(synchronizer.GetType(), "_requestedActionsWaitingForPlayerTurn")?.GetValue(synchronizer) is System.Collections.IList deferredActions)
+        if (UndoReflectionUtil.TryGetFieldValue(synchronizer, "_requestedActionsWaitingForPlayerTurn", out System.Collections.IList? deferredActions)
+            && deferredActions != null)
             deferredActions.Clear();
     }
 
@@ -750,12 +757,14 @@ public sealed partial class UndoController
     {
         reason = null;
         bool allowGatheringPlayerChoice = boundaryKind == ActionKernelBoundaryKind.PausedChoice;
-        if (UndoReflectionUtil.FindField(RunManager.Instance.ActionQueueSet.GetType(), "_actionQueues")?.GetValue(RunManager.Instance.ActionQueueSet) is not System.Collections.IEnumerable rawQueues)
+        if (!UndoReflectionUtil.TryGetFieldValue(RunManager.Instance.ActionQueueSet, "_actionQueues", out System.Collections.IEnumerable? rawQueues)
+            || rawQueues == null)
             return true;
 
         foreach (object rawQueue in rawQueues)
         {
-            if (UndoReflectionUtil.FindField(rawQueue.GetType(), "actions")?.GetValue(rawQueue) is not System.Collections.IList actions
+            if (!UndoReflectionUtil.TryGetFieldValue(rawQueue, "actions", out System.Collections.IList? actions)
+                || actions == null
                 || actions.Count == 0
                 || actions[0] is not GameAction frontAction)
             {
@@ -768,7 +777,7 @@ public sealed partial class UndoController
             if (legalState)
                 continue;
 
-            ulong ownerId = UndoReflectionUtil.FindField(rawQueue.GetType(), "ownerId")?.GetValue(rawQueue) is ulong owner ? owner : 0UL;
+            ulong ownerId = UndoReflectionUtil.TryGetFieldValue(rawQueue, "ownerId", out ulong owner) ? owner : 0UL;
             reason = $"front_action_invalid_state:{ownerId}:{frontAction.State}:{frontAction.GetType().Name}";
             return false;
         }
@@ -1035,6 +1044,12 @@ public sealed partial class UndoController
         if (CombatManager.Instance.History.Entries.Count() != snapshot.CombatHistoryState.Entries.Count)
         {
             reason = "history_count_mismatch";
+            return false;
+        }
+
+        if (!UndoDelayedCombatRewardService.HasMatchingState(snapshot.PendingCombatRewardStates))
+        {
+            reason = "pending_combat_reward_state_mismatch";
             return false;
         }
 
@@ -1370,7 +1385,7 @@ public sealed partial class UndoController
                 {
                     CardModel deckVersion = CardModel.FromSerializable(ClonePacketSerializable(runtimeState.StolenCardDeckVersion));
                     if (deckVersion.Owner != null)
-                        deckVersion.Owner = null;
+                        UndoReflectionUtil.TrySetPropertyValue(deckVersion, nameof(deckVersion.Owner), null);
                     stolenCard.DeckVersion = deckVersion;
                 }
                 swipe.StolenCard = stolenCard;
@@ -1423,7 +1438,7 @@ public sealed partial class UndoController
 
     private static void RestoreMonsterState(MonsterModel monster, UndoMonsterState state)
     {
-        MonsterMoveStateMachine moveStateMachine = monster.MoveStateMachine;
+        MonsterMoveStateMachine? moveStateMachine = monster.MoveStateMachine;
         if (moveStateMachine == null)
             return;
 

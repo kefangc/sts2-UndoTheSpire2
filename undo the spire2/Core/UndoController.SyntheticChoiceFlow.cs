@@ -382,7 +382,8 @@ public sealed partial class UndoController
             source.PlayerPotionStates,
             source.AudioLoopStates,
             source.SchemaVersion,
-            source.ChoiceBranchStates);
+            source.ChoiceBranchStates,
+            source.PendingCombatRewardStates);
     }
 
     private void PreserveChoiceAnchorInPastHistory(UndoSnapshot anchorSnapshot, UndoCombatFullState? combatStateOverride = null)
@@ -470,19 +471,24 @@ public sealed partial class UndoController
             anchorSnapshot.ChoiceSpec!,
             branchSnapshot,
             requiresAuthoritativeBranchExecution: ShouldRequireAuthoritativeSyntheticChoiceExecution(anchorSnapshot.ChoiceSpec!));
-        RememberSavedChoiceBranches(_syntheticChoiceSession, anchorSnapshot.CombatState.ChoiceBranchStates);
+        UndoSyntheticChoiceSession session = _syntheticChoiceSession;
+        RememberSavedChoiceBranches(session, anchorSnapshot.CombatState.ChoiceBranchStates);
         if (branchSnapshot?.ChoiceResultKey != null)
-            _syntheticChoiceSession.RememberBranch(branchSnapshot.ChoiceResultKey, branchSnapshot);
+            session.RememberBranch(branchSnapshot.ChoiceResultKey, branchSnapshot);
 
-        TaskHelper.RunSafely(HandleSyntheticChoiceSelectionAsync(_syntheticChoiceSession));
+        StartChoiceSelectionOperation(
+            "synthetic_choice_selection",
+            lease => HandleSyntheticChoiceSelectionAsync(lease, session));
     }
 
-    private async Task HandleSyntheticChoiceSelectionAsync(UndoSyntheticChoiceSession session)
+    private async Task HandleSyntheticChoiceSelectionAsync(UndoOperationLease lease, UndoSyntheticChoiceSession session)
     {
         try
         {
             UndoChoiceResultKey? selectedKey = await ShowSyntheticChoiceSelectionAsync(session);
-            if (_syntheticChoiceSession != session || selectedKey == null)
+            if (ShouldAbortTrackedOperation(lease, "synthetic_choice_selection_completed")
+                || _syntheticChoiceSession != session
+                || selectedKey == null)
                 return;
 
             if (session.RequiresAuthoritativeBranchExecution)

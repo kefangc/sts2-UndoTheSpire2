@@ -27,7 +27,8 @@ internal static class UndoActionKernelService
             : [];
 
         List<ActionQueueState> queueStates = [];
-        if (UndoReflectionUtil.FindField(actionQueueSet.GetType(), "_actionQueues")?.GetValue(actionQueueSet) is System.Collections.IEnumerable rawQueues)
+        if (UndoReflectionUtil.TryGetFieldValue(actionQueueSet, "_actionQueues", out System.Collections.IEnumerable? rawQueues)
+            && rawQueues != null)
         {
             foreach (object rawQueue in rawQueues)
                 queueStates.Add(CaptureQueueState(rawQueue, boundaryKind, effectiveAction));
@@ -84,7 +85,8 @@ internal static class UndoActionKernelService
         }
 
         ActionQueueSet actionQueueSet = RunManager.Instance.ActionQueueSet;
-        if (UndoReflectionUtil.FindField(actionQueueSet.GetType(), "_actionQueues")?.GetValue(actionQueueSet) is not System.Collections.IList rawQueues)
+        if (!UndoReflectionUtil.TryGetFieldValue(actionQueueSet, "_actionQueues", out System.Collections.IList? rawQueues)
+            || rawQueues == null)
         {
             return new RestoreCapabilityReport
             {
@@ -106,8 +108,18 @@ internal static class UndoActionKernelService
 
         for (int i = 0; i < state.Queues.Count && i < rawQueues.Count; i++)
         {
-            ApplyQueueFlags(rawQueues[i], state.Queues[i], state.BoundaryKind);
-            if (!TryRestoreQueueEntries(rawQueues[i], state.Queues[i], playersById, popAction, state.BoundaryKind, out string? error))
+            object? rawQueue = rawQueues[i];
+            if (rawQueue == null)
+            {
+                return new RestoreCapabilityReport
+                {
+                    Result = RestoreCapabilityResult.UnsupportedOfficialPattern,
+                    Detail = "action_queue_entry_null"
+                };
+            }
+
+            ApplyQueueFlags(rawQueue, state.Queues[i], state.BoundaryKind);
+            if (!TryRestoreQueueEntries(rawQueue, state.Queues[i], playersById, popAction, state.BoundaryKind, out string? error))
             {
                 return new RestoreCapabilityReport
                 {
@@ -169,14 +181,16 @@ internal static class UndoActionKernelService
         if (activeChoiceSpec == null)
             return null;
 
-        if (UndoReflectionUtil.FindField(actionQueueSet.GetType(), "_actionQueues")?.GetValue(actionQueueSet) is not System.Collections.IEnumerable rawQueues)
+        if (!UndoReflectionUtil.TryGetFieldValue(actionQueueSet, "_actionQueues", out System.Collections.IEnumerable? rawQueues)
+            || rawQueues == null)
             return null;
 
         GameAction? firstPausedChoice = null;
         ulong? localNetId = LocalContext.NetId;
         foreach (object rawQueue in rawQueues)
         {
-            if (UndoReflectionUtil.FindField(rawQueue.GetType(), "actions")?.GetValue(rawQueue) is not System.Collections.IList actions
+            if (!UndoReflectionUtil.TryGetFieldValue(rawQueue, "actions", out System.Collections.IList? actions)
+                || actions == null
                 || actions.Count == 0
                 || actions[0] is not GameAction frontAction
                 || frontAction.State != GameActionState.GatheringPlayerChoice)
@@ -196,7 +210,8 @@ internal static class UndoActionKernelService
     private static ActionQueueState CaptureQueueState(object rawQueue, ActionKernelBoundaryKind boundaryKind, GameAction? currentAction)
     {
         List<ActionQueueEntryState> pendingActions = [];
-        if (UndoReflectionUtil.FindField(rawQueue.GetType(), "actions")?.GetValue(rawQueue) is System.Collections.IEnumerable rawActions)
+        if (UndoReflectionUtil.TryGetFieldValue(rawQueue, "actions", out System.Collections.IEnumerable? rawActions)
+            && rawActions != null)
         {
             foreach (object rawAction in rawActions)
             {
@@ -218,8 +233,8 @@ internal static class UndoActionKernelService
 
         return new ActionQueueState
         {
-            OwnerNetId = UndoReflectionUtil.FindField(rawQueue.GetType(), "ownerId")?.GetValue(rawQueue) is ulong owner ? owner : 0UL,
-            IsPaused = UndoReflectionUtil.FindField(rawQueue.GetType(), "isPaused")?.GetValue(rawQueue) is bool paused && paused,
+            OwnerNetId = UndoReflectionUtil.TryGetFieldValue(rawQueue, "ownerId", out ulong owner) ? owner : 0UL,
+            IsPaused = UndoReflectionUtil.TryGetFieldValue(rawQueue, "isPaused", out bool paused) && paused,
             PendingActionCount = pendingActions.Count,
             PendingActions = pendingActions
         };
@@ -256,13 +271,14 @@ internal static class UndoActionKernelService
     private static IReadOnlyList<ActionResumeState> CaptureWaitingForResumeStates(ActionQueueSet actionQueueSet)
     {
         List<ActionResumeState> states = [];
-        if (UndoReflectionUtil.FindField(actionQueueSet.GetType(), "_actionsWaitingForResumption")?.GetValue(actionQueueSet) is not System.Collections.IEnumerable rawWaiting)
+        if (!UndoReflectionUtil.TryGetFieldValue(actionQueueSet, "_actionsWaitingForResumption", out System.Collections.IEnumerable? rawWaiting)
+            || rawWaiting == null)
             return states;
 
         foreach (object rawState in rawWaiting)
         {
-            if (UndoReflectionUtil.FindField(rawState.GetType(), "oldId")?.GetValue(rawState) is not uint oldId
-                || UndoReflectionUtil.FindField(rawState.GetType(), "newId")?.GetValue(rawState) is not uint newId)
+            if (!UndoReflectionUtil.TryGetFieldValue(rawState, "oldId", out uint oldId)
+                || !UndoReflectionUtil.TryGetFieldValue(rawState, "newId", out uint newId))
                 continue;
 
             states.Add(new ActionResumeState
@@ -438,7 +454,8 @@ internal static class UndoActionKernelService
         out string? error)
     {
         error = null;
-        if (UndoReflectionUtil.FindField(rawQueue.GetType(), "actions")?.GetValue(rawQueue) is not System.Collections.IList actionsList)
+        if (!UndoReflectionUtil.TryGetFieldValue(rawQueue, "actions", out System.Collections.IList? actionsList)
+            || actionsList == null)
         {
             error = "queue_actions_missing";
             return false;
@@ -536,7 +553,8 @@ internal static class UndoActionKernelService
 
     private static bool TryRestoreWaitingForResume(ActionQueueSet actionQueueSet, IReadOnlyList<ActionResumeState> waitingForResume)
     {
-        if (UndoReflectionUtil.FindField(actionQueueSet.GetType(), "_actionsWaitingForResumption")?.GetValue(actionQueueSet) is not System.Collections.IList rawWaiting)
+        if (!UndoReflectionUtil.TryGetFieldValue(actionQueueSet, "_actionsWaitingForResumption", out System.Collections.IList? rawWaiting)
+            || rawWaiting == null)
             return false;
 
         rawWaiting.Clear();

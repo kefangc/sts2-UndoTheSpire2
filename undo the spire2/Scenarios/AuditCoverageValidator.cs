@@ -23,11 +23,7 @@ internal sealed class AuditCoverageValidationResult
 
 internal static class AuditCoverageValidator
 {
-    public static string DefaultArtifactsRoot { get; } = Path.Combine(
-        "F:",
-        "projects",
-        "undo-the-spire2-cache",
-        "artifacts");
+    public static string DefaultArtifactsRoot => UndoEnvironmentPaths.ResolveArtifactsRoot();
 
     public static AuditCoverageValidationResult ValidateAgainstCache(string? artifactsRoot = null)
     {

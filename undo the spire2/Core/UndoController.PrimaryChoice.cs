@@ -146,10 +146,13 @@ public sealed partial class UndoController
             NotifyStateChanged();
             // 对 from-hand 这类手牌选择，不要在 restore 事务里等待玩家选完。
             // 只要 choice UI 已经真正回到场上，就立刻结束 restore，让 HUD 和二次 undo 恢复可用。
-            TaskHelper.RunSafely(HandlePrimaryChoiceSelectionAsync(
-                primarySession,
-                selectionTask,
-                ShouldPreferLiveBranchCommit(pausedChoiceState, choiceSpec, stateAlreadyApplied)));
+            StartChoiceSelectionOperation(
+                "primary_choice_selection",
+                lease => HandlePrimaryChoiceSelectionAsync(
+                    lease,
+                    primarySession,
+                    selectionTask,
+                    ShouldPreferLiveBranchCommit(pausedChoiceState, choiceSpec, stateAlreadyApplied)));
             return true;
         }
 
@@ -306,12 +309,17 @@ public sealed partial class UndoController
             && IsSourceChoice(choiceSpec, typeof(EntropyPower));
     }
 
-    private async Task HandlePrimaryChoiceSelectionAsync(UndoSyntheticChoiceSession session, Task<UndoChoiceResultKey?> selectionTask, bool preferLiveBranchCommit)
+    private async Task HandlePrimaryChoiceSelectionAsync(
+        UndoOperationLease lease,
+        UndoSyntheticChoiceSession session,
+        Task<UndoChoiceResultKey?> selectionTask,
+        bool preferLiveBranchCommit)
     {
         try
         {
             UndoChoiceResultKey? selectedKey = await selectionTask;
-            if (ShouldAbortStaleSyntheticChoiceSession(session, "selection_completed"))
+            if (ShouldAbortTrackedOperation(lease, "primary_choice_selection_completed")
+                || ShouldAbortStaleSyntheticChoiceSession(session, "selection_completed"))
                 return;
 
             if (selectedKey == null)
@@ -613,7 +621,10 @@ public sealed partial class UndoController
 
                 replayEventCount = GetCurrentReplayEventCount();
                 NPlayerHand? hand = NCombatRoom.Instance?.Ui?.Hand;
-                bool officialHandChoiceUiSettled = hand == null || await WaitForOfficialHandChoiceUiSettleAsync(hand, player, maxFrames: 4);
+                HandChoiceUiSettleResult officialHandChoiceUiSettleResult = hand == null
+                    ? HandChoiceUiSettleResult.Settled
+                    : await WaitForOfficialHandChoiceUiSettleAsync(hand, player, maxFrames: 4);
+                bool officialHandChoiceUiSettled = IsCompletedHandChoiceUiSettleResult(officialHandChoiceUiSettleResult);
                 if (ShouldAbortStaleSyntheticChoiceSession(session, "live_resume_after_ui_settle"))
                     return false;
 
@@ -640,7 +651,7 @@ public sealed partial class UndoController
             + $" sourceActionPresent={IsTrackedActionPresent(pausedChoiceState!.SourceActionRef?.ActionId)}"
             + $" resumeActionPresent={IsTrackedActionPresent(pausedChoiceState.ResumeActionId)}"
             + $" resumePending={IsResumeActionPending(pausedChoiceState)}"
-            + $" callbackObserved={_pendingHandChoiceUiSettle?.CallbackObserved.ToString() ?? "null"}"
+            + $" callbackObserved={GetPendingHandChoiceCallbackObservedText()}"
             + $" handSelecting={(NCombatRoom.Instance?.Ui?.Hand.IsInCardSelection == true)}");
         return false;
     }
@@ -777,7 +788,7 @@ public sealed partial class UndoController
             || IsSourceChoice(choiceSpec, typeof(EntropyPower));
     }
 
-    private async Task FinalizeCustomChoiceBranchAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey, bool stabilizeQueues = true)
+    private async Task FinalizeCustomChoiceBranchLegacyAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey, bool stabilizeQueues = true)
     {
         if (ShouldAbortStaleSyntheticChoiceSession(session, "custom_finalize_start"))
             return;
@@ -793,19 +804,22 @@ public sealed partial class UndoController
             CombatState? liveCombatState = CombatManager.Instance.DebugOnlyGetState();
             Player? livePlayer = liveCombatState == null ? null : LocalContext.GetMe(liveCombatState);
             NPlayerHand? hand = NCombatRoom.Instance?.Ui?.Hand;
-            officialHandChoiceUiSettled = await WaitForOfficialHandChoiceUiSettleAsync(hand, livePlayer);
+            officialHandChoiceUiSettled = IsCompletedHandChoiceUiSettleResult(
+                await WaitForOfficialHandChoiceUiSettleAsync(hand, livePlayer));
             if (!officialHandChoiceUiSettled && hand != null && TryCompletePendingHandDiscardChoiceUiViaOfficialPath(hand))
             {
                 await WaitOneFrameAsync();
                 hand = NCombatRoom.Instance?.Ui?.Hand ?? hand;
-                officialHandChoiceUiSettled = await WaitForOfficialHandChoiceUiSettleAsync(hand, livePlayer, maxFrames: 60);
+                officialHandChoiceUiSettled = IsCompletedHandChoiceUiSettleResult(
+                    await WaitForOfficialHandChoiceUiSettleAsync(hand, livePlayer, maxFrames: 60));
             }
 
             if (!officialHandChoiceUiSettled && liveCombatState != null)
             {
                 RecoverHandDiscardChoiceUiIfNeeded(liveCombatState);
                 hand = NCombatRoom.Instance?.Ui?.Hand ?? hand;
-                officialHandChoiceUiSettled = await WaitForOfficialHandChoiceUiSettleAsync(hand, livePlayer, maxFrames: 30);
+                officialHandChoiceUiSettled = IsCompletedHandChoiceUiSettleResult(
+                    await WaitForOfficialHandChoiceUiSettleAsync(hand, livePlayer, maxFrames: 30));
             }
 
             if (!officialHandChoiceUiSettled && hand != null)
@@ -813,7 +827,8 @@ public sealed partial class UndoController
                 TryCompletePendingHandChoiceUiInstantly(hand, livePlayer);
                 await WaitOneFrameAsync();
                 hand = NCombatRoom.Instance?.Ui?.Hand ?? hand;
-                officialHandChoiceUiSettled = await WaitForOfficialHandChoiceUiSettleAsync(hand, livePlayer, maxFrames: 15);
+                officialHandChoiceUiSettled = IsCompletedHandChoiceUiSettleResult(
+                    await WaitForOfficialHandChoiceUiSettleAsync(hand, livePlayer, maxFrames: 15));
             }
 
             if (!officialHandChoiceUiSettled && hand != null && livePlayer != null)
@@ -821,15 +836,7 @@ public sealed partial class UndoController
                 bool forcedSynchronized = TrySyncExistingHandUi(hand, livePlayer, normalizeLayout: true);
                 if (forcedSynchronized)
                 {
-                    string sourceName = _pendingHandChoiceUiSettle?.Source.GetType().Name
-                        ?? _pendingHandChoiceSource?.GetType().Name
-                        ?? session.ChoiceSpec.SourceModelTypeName
-                        ?? "unknown";
-                    UndoDebugLog.Write(
-                        $"official_hand_choice_ui_forced_settle source={sourceName}"
-                        + $" expectedHand={PileType.Hand.GetPile(livePlayer).Cards.Count}"
-                        + $" holders={hand.CardHolderContainer.GetChildCount()}");
-                    ClearPendingHandChoiceSourceTracking();
+                    FinalizePendingHandChoiceAfterForcedSync(hand, livePlayer);
                     officialHandChoiceUiSettled = true;
                 }
             }
@@ -2247,7 +2254,8 @@ public sealed partial class UndoController
             source.PlayerPotionStates,
             source.AudioLoopStates,
             source.SchemaVersion,
-            choiceBranchStates);
+            choiceBranchStates,
+            source.PendingCombatRewardStates);
     }
 
     private void RewriteReplayChoiceBranch(UndoSnapshot anchorSnapshot, UndoSnapshot branchSnapshot)

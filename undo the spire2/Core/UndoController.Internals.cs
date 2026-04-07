@@ -308,7 +308,9 @@ public sealed partial class UndoController
             source.PlayerDeckStates,
             source.PlayerPotionStates,
             source.AudioLoopStates,
-            source.SchemaVersion, source.ChoiceBranchStates);
+            source.SchemaVersion,
+            source.ChoiceBranchStates,
+            source.PendingCombatRewardStates);
     }
 
     private static UndoCombatFullState CreateDerivedCombatState(

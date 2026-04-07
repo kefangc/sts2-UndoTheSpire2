@@ -74,18 +74,9 @@ internal sealed class UndoScenarioReport
 
 internal static class UndoScenarioRunner
 {
-    public static string DefaultScenarioRoot { get; } = Path.Combine(
-        "F:",
-        "projects",
-        "undo-the-spire2-cache",
-        "artifacts",
-        "scenario-definitions");
+    public static string DefaultScenarioRoot => UndoEnvironmentPaths.ResolveScenarioRoot();
 
-    public static string DefaultReportsRoot { get; } = Path.Combine(
-        "F:",
-        "projects",
-        "undo-the-spire2-cache",
-        "reports");
+    public static string DefaultReportsRoot => UndoEnvironmentPaths.ResolveReportsRoot();
 
     public static IReadOnlyList<UndoScenarioDefinition> LoadScenarioDefinitions(string? root = null)
     {

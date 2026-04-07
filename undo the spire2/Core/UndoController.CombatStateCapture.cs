@@ -93,7 +93,8 @@ public sealed partial class UndoController
             playerOrbStates: CapturePlayerOrbStates(runState),
             playerDeckStates: CapturePlayerDeckStates(runState),
             playerPotionStates: CapturePlayerPotionStates(runState),
-            audioLoopStates: UndoAudioLoopTracker.CaptureSnapshot());
+            audioLoopStates: UndoAudioLoopTracker.CaptureSnapshot(),
+            pendingCombatRewardStates: UndoDelayedCombatRewardService.CaptureSnapshot());
     }
 
     private static IReadOnlyList<UndoPlayerOrbState> CapturePlayerOrbStates(RunState runState)

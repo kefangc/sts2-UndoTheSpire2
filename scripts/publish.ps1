@@ -1,10 +1,26 @@
-﻿param(
+param(
     [string]$Configuration = 'Release',
-    [string]$CacheRoot = 'F:\projects\undo-the-spire2-cache',
-    [string]$GodotPath = 'F:\programing\Godot_v4.5.1-stable_mono_win64\Godot_v4.5.1-stable_mono_win64_console.exe'
+    [string]$CacheRoot,
+    [string]$GodotPath
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Resolve-PathSetting([string]$ConfiguredValue, [string]$EnvVarName, [string]$Fallback) {
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredValue)) {
+        return $ConfiguredValue
+    }
+
+    $environmentValue = [System.Environment]::GetEnvironmentVariable($EnvVarName)
+    if (-not [string]::IsNullOrWhiteSpace($environmentValue)) {
+        return $environmentValue
+    }
+
+    return $Fallback
+}
+
+$CacheRoot = Resolve-PathSetting $CacheRoot 'UNDO_THE_SPIRE2_CACHE_ROOT' 'F:\projects\undo-the-spire2-cache'
+$GodotPath = Resolve-PathSetting $GodotPath 'UNDO_THE_SPIRE2_GODOT_PATH' 'F:\programing\Godot_v4.5.1-stable_mono_win64\Godot_v4.5.1-stable_mono_win64_console.exe'
 $projectPath = Join-Path $PSScriptRoot '..\undo the spire2\undo the spire2.csproj'
 $dotnetHome = Join-Path $CacheRoot 'dotnet-home'
 $tempRoot = Join-Path $CacheRoot 'temp'
