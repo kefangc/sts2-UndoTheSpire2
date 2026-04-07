@@ -1,4 +1,5 @@
 ﻿// 鏂囦欢璇存槑锛氭仮澶嶅崱鐗屻€佽兘鍔涖€侀仐鐗╃瓑閫氱敤杩愯鏃跺睘鎬с€?
+using System.Collections.Concurrent;
 using System.Reflection;
 using System.Collections.Generic;
 using MegaCrit.Sts2.Core.Combat;
@@ -63,6 +64,17 @@ internal static partial class UndoRuntimeStateCodecRegistry
         new CardsPlayedTurnCounterRelicCodec()
     ];
 
+    private static readonly IReadOnlyDictionary<string, IUndoCardRuntimeCodec> CardCodecsById =
+        CardCodecs.ToDictionary(static codec => codec.CodecId, StringComparer.Ordinal);
+
+    private static readonly IReadOnlyDictionary<string, IUndoPowerRuntimeCodec> PowerCodecsById =
+        PowerCodecs.ToDictionary(static codec => codec.CodecId, StringComparer.Ordinal);
+
+    private static readonly IReadOnlyDictionary<string, IUndoRelicRuntimeCodec> RelicCodecsById =
+        RelicCodecs.ToDictionary(static codec => codec.CodecId, StringComparer.Ordinal);
+
+    private static readonly ConcurrentDictionary<Type, RuntimeCodecTypeDescriptor> TypeDescriptors = new();
+
     public static HashSet<string> GetImplementedCodecIds()
     {
         return CardCodecs.Select(static codec => codec.CodecId)
@@ -91,8 +103,8 @@ internal static partial class UndoRuntimeStateCodecRegistry
     {
         foreach (UndoComplexRuntimeState state in states)
         {
-            IUndoCardRuntimeCodec? codec = CardCodecs.FirstOrDefault(candidate => candidate.CodecId == state.CodecId && candidate.CanHandle(card));
-            codec?.Restore(card, state, context);
+            if (CardCodecsById.TryGetValue(state.CodecId, out IUndoCardRuntimeCodec? codec) && codec.CanHandle(card))
+                codec.Restore(card, state, context);
         }
     }
 
@@ -116,8 +128,8 @@ internal static partial class UndoRuntimeStateCodecRegistry
     {
         foreach (UndoComplexRuntimeState state in states)
         {
-            IUndoPowerRuntimeCodec? codec = PowerCodecs.FirstOrDefault(candidate => candidate.CodecId == state.CodecId && candidate.CanHandle(power));
-            codec?.Restore(power, state, context);
+            if (PowerCodecsById.TryGetValue(state.CodecId, out IUndoPowerRuntimeCodec? codec) && codec.CanHandle(power))
+                codec.Restore(power, state, context);
         }
     }
 
@@ -149,8 +161,8 @@ internal static partial class UndoRuntimeStateCodecRegistry
     {
         foreach (UndoComplexRuntimeState state in states)
         {
-            IUndoRelicRuntimeCodec? codec = RelicCodecs.FirstOrDefault(candidate => candidate.CodecId == state.CodecId && candidate.CanHandle(relic));
-            codec?.Restore(relic, state, context);
+            if (RelicCodecsById.TryGetValue(state.CodecId, out IUndoRelicRuntimeCodec? codec) && codec.CanHandle(relic))
+                codec.Restore(relic, state, context);
         }
     }
 
@@ -348,98 +360,29 @@ internal static partial class UndoRuntimeStateCodecRegistry
         return relic is BrilliantScarf or DiamondDiadem or Pocketwatch or VelvetChoker;
     }
 
-    private static IEnumerable<FieldInfo> GetDeclaredScalarRuntimeFields(Type type)
+    private static IReadOnlyList<FieldInfo> GetDeclaredScalarRuntimeFields(Type type)
     {
-        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
-        return type.GetFields(Flags)
-            .Where(static field => !field.IsStatic && !field.IsInitOnly && !field.IsLiteral)
-            .Where(static field => !field.Name.StartsWith("<", StringComparison.Ordinal))
-            .Where(field =>
-            {
-                Type fieldType = field.FieldType;
-                return fieldType == typeof(bool) || fieldType == typeof(int) || fieldType == typeof(decimal) || fieldType.IsEnum;
-            })
-            .Where(field => !HasComparableRuntimeProperty(type, field.Name, field.FieldType));
+        return GetTypeDescriptor(type).ScalarFields;
     }
 
-    private static IEnumerable<PropertyInfo> GetDeclaredReferenceRuntimeProperties(Type type, Type valueType)
+    private static IReadOnlyList<PropertyInfo> GetDeclaredReferenceRuntimeProperties(Type type, Type valueType)
     {
-        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
-        return type.GetProperties(Flags)
-            .Where(static property => property.GetIndexParameters().Length == 0)
-            .Where(static property => property.CanRead)
-            .Where(property => property.PropertyType == valueType)
-            .Where(static property => property.Name != "Status");
+        return GetTypeDescriptor(type).GetReferenceProperties(valueType);
     }
 
-    private static IEnumerable<FieldInfo> GetDeclaredReferenceRuntimeFields(Type type, Type valueType)
+    private static IReadOnlyList<FieldInfo> GetDeclaredReferenceRuntimeFields(Type type, Type valueType)
     {
-        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
-        return type.GetFields(Flags)
-            .Where(static field => !field.IsStatic && !field.IsInitOnly && !field.IsLiteral)
-            .Where(static field => !field.Name.StartsWith("<", StringComparison.Ordinal))
-            .Where(field => field.FieldType == valueType)
-            .Where(field => !HasComparableRuntimeProperty(type, field.Name, valueType));
+        return GetTypeDescriptor(type).GetReferenceFields(valueType);
     }
 
-    private static IEnumerable<PropertyInfo> GetDeclaredCollectionRuntimeProperties(Type type, Type elementType)
+    private static IReadOnlyList<PropertyInfo> GetDeclaredCollectionRuntimeProperties(Type type, Type elementType)
     {
-        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
-        return type.GetProperties(Flags)
-            .Where(static property => property.GetIndexParameters().Length == 0)
-            .Where(static property => property.CanRead)
-            .Where(property => property.SetMethod != null || UndoReflectionUtil.FindField(type, $"<{property.Name}>k__BackingField") != null)
-            .Where(property => TryGetCollectionElementType(property.PropertyType, out Type? candidate) && candidate == elementType);
+        return GetTypeDescriptor(type).GetCollectionProperties(elementType);
     }
 
-    private static IEnumerable<FieldInfo> GetDeclaredCollectionRuntimeFields(Type type, Type elementType)
+    private static IReadOnlyList<FieldInfo> GetDeclaredCollectionRuntimeFields(Type type, Type elementType)
     {
-        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
-        return type.GetFields(Flags)
-            .Where(static field => !field.IsStatic && !field.IsInitOnly && !field.IsLiteral)
-            .Where(static field => !field.Name.StartsWith("<", StringComparison.Ordinal))
-            .Where(field => TryGetCollectionElementType(field.FieldType, out Type? candidate) && candidate == elementType);
-    }
-
-    private static bool TryGetCollectionElementType(Type type, out Type? elementType)
-    {
-        if (type.IsArray)
-        {
-            elementType = type.GetElementType();
-            return elementType != null;
-        }
-
-        Type? collectionInterface = type.IsGenericType && type.GetGenericTypeDefinition() == typeof(ICollection<>)
-            ? type
-            : type.GetInterfaces().FirstOrDefault(interfaceType =>
-                interfaceType.IsGenericType && interfaceType.GetGenericTypeDefinition() == typeof(ICollection<>));
-        if (collectionInterface != null)
-        {
-            elementType = collectionInterface.GetGenericArguments()[0];
-            return true;
-        }
-
-        elementType = null;
-        return false;
-    }
-
-    private static bool HasComparableRuntimeProperty(Type type, string memberName, Type memberType)
-    {
-        string normalizedFieldName = NormalizeRuntimeFieldName(memberName);
-        return type.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
-            .Any(property =>
-                string.Equals(property.Name, normalizedFieldName, StringComparison.OrdinalIgnoreCase)
-                && (property.PropertyType == memberType
-                    || (TryGetCollectionElementType(property.PropertyType, out Type? propertyElementType)
-                        && TryGetCollectionElementType(memberType, out Type? fieldElementType)
-                        && propertyElementType == fieldElementType)));
-    }
-
-    private static string NormalizeRuntimeFieldName(string fieldName)
-    {
-        return fieldName.StartsWith("_", StringComparison.Ordinal) && fieldName.Length > 1
-            ? char.ToUpperInvariant(fieldName[1]) + fieldName[2..]
-            : fieldName;
+        return GetTypeDescriptor(type).GetCollectionFields(elementType);
     }
 
     private static PowerModel? ResolvePowerRef(IReadOnlyDictionary<string, Creature> creaturesByKey, PowerRef powerRef)
@@ -556,6 +499,11 @@ internal static partial class UndoRuntimeStateCodecRegistry
         }
 
         UndoReflectionUtil.FindMethod(relic.GetType(), "InvokeDisplayAmountChanged")?.Invoke(relic, []);
+    }
+
+    private static RuntimeCodecTypeDescriptor GetTypeDescriptor(Type type)
+    {
+        return TypeDescriptors.GetOrAdd(type, static candidateType => new RuntimeCodecTypeDescriptor(candidateType));
     }
 
 }

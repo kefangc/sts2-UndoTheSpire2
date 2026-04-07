@@ -60,6 +60,14 @@ namespace UndoTheSpire2;
 // Combat UI rebuild and presentation normalization after restore.
 public sealed partial class UndoController
 {
+    private enum CombatUiRefreshPlan
+    {
+        Full,
+        HandOnly,
+        HandAndPlay,
+        VisualOnly
+    }
+
     private static async Task RefreshCombatUiAsync(CombatState combatState, UndoCombatFullState? snapshotState = null)
     {
         RunState? runState = RunManager.Instance.DebugOnlyGetState();
@@ -488,9 +496,12 @@ public sealed partial class UndoController
         if (me == null)
             return;
 
-        TrySyncExistingHandUi(ui.Hand, me);
+        CombatUiRefreshPlan refreshPlan = BuildCombatUiRefreshPlan(ui, me);
+        if (refreshPlan is CombatUiRefreshPlan.Full or CombatUiRefreshPlan.HandOnly or CombatUiRefreshPlan.HandAndPlay)
+            TrySyncExistingHandUi(ui.Hand, me);
 
-        SyncPlayContainerCards(ui, me);
+        if (refreshPlan is CombatUiRefreshPlan.Full or CombatUiRefreshPlan.HandAndPlay)
+            SyncPlayContainerCards(ui, me);
     }
 
     // choice undo 时，屏幕中央“本次打出的牌”和左侧眼睛预览都依赖 PlayContainer。
@@ -745,6 +756,48 @@ public sealed partial class UndoController
 
         foreach (NCard cardNode in existingCards)
             NormalizePlayContainerCard(cardNode);
+    }
+
+    private static CombatUiRefreshPlan BuildCombatUiRefreshPlan(NCombatUi ui, Player player)
+    {
+        NPlayerHand hand = ui.Hand;
+        if (!CanSafelyMutateHandUi(hand)
+            || HasValidCurrentCardPlay(hand)
+            || hand.IsInCardSelection
+            || GetSelectedHandHolderCount(hand) > 0
+            || GetAwaitingHandHolderCount(hand) > 0)
+        {
+            return CombatUiRefreshPlan.Full;
+        }
+
+        bool handMatches = TryGetReusableHandHolders(hand, player, out _);
+        bool playMatches = PlayContainerMatchesState(ui, player);
+        if (handMatches && playMatches)
+            return CombatUiRefreshPlan.VisualOnly;
+
+        if (!handMatches && playMatches)
+            return CombatUiRefreshPlan.HandOnly;
+
+        if (handMatches && !playMatches)
+            return CombatUiRefreshPlan.HandAndPlay;
+
+        return CombatUiRefreshPlan.Full;
+    }
+
+    private static bool PlayContainerMatchesState(NCombatUi ui, Player player)
+    {
+        List<CardModel> playCards = PileType.Play.GetPile(player).Cards.ToList();
+        List<NCard> existingCards = ui.PlayContainer.GetChildren().OfType<NCard>().ToList();
+        if (existingCards.Count != playCards.Count)
+            return false;
+
+        for (int i = 0; i < playCards.Count; i++)
+        {
+            if (!ReferenceEquals(existingCards[i].Model, playCards[i]))
+                return false;
+        }
+
+        return true;
     }
 
     private static void NormalizePlayContainerCard(NCard cardNode)

@@ -33,7 +33,7 @@ internal static partial class UndoRuntimeStateCodecRegistry
             Dictionary<string, Creature> creaturesByKey = UndoStableRefs.BuildCreatureKeyMap(context.CombatState.Creatures);
             CardPlay? affectedCardPlay = state.CardPlay == null
                 ? null
-                : UndoCombatHistoryCodec.RestoreCardPlay(context.RunState, creaturesByKey, state.CardPlay);
+                : UndoCombatHistoryCodec.RestoreCardPlay(context.RunState, creaturesByKey, state.CardPlay, context.CardResolutionIndex);
             UndoReflectionUtil.TrySetPropertyValue(relic, "AffectedCardPlay", affectedCardPlay);
         }
     }
@@ -190,7 +190,7 @@ internal static partial class UndoRuntimeStateCodecRegistry
         {
             foreach (UndoNamedCardRefRuntimeEntry entry in state.Entries)
             {
-                CardModel? card = entry.Card == null ? null : UndoStableRefs.ResolveCardRef(context.RunState, entry.Card);
+                CardModel? card = entry.Card == null ? null : UndoStableRefs.ResolveCardRef(context.RunState, entry.Card, context.CardResolutionIndex);
                 if (UndoReflectionUtil.FindProperty(relic.GetType(), entry.Name)?.PropertyType == typeof(CardModel))
                 {
                     UndoReflectionUtil.TrySetPropertyValue(relic, entry.Name, card);
@@ -254,7 +254,7 @@ internal static partial class UndoRuntimeStateCodecRegistry
             {
                 CardPlay? cardPlay = entry.CardPlay == null
                     ? null
-                    : UndoCombatHistoryCodec.RestoreCardPlay(context.RunState, creaturesByKey, entry.CardPlay);
+                    : UndoCombatHistoryCodec.RestoreCardPlay(context.RunState, creaturesByKey, entry.CardPlay, context.CardResolutionIndex);
                 if (UndoReflectionUtil.FindProperty(relic.GetType(), entry.Name)?.PropertyType == typeof(CardPlay))
                 {
                     UndoReflectionUtil.TrySetPropertyValue(relic, entry.Name, cardPlay);
@@ -323,7 +323,7 @@ internal static partial class UndoRuntimeStateCodecRegistry
                     continue;
 
                 List<CardModel> resolvedCards = collectionState.Cards
-                    .Select(cardRef => UndoStableRefs.ResolveCardRef(context.RunState, cardRef))
+                    .Select(cardRef => UndoStableRefs.ResolveCardRef(context.RunState, cardRef, context.CardResolutionIndex))
                     .ToList();
                 TryReplaceCollectionItems(collection, resolvedCards);
             }
@@ -429,7 +429,7 @@ internal static partial class UndoRuntimeStateCodecRegistry
 
         public override void Restore(RelicModel relic, UndoCardRefRuntimeComplexState state, UndoRuntimeRestoreContext context)
         {
-            CardModel? card = state.Card == null ? null : UndoStableRefs.ResolveCardRef(context.RunState, state.Card);
+            CardModel? card = state.Card == null ? null : UndoStableRefs.ResolveCardRef(context.RunState, state.Card, context.CardResolutionIndex);
             UndoReflectionUtil.TrySetPropertyValue(relic, "AttackToDouble", card);
         }
     }

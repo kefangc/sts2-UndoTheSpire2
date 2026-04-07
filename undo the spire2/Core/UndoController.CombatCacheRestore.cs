@@ -91,6 +91,7 @@ public sealed partial class UndoController
             return;
         }
 
+        CardResolutionIndex cardResolutionIndex = new(runState, combatCardDbState);
         List<CardModel> fallbackCards = cardToId.Keys.OfType<CardModel>().Where(static card => card.IsMutable).ToList();
         idToCard.Clear();
         cardToId.Clear();
@@ -98,7 +99,7 @@ public sealed partial class UndoController
         uint nextId = combatCardDbState.NextId;
         foreach (UndoCombatCardDbEntryState entry in combatCardDbState.Entries.OrderBy(static entry => entry.CombatCardId))
         {
-            CardModel card = UndoStableRefs.ResolveCardRef(runState, entry.Card);
+            CardModel card = UndoStableRefs.ResolveCardRef(runState, entry.Card, cardResolutionIndex);
             if (!card.IsMutable || !IsCardInCombatPiles(runState, card) || cardToId.Contains(card) || idToCard.Contains(entry.CombatCardId))
                 continue;
 

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Godot;
+using MegaCrit.Sts2.Core.Assets;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Creatures;
@@ -32,7 +33,7 @@ internal static partial class UndoScenarioExecutor
                 "first_damage_only_triggers_once_after_undo" => CompareProjection(assertion, targetState.RuntimeGraphState.PowerRuntimeStates, redoState.RuntimeGraphState.PowerRuntimeStates, "power_runtime_roundtrip"),
                 "reviving_state_restores" => CompareProjection(assertion, ProjectTopology(targetState.CreatureTopologyStates), ProjectTopology(redoState.CreatureTopologyStates), "creature_topology_roundtrip"),
                 "segment_rejoins_correctly" => CompareProjection(assertion, ProjectTopology(targetState.CreatureTopologyStates), ProjectTopology(redoState.CreatureTopologyStates), "creature_topology_roundtrip"),
-                "door_phase_restores" => CompareProjection(assertion, ProjectTopology(targetState.CreatureTopologyStates), ProjectTopology(redoState.CreatureTopologyStates), "creature_topology_roundtrip"),
+                "door_phase_restores" => AssertDoorPhaseRestores(assertion, targetState, redoState),
                 "times_got_back_in_restores" => CompareProjection(assertion, ProjectTopology(targetState.CreatureTopologyStates), ProjectTopology(redoState.CreatureTopologyStates), "creature_topology_roundtrip"),
                 "pet_role_restores" => CompareProjection(assertion, ProjectTopology(targetState.CreatureTopologyStates), ProjectTopology(redoState.CreatureTopologyStates), "creature_topology_roundtrip"),
                 "pet_owner_restores" => CompareProjection(assertion, ProjectTopology(targetState.CreatureTopologyStates), ProjectTopology(redoState.CreatureTopologyStates), "creature_topology_roundtrip"),
@@ -75,6 +76,77 @@ internal static partial class UndoScenarioExecutor
 
         assertions.Add(CompareProjection("undo_state_snapshot_captured", undoState.RoundNumber, undoState.RoundNumber, "undo_snapshot_available"));
         return assertions;
+    }
+
+    private static UndoScenarioAssertionResult AssertDoorPhaseRestores(string assertion, UndoCombatFullState targetState, UndoCombatFullState redoState)
+    {
+        UndoScenarioAssertionResult topologyResult = CompareProjection(
+            assertion,
+            ProjectTopology(targetState.CreatureTopologyStates),
+            ProjectTopology(redoState.CreatureTopologyStates),
+            "creature_topology_roundtrip");
+        if (!topologyResult.Passed)
+            return topologyResult;
+
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatState == null || combatRoom == null)
+        {
+            return new UndoScenarioAssertionResult
+            {
+                Assertion = assertion,
+                Passed = false,
+                Detail = combatState == null ? "combat_state_missing" : "combat_room_missing"
+            };
+        }
+
+        Creature? doormakerCreature = combatState.Creatures.FirstOrDefault(static creature => creature.Monster is Doormaker);
+        if (doormakerCreature?.Monster is not Doormaker doormaker)
+        {
+            return new UndoScenarioAssertionResult
+            {
+                Assertion = assertion,
+                Passed = true,
+                Detail = $"{topologyResult.Detail}; doormaker_absent"
+            };
+        }
+
+        NCreature? doormakerNode = combatRoom.GetCreatureNode(doormakerCreature);
+        if (doormakerNode?.Body is not Sprite2D body)
+        {
+            return new UndoScenarioAssertionResult
+            {
+                Assertion = assertion,
+                Passed = false,
+                Detail = $"{topologyResult.Detail}; doormaker_node_missing"
+            };
+        }
+
+        if (!UndoSpecialCreatureVisualNormalizer.TryGetDoormakerExpectedTexturePath(doormaker, out string? expectedTexturePath)
+            || string.IsNullOrWhiteSpace(expectedTexturePath))
+        {
+            return new UndoScenarioAssertionResult
+            {
+                Assertion = assertion,
+                Passed = false,
+                Detail = $"{topologyResult.Detail}; expected_texture_missing"
+            };
+        }
+
+        Texture2D expectedTexture = PreloadManager.Cache.GetTexture2D(expectedTexturePath);
+        string? actualTexturePath = body.Texture?.ResourcePath;
+        string? cachedTexturePath = expectedTexture.ResourcePath;
+        bool textureMatches = ReferenceEquals(body.Texture, expectedTexture)
+            || string.Equals(actualTexturePath, cachedTexturePath, StringComparison.Ordinal)
+            || string.Equals(actualTexturePath, expectedTexturePath, StringComparison.Ordinal);
+        return new UndoScenarioAssertionResult
+        {
+            Assertion = assertion,
+            Passed = textureMatches,
+            Detail = textureMatches
+                ? $"{topologyResult.Detail}; doormaker_texture={actualTexturePath ?? expectedTexturePath}; times_got_back_in={doormaker.TimesGotBackIn}"
+                : $"{topologyResult.Detail}; expected_texture={expectedTexturePath}; actual_texture={actualTexturePath ?? "null"}; times_got_back_in={doormaker.TimesGotBackIn}"
+        };
     }
 
     private static UndoScenarioAssertionResult AssertPaelsLegionVisualState(string assertion)

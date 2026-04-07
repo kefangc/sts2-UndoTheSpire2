@@ -9,6 +9,7 @@ using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Monsters;
 using MegaCrit.Sts2.Core.Models.Powers;
@@ -25,6 +26,13 @@ namespace UndoTheSpire2;
 // NetFullCombatState. This layer owns visuals only, not topology or model state.
 internal static class UndoSpecialCreatureVisualNormalizer
 {
+    private static readonly string[] DoormakerVisualPaths =
+    [
+        "monsters/beta/door_maker_placeholder_2.png",
+        "monsters/beta/door_maker_placeholder_3.png",
+        "monsters/beta/door_maker_placeholder_4.png"
+    ];
+
     internal sealed class PaelsLegionVisualExpectation
     {
         public required string Trigger { get; init; }
@@ -136,6 +144,9 @@ internal static class UndoSpecialCreatureVisualNormalizer
             case ThievingHopper thievingHopper:
                 NormalizeThievingHopper(thievingHopper, creatureNode);
                 break;
+            case Doormaker doormaker:
+                NormalizeDoormaker(doormaker, creatureNode);
+                break;
             case FatGremlin fatGremlin:
                 NormalizeGremlinAwakeState(creatureNode, ReadBoolMonsterProperty(fatGremlin, "IsAwake"));
                 break;
@@ -149,6 +160,29 @@ internal static class UndoSpecialCreatureVisualNormalizer
                 NormalizeWaterfallGiant(waterfallGiant, creatureNode);
                 break;
         }
+    }
+
+    internal static bool TryGetDoormakerExpectedTexturePath(Doormaker monster, out string? texturePath)
+    {
+        texturePath = null;
+        if (DoormakerVisualPaths.Length == 0)
+            return false;
+
+        int textureIndex = ((monster.TimesGotBackIn % DoormakerVisualPaths.Length) + DoormakerVisualPaths.Length) % DoormakerVisualPaths.Length;
+        texturePath = ImageHelper.GetImagePath(DoormakerVisualPaths[textureIndex]);
+        return !string.IsNullOrWhiteSpace(texturePath);
+    }
+
+    private static void NormalizeDoormaker(Doormaker monster, NCreature creatureNode)
+    {
+        if (creatureNode.Body is not Sprite2D body)
+            return;
+        if (!TryGetDoormakerExpectedTexturePath(monster, out string? texturePath) || string.IsNullOrWhiteSpace(texturePath))
+            return;
+
+        Texture2D expectedTexture = PreloadManager.Cache.GetTexture2D(texturePath);
+        if (!ReferenceEquals(body.Texture, expectedTexture))
+            body.Texture = expectedTexture;
     }
 
     private static void NormalizeSleepingBeetle(SlumberingBeetle monster, NCreature creatureNode)

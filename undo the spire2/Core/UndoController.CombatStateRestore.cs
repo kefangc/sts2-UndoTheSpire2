@@ -631,7 +631,11 @@ public sealed partial class UndoController
 
         combatState.RoundNumber = snapshot.RoundNumber;
         combatState.CurrentSide = snapshot.CurrentSide;
-        UndoCombatHistoryCodec.Restore(runState, combatState, snapshot.CombatHistoryState);
+        UndoCombatHistoryCodec.Restore(
+            runState,
+            combatState,
+            snapshot.CombatHistoryState,
+            new CardResolutionIndex(runState, snapshot.CombatCardDbState));
         foreach (Player player in runState.Players)
             player.PlayerCombatState?.RecalculateCardValues();
 
@@ -1126,7 +1130,7 @@ public sealed partial class UndoController
         for (int i = 0; i < snapshotState.FullState.Creatures.Count; i++)
             RestoreCreatureState(creatures[i], snapshotState.FullState.Creatures[i]);
 
-        RestorePowerRuntimeStates(runState, combatState, snapshotState.PowerRuntimeStates);
+        RestorePowerRuntimeStates(runState, combatState, snapshotState.PowerRuntimeStates, snapshotState.CombatCardDbState);
         if (snapshotState.MonsterStates.Count > 0)
         {
             Dictionary<string, UndoMonsterState> monsterStatesByKey = snapshotState.MonsterStates.ToDictionary(static state => state.CreatureKey);
@@ -1334,7 +1338,11 @@ public sealed partial class UndoController
             }
         }
     }
-    private static void RestorePowerRuntimeStates(RunState runState, CombatState combatState, IReadOnlyList<UndoPowerRuntimeState> runtimeStates)
+    private static void RestorePowerRuntimeStates(
+        RunState runState,
+        CombatState combatState,
+        IReadOnlyList<UndoPowerRuntimeState> runtimeStates,
+        UndoCombatCardDbState? combatCardDbState = null)
     {
         if (runtimeStates.Count == 0)
             return;
@@ -1342,7 +1350,8 @@ public sealed partial class UndoController
         UndoRuntimeRestoreContext context = new()
         {
             RunState = runState,
-            CombatState = combatState
+            CombatState = combatState,
+            CardResolutionIndex = new CardResolutionIndex(runState, combatCardDbState)
         };
 
         Dictionary<string, Creature> creaturesByKey = BuildCreatureKeyMap(combatState.Creatures);

@@ -211,6 +211,15 @@ internal static class UndoStableRefs
 
     public static CardModel ResolveCardRef(RunState runState, CardRef cardRef)
     {
+        return ResolveCardRef(runState, cardRef, cardResolutionIndex: null);
+    }
+
+    public static CardModel ResolveCardRef(RunState runState, CardRef cardRef, CardResolutionIndex? cardResolutionIndex)
+    {
+        if (cardResolutionIndex != null && cardResolutionIndex.TryResolve(cardRef, out CardModel? indexedCard) && indexedCard != null)
+            return indexedCard;
+
+        string targetFingerprint = UndoSerializationUtil.GetPacketFingerprint(cardRef.Card);
         if (cardRef.PlayerNetId.HasValue && cardRef.PileType.HasValue && cardRef.PileIndex.HasValue)
         {
             Player? player = runState.GetPlayer(cardRef.PlayerNetId.Value);
@@ -220,8 +229,13 @@ internal static class UndoStableRefs
                 && cardRef.PileIndex.Value < pile.Cards.Count)
             {
                 CardModel candidate = pile.Cards[cardRef.PileIndex.Value];
-                if (UndoSerializationUtil.PacketDataEquals(candidate.ToSerializable(), cardRef.Card))
+                if (string.Equals(
+                    UndoSerializationUtil.GetPacketFingerprint(candidate.ToSerializable()),
+                    targetFingerprint,
+                    StringComparison.Ordinal))
+                {
                     return candidate;
+                }
             }
         }
 
@@ -235,15 +249,25 @@ internal static class UndoStableRefs
 
                 foreach (CardModel candidate in pile.Cards)
                 {
-                    if (UndoSerializationUtil.PacketDataEquals(candidate.ToSerializable(), cardRef.Card))
+                    if (string.Equals(
+                        UndoSerializationUtil.GetPacketFingerprint(candidate.ToSerializable()),
+                        targetFingerprint,
+                        StringComparison.Ordinal))
+                    {
                         return candidate;
+                    }
                 }
             }
         }
 
         CardModel detachedCard = CardModel.FromSerializable(UndoSerializationUtil.ClonePacketSerializable(cardRef.Card));
-        if (detachedCard.Owner == null && cardRef.PlayerNetId.HasValue)
-            detachedCard.Owner = runState.GetPlayer(cardRef.PlayerNetId.Value);
+        if (detachedCard.Owner == null
+            && cardRef.PlayerNetId.HasValue
+            && runState.GetPlayer(cardRef.PlayerNetId.Value) is { } owner)
+        {
+            detachedCard.Owner = owner;
+        }
+
         return detachedCard;
     }
 

@@ -292,7 +292,7 @@ internal static partial class UndoRuntimeStateCodecRegistry
 
             cards.Clear();
             foreach (UndoCardIntMapEntry entry in state.Entries)
-                cards[UndoStableRefs.ResolveCardRef(context.RunState, entry.Card)] = entry.Value;
+                cards[UndoStableRefs.ResolveCardRef(context.RunState, entry.Card, context.CardResolutionIndex)] = entry.Value;
         }
     }
 
@@ -395,7 +395,7 @@ internal static partial class UndoRuntimeStateCodecRegistry
             }
 
             foreach (UndoCardIntMapEntry entry in state.DowngradedCards)
-                downgradedCards[UndoStableRefs.ResolveCardRef(context.RunState, entry.Card)] = entry.Value;
+                downgradedCards[UndoStableRefs.ResolveCardRef(context.RunState, entry.Card, context.CardResolutionIndex)] = entry.Value;
         }
     }
 
@@ -769,7 +769,7 @@ internal static partial class UndoRuntimeStateCodecRegistry
             Type type = target.GetType();
             foreach (UndoNamedCardRefRuntimeEntry entry in entries)
             {
-                CardModel? card = entry.Card == null ? null : UndoStableRefs.ResolveCardRef(context.RunState, entry.Card);
+                CardModel? card = entry.Card == null ? null : UndoStableRefs.ResolveCardRef(context.RunState, entry.Card, context.CardResolutionIndex);
                 if (UndoReflectionUtil.FindProperty(type, entry.Name)?.PropertyType == typeof(CardModel))
                 {
                     UndoReflectionUtil.TrySetPropertyValue(target, entry.Name, card);
@@ -865,7 +865,7 @@ internal static partial class UndoRuntimeStateCodecRegistry
             {
                 CardPlay? cardPlay = entry.CardPlay == null
                     ? null
-                    : UndoCombatHistoryCodec.RestoreCardPlay(context.RunState, creaturesByKey, entry.CardPlay);
+                    : UndoCombatHistoryCodec.RestoreCardPlay(context.RunState, creaturesByKey, entry.CardPlay, context.CardResolutionIndex);
                 if (UndoReflectionUtil.FindProperty(type, entry.Name)?.PropertyType == typeof(CardPlay))
                 {
                     UndoReflectionUtil.TrySetPropertyValue(target, entry.Name, cardPlay);
@@ -962,7 +962,7 @@ internal static partial class UndoRuntimeStateCodecRegistry
                     continue;
 
                 List<CardModel> resolvedCards = collectionState.Cards
-                    .Select(cardRef => UndoStableRefs.ResolveCardRef(context.RunState, cardRef))
+                    .Select(cardRef => UndoStableRefs.ResolveCardRef(context.RunState, cardRef, context.CardResolutionIndex))
                     .ToList();
                 TryReplaceCollectionItems(collection, resolvedCards);
             }

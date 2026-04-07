@@ -42,6 +42,11 @@ internal static class UndoSerializationUtil
         return SerializePacketSerializable(left).AsSpan().SequenceEqual(SerializePacketSerializable(right));
     }
 
+    public static string GetPacketFingerprint<T>(T value) where T : IPacketSerializable
+    {
+        return Convert.ToBase64String(SerializePacketSerializable(value));
+    }
+
     public static SerializableReward CloneSerializableReward(SerializableReward value)
     {
         ArgumentNullException.ThrowIfNull(value);
