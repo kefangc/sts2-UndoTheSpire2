@@ -51,6 +51,7 @@ internal static partial class UndoRuntimeStateCodecRegistry
         {
             List<UndoNamedBoolState> boolFields = [];
             List<UndoNamedIntState> intFields = [];
+            List<UndoNamedDecimalRuntimeEntry> decimalFields = [];
             List<UndoNamedEnumState> enumFields = [];
             foreach (FieldInfo field in GetDeclaredScalarRuntimeFields(relic.GetType()))
             {
@@ -71,6 +72,14 @@ internal static partial class UndoRuntimeStateCodecRegistry
                         Value = rawValue is int value ? value : 0
                     });
                 }
+                else if (field.FieldType == typeof(decimal))
+                {
+                    decimalFields.Add(new UndoNamedDecimalRuntimeEntry
+                    {
+                        Name = field.Name,
+                        Value = rawValue is decimal value ? value : 0m
+                    });
+                }
                 else if (field.FieldType.IsEnum)
                 {
                     enumFields.Add(new UndoNamedEnumState
@@ -87,6 +96,7 @@ internal static partial class UndoRuntimeStateCodecRegistry
                 CodecId = CodecId,
                 BoolFields = boolFields,
                 IntFields = intFields,
+                DecimalFields = decimalFields,
                 EnumFields = enumFields
             };
         }
@@ -106,6 +116,15 @@ internal static partial class UndoRuntimeStateCodecRegistry
             foreach (UndoNamedIntState fieldState in state.IntFields)
             {
                 if (UndoReflectionUtil.FindField(relic.GetType(), fieldState.Name)?.FieldType == typeof(int))
+                {
+                    UndoReflectionUtil.TrySetFieldValue(relic, fieldState.Name, fieldState.Value);
+                    restoredAny = true;
+                }
+            }
+
+            foreach (UndoNamedDecimalRuntimeEntry fieldState in state.DecimalFields)
+            {
+                if (UndoReflectionUtil.FindField(relic.GetType(), fieldState.Name)?.FieldType == typeof(decimal))
                 {
                     UndoReflectionUtil.TrySetFieldValue(relic, fieldState.Name, fieldState.Value);
                     restoredAny = true;

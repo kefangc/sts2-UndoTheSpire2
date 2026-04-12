@@ -12,6 +12,7 @@ public static class UndoRunLifecyclePatch
     [HarmonyPrefix]
     public static void EndCombatPrefix()
     {
+        UndoDelayedCombatRewardService.FlushPendingRewards("combat_ended");
         MainFile.Controller.ClearHistory("combat ended");
     }
 

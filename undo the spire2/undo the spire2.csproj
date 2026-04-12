@@ -22,27 +22,50 @@
     <IsOSX Condition="$([MSBuild]::IsOSPlatform('OSX'))">true</IsOSX>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <UndoTheSpire2SteamRootEnv>$([System.Environment]::GetEnvironmentVariable('UNDO_THE_SPIRE2_STEAM_ROOT'))</UndoTheSpire2SteamRootEnv>
+    <UndoTheSpire2SteamLibraryPathEnv>$([System.Environment]::GetEnvironmentVariable('UNDO_THE_SPIRE2_STEAM_LIBRARY_PATH'))</UndoTheSpire2SteamLibraryPathEnv>
+    <UndoTheSpire2Sts2PathEnv>$([System.Environment]::GetEnvironmentVariable('UNDO_THE_SPIRE2_STS2_PATH'))</UndoTheSpire2Sts2PathEnv>
+    <UndoTheSpire2Sts2DataDirEnv>$([System.Environment]::GetEnvironmentVariable('UNDO_THE_SPIRE2_STS2_DATA_DIR'))</UndoTheSpire2Sts2DataDirEnv>
+    <UndoTheSpire2GodotPathEnv>$([System.Environment]::GetEnvironmentVariable('UNDO_THE_SPIRE2_GODOT_PATH'))</UndoTheSpire2GodotPathEnv>
+  </PropertyGroup>
+
   <PropertyGroup Condition="'$(IsWindows)' == 'true'">
+    <SteamRoot Condition="'$(SteamRoot)' == '' and '$(UndoTheSpire2SteamRootEnv)' != ''">$(UndoTheSpire2SteamRootEnv)</SteamRoot>
     <SteamRoot Condition="'$(SteamRoot)' == '' and Exists('E:\SteamLibrary\steamapps\common\Slay the Spire 2')">E:\SteamLibrary</SteamRoot>
     <SteamRoot Condition="'$(SteamRoot)' == ''">$(registry:HKEY_CURRENT_USER\Software\Valve\Steam@SteamPath)</SteamRoot>
+    <SteamLibraryPath Condition="'$(SteamLibraryPath)' == '' and '$(UndoTheSpire2SteamLibraryPathEnv)' != ''">$(UndoTheSpire2SteamLibraryPathEnv)</SteamLibraryPath>
     <SteamLibraryPath Condition="'$(SteamLibraryPath)' == '' and '$(SteamRoot)' != '' and Exists('$(SteamRoot)\steamapps')">$(SteamRoot)\steamapps</SteamLibraryPath>
     <SteamLibraryPath Condition="'$(SteamLibraryPath)' == '' and Exists('E:\SteamLibrary\steamapps')">E:\SteamLibrary\steamapps</SteamLibraryPath>
+    <Sts2Path Condition="'$(Sts2Path)' == '' and '$(UndoTheSpire2Sts2PathEnv)' != ''">$(UndoTheSpire2Sts2PathEnv)</Sts2Path>
     <Sts2Path Condition="'$(Sts2Path)' == '' and '$(SteamLibraryPath)' != ''">$(SteamLibraryPath)/common/Slay the Spire 2</Sts2Path>
+    <Sts2DataDir Condition="'$(Sts2DataDir)' == '' and '$(UndoTheSpire2Sts2DataDirEnv)' != ''">$(UndoTheSpire2Sts2DataDirEnv)</Sts2DataDir>
     <Sts2DataDir Condition="'$(Sts2DataDir)' == ''">$(Sts2Path)/data_sts2_windows_x86_64</Sts2DataDir>
+    <GodotPath Condition="'$(GodotPath)' == '' and '$(UndoTheSpire2GodotPathEnv)' != ''">$(UndoTheSpire2GodotPathEnv)</GodotPath>
     <GodotPath Condition="'$(GodotPath)' == ''">F:\programing\Godot_v4.5.1-stable_mono_win64\Godot_v4.5.1-stable_mono_win64_console.exe</GodotPath>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(IsLinux)' == 'true'">
+    <SteamRoot Condition="'$(SteamRoot)' == '' and '$(UndoTheSpire2SteamRootEnv)' != ''">$(UndoTheSpire2SteamRootEnv)</SteamRoot>
+    <SteamLibraryPath Condition="'$(SteamLibraryPath)' == '' and '$(UndoTheSpire2SteamLibraryPathEnv)' != ''">$(UndoTheSpire2SteamLibraryPathEnv)</SteamLibraryPath>
     <SteamLibraryPath Condition="'$(SteamLibraryPath)' == ''">$(HOME)/.local/share/Steam/steamapps</SteamLibraryPath>
+    <Sts2Path Condition="'$(Sts2Path)' == '' and '$(UndoTheSpire2Sts2PathEnv)' != ''">$(UndoTheSpire2Sts2PathEnv)</Sts2Path>
     <Sts2Path Condition="'$(Sts2Path)' == ''">$(SteamLibraryPath)/common/Slay the Spire 2</Sts2Path>
+    <Sts2DataDir Condition="'$(Sts2DataDir)' == '' and '$(UndoTheSpire2Sts2DataDirEnv)' != ''">$(UndoTheSpire2Sts2DataDirEnv)</Sts2DataDir>
     <Sts2DataDir Condition="'$(Sts2DataDir)' == ''">$(Sts2Path)/data_sts2_linuxbsd_x86_64</Sts2DataDir>
+    <GodotPath Condition="'$(GodotPath)' == '' and '$(UndoTheSpire2GodotPathEnv)' != ''">$(UndoTheSpire2GodotPathEnv)</GodotPath>
     <GodotPath Condition="'$(GodotPath)' == ''">$(SteamLibraryPath)/common/Megadot/MegaDot.x86_64</GodotPath>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(IsOSX)' == 'true'">
+    <SteamRoot Condition="'$(SteamRoot)' == '' and '$(UndoTheSpire2SteamRootEnv)' != ''">$(UndoTheSpire2SteamRootEnv)</SteamRoot>
+    <SteamLibraryPath Condition="'$(SteamLibraryPath)' == '' and '$(UndoTheSpire2SteamLibraryPathEnv)' != ''">$(UndoTheSpire2SteamLibraryPathEnv)</SteamLibraryPath>
     <SteamLibraryPath Condition="'$(SteamLibraryPath)' == ''">$(HOME)/Library/Application Support/Steam/steamapps</SteamLibraryPath>
+    <Sts2Path Condition="'$(Sts2Path)' == '' and '$(UndoTheSpire2Sts2PathEnv)' != ''">$(UndoTheSpire2Sts2PathEnv)</Sts2Path>
     <Sts2Path Condition="'$(Sts2Path)' == ''">$(SteamLibraryPath)/common/Slay the Spire 2</Sts2Path>
+    <Sts2DataDir Condition="'$(Sts2DataDir)' == '' and '$(UndoTheSpire2Sts2DataDirEnv)' != ''">$(UndoTheSpire2Sts2DataDirEnv)</Sts2DataDir>
     <Sts2DataDir Condition="'$(Sts2DataDir)' == ''">$(Sts2Path)/data_sts2_macos_x86_64</Sts2DataDir>
+    <GodotPath Condition="'$(GodotPath)' == '' and '$(UndoTheSpire2GodotPathEnv)' != ''">$(UndoTheSpire2GodotPathEnv)</GodotPath>
     <GodotPath Condition="'$(GodotPath)' == ''"></GodotPath>
   </PropertyGroup>
 

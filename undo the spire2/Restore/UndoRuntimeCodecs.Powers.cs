@@ -1,4 +1,6 @@
+using System;
 using System.Reflection;
+using MegaCrit.Sts2.Core.Combat.History.Entries;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
@@ -523,6 +525,447 @@ internal static partial class UndoRuntimeStateCodecRegistry
                 return;
 
             UndoReflectionUtil.TrySetFieldValue(internalData, "boundCardPlayed", state.Value);
+        }
+    }
+
+    private sealed class GenericPowerScalarFieldsCodec : UndoPowerRuntimeCodec<UndoPowerScalarFieldsRuntimeComplexState>
+    {
+        public override string CodecId => "power:Generic.scalarFields";
+
+        public override bool CanHandle(PowerModel power)
+        {
+            object? internalData = GetPowerInternalData(power);
+            return GetDeclaredScalarRuntimeFields(power.GetType()).Any()
+                || (internalData != null && GetDeclaredScalarRuntimeFields(internalData.GetType()).Any());
+        }
+
+        public override UndoPowerScalarFieldsRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
+        {
+            CaptureScalarFields(
+                power,
+                out List<UndoNamedBoolState> directBoolFields,
+                out List<UndoNamedIntState> directIntFields,
+                out List<UndoNamedDecimalRuntimeEntry> directDecimalFields,
+                out List<UndoNamedEnumState> directEnumFields);
+
+            object? internalData = GetPowerInternalData(power);
+            CaptureScalarFields(
+                internalData,
+                out List<UndoNamedBoolState> internalBoolFields,
+                out List<UndoNamedIntState> internalIntFields,
+                out List<UndoNamedDecimalRuntimeEntry> internalDecimalFields,
+                out List<UndoNamedEnumState> internalEnumFields);
+
+            if (directBoolFields.Count == 0
+                && directIntFields.Count == 0
+                && directDecimalFields.Count == 0
+                && directEnumFields.Count == 0
+                && internalBoolFields.Count == 0
+                && internalIntFields.Count == 0
+                && internalDecimalFields.Count == 0
+                && internalEnumFields.Count == 0)
+            {
+                return null;
+            }
+
+            return new UndoPowerScalarFieldsRuntimeComplexState
+            {
+                CodecId = CodecId,
+                DirectBoolFields = directBoolFields,
+                DirectIntFields = directIntFields,
+                DirectDecimalFields = directDecimalFields,
+                DirectEnumFields = directEnumFields,
+                InternalBoolFields = internalBoolFields,
+                InternalIntFields = internalIntFields,
+                InternalDecimalFields = internalDecimalFields,
+                InternalEnumFields = internalEnumFields
+            };
+        }
+
+        public override void Restore(PowerModel power, UndoPowerScalarFieldsRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            bool restoredAny = RestoreScalarFields(power, state.DirectBoolFields, state.DirectIntFields, state.DirectDecimalFields, state.DirectEnumFields);
+            object? internalData = GetPowerInternalData(power);
+            restoredAny |= RestoreScalarFields(internalData, state.InternalBoolFields, state.InternalIntFields, state.InternalDecimalFields, state.InternalEnumFields);
+            if (restoredAny)
+                InvokeDisplayAmountChanged(power);
+        }
+
+        private static void CaptureScalarFields(
+            object? target,
+            out List<UndoNamedBoolState> boolFields,
+            out List<UndoNamedIntState> intFields,
+            out List<UndoNamedDecimalRuntimeEntry> decimalFields,
+            out List<UndoNamedEnumState> enumFields)
+        {
+            boolFields = [];
+            intFields = [];
+            decimalFields = [];
+            enumFields = [];
+            if (target == null)
+                return;
+
+            foreach (FieldInfo field in GetDeclaredScalarRuntimeFields(target.GetType()))
+            {
+                object? rawValue = field.GetValue(target);
+                if (field.FieldType == typeof(bool))
+                {
+                    boolFields.Add(new UndoNamedBoolState
+                    {
+                        Name = field.Name,
+                        Value = rawValue is bool value && value
+                    });
+                }
+                else if (field.FieldType == typeof(int))
+                {
+                    intFields.Add(new UndoNamedIntState
+                    {
+                        Name = field.Name,
+                        Value = rawValue is int value ? value : 0
+                    });
+                }
+                else if (field.FieldType == typeof(decimal))
+                {
+                    decimalFields.Add(new UndoNamedDecimalRuntimeEntry
+                    {
+                        Name = field.Name,
+                        Value = rawValue is decimal value ? value : 0m
+                    });
+                }
+                else if (field.FieldType.IsEnum)
+                {
+                    enumFields.Add(new UndoNamedEnumState
+                    {
+                        Name = field.Name,
+                        EnumTypeName = field.FieldType.AssemblyQualifiedName ?? field.FieldType.FullName ?? field.FieldType.Name,
+                        Value = rawValue == null ? 0 : Convert.ToInt32(rawValue)
+                    });
+                }
+            }
+        }
+
+        private static bool RestoreScalarFields(
+            object? target,
+            IReadOnlyList<UndoNamedBoolState> boolFields,
+            IReadOnlyList<UndoNamedIntState> intFields,
+            IReadOnlyList<UndoNamedDecimalRuntimeEntry> decimalFields,
+            IReadOnlyList<UndoNamedEnumState> enumFields)
+        {
+            if (target == null)
+                return false;
+
+            bool restoredAny = false;
+            Type targetType = target.GetType();
+            foreach (UndoNamedBoolState fieldState in boolFields)
+            {
+                if (UndoReflectionUtil.FindField(targetType, fieldState.Name)?.FieldType == typeof(bool))
+                {
+                    UndoReflectionUtil.TrySetFieldValue(target, fieldState.Name, fieldState.Value);
+                    restoredAny = true;
+                }
+            }
+
+            foreach (UndoNamedIntState fieldState in intFields)
+            {
+                if (UndoReflectionUtil.FindField(targetType, fieldState.Name)?.FieldType == typeof(int))
+                {
+                    UndoReflectionUtil.TrySetFieldValue(target, fieldState.Name, fieldState.Value);
+                    restoredAny = true;
+                }
+            }
+
+            foreach (UndoNamedDecimalRuntimeEntry fieldState in decimalFields)
+            {
+                if (UndoReflectionUtil.FindField(targetType, fieldState.Name)?.FieldType == typeof(decimal))
+                {
+                    UndoReflectionUtil.TrySetFieldValue(target, fieldState.Name, fieldState.Value);
+                    restoredAny = true;
+                }
+            }
+
+            foreach (UndoNamedEnumState fieldState in enumFields)
+            {
+                FieldInfo? field = UndoReflectionUtil.FindField(targetType, fieldState.Name);
+                if (field == null || !field.FieldType.IsEnum)
+                    continue;
+
+                UndoReflectionUtil.TrySetFieldValue(target, fieldState.Name, Enum.ToObject(field.FieldType, fieldState.Value));
+                restoredAny = true;
+            }
+
+            return restoredAny;
+        }
+    }
+
+    private sealed class GenericPowerCardRefFieldsCodec : UndoPowerRuntimeCodec<UndoPowerCardRefFieldsRuntimeComplexState>
+    {
+        public override string CodecId => "power:Generic.cardRefs";
+
+        public override bool CanHandle(PowerModel power)
+        {
+            object? internalData = GetPowerInternalData(power);
+            Type type = power.GetType();
+            return GetDeclaredReferenceRuntimeProperties(type, typeof(CardModel)).Any()
+                || GetDeclaredReferenceRuntimeFields(type, typeof(CardModel)).Any()
+                || (internalData != null
+                    && (GetDeclaredReferenceRuntimeProperties(internalData.GetType(), typeof(CardModel)).Any()
+                        || GetDeclaredReferenceRuntimeFields(internalData.GetType(), typeof(CardModel)).Any()));
+        }
+
+        public override UndoPowerCardRefFieldsRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
+        {
+            List<UndoNamedCardRefRuntimeEntry> directEntries = CaptureCardRefEntries(power, context);
+            List<UndoNamedCardRefRuntimeEntry> internalEntries = CaptureCardRefEntries(GetPowerInternalData(power), context);
+            if (directEntries.Count == 0 && internalEntries.Count == 0)
+                return null;
+
+            return new UndoPowerCardRefFieldsRuntimeComplexState
+            {
+                CodecId = CodecId,
+                DirectEntries = directEntries,
+                InternalEntries = internalEntries
+            };
+        }
+
+        public override void Restore(PowerModel power, UndoPowerCardRefFieldsRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            RestoreCardRefEntries(power, state.DirectEntries, context);
+            RestoreCardRefEntries(GetPowerInternalData(power), state.InternalEntries, context);
+        }
+
+        private static List<UndoNamedCardRefRuntimeEntry> CaptureCardRefEntries(object? target, UndoRuntimeCaptureContext context)
+        {
+            List<UndoNamedCardRefRuntimeEntry> entries = [];
+            if (target == null)
+                return entries;
+
+            Type type = target.GetType();
+            foreach (PropertyInfo property in GetDeclaredReferenceRuntimeProperties(type, typeof(CardModel)))
+            {
+                entries.Add(new UndoNamedCardRefRuntimeEntry
+                {
+                    Name = property.Name,
+                    Card = property.GetValue(target) is CardModel card ? UndoStableRefs.CaptureCardRef(context.RunState, card) : null
+                });
+            }
+
+            foreach (FieldInfo field in GetDeclaredReferenceRuntimeFields(type, typeof(CardModel)))
+            {
+                entries.Add(new UndoNamedCardRefRuntimeEntry
+                {
+                    Name = field.Name,
+                    Card = field.GetValue(target) is CardModel card ? UndoStableRefs.CaptureCardRef(context.RunState, card) : null
+                });
+            }
+
+            return entries;
+        }
+
+        private static void RestoreCardRefEntries(object? target, IReadOnlyList<UndoNamedCardRefRuntimeEntry> entries, UndoRuntimeRestoreContext context)
+        {
+            if (target == null)
+                return;
+
+            Type type = target.GetType();
+            foreach (UndoNamedCardRefRuntimeEntry entry in entries)
+            {
+                CardModel? card = entry.Card == null ? null : UndoStableRefs.ResolveCardRef(context.RunState, entry.Card);
+                if (UndoReflectionUtil.FindProperty(type, entry.Name)?.PropertyType == typeof(CardModel))
+                {
+                    UndoReflectionUtil.TrySetPropertyValue(target, entry.Name, card);
+                    continue;
+                }
+
+                if (UndoReflectionUtil.FindField(type, entry.Name)?.FieldType == typeof(CardModel))
+                    UndoReflectionUtil.TrySetFieldValue(target, entry.Name, card);
+            }
+        }
+    }
+
+    private sealed class GenericPowerCardPlayFieldsCodec : UndoPowerRuntimeCodec<UndoPowerCardPlayFieldsRuntimeComplexState>
+    {
+        public override string CodecId => "power:Generic.cardPlays";
+
+        public override bool CanHandle(PowerModel power)
+        {
+            object? internalData = GetPowerInternalData(power);
+            Type type = power.GetType();
+            return GetDeclaredReferenceRuntimeProperties(type, typeof(CardPlay)).Any()
+                || GetDeclaredReferenceRuntimeFields(type, typeof(CardPlay)).Any()
+                || (internalData != null
+                    && (GetDeclaredReferenceRuntimeProperties(internalData.GetType(), typeof(CardPlay)).Any()
+                        || GetDeclaredReferenceRuntimeFields(internalData.GetType(), typeof(CardPlay)).Any()));
+        }
+
+        public override UndoPowerCardPlayFieldsRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
+        {
+            List<UndoNamedCardPlayRuntimeEntry> directEntries = CaptureCardPlayEntries(power, context);
+            List<UndoNamedCardPlayRuntimeEntry> internalEntries = CaptureCardPlayEntries(GetPowerInternalData(power), context);
+            if (directEntries.Count == 0 && internalEntries.Count == 0)
+                return null;
+
+            return new UndoPowerCardPlayFieldsRuntimeComplexState
+            {
+                CodecId = CodecId,
+                DirectEntries = directEntries,
+                InternalEntries = internalEntries
+            };
+        }
+
+        public override void Restore(PowerModel power, UndoPowerCardPlayFieldsRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            Dictionary<string, Creature> creaturesByKey = UndoStableRefs.BuildCreatureKeyMap(context.CombatState.Creatures);
+            RestoreCardPlayEntries(power, state.DirectEntries, context, creaturesByKey);
+            RestoreCardPlayEntries(GetPowerInternalData(power), state.InternalEntries, context, creaturesByKey);
+        }
+
+        private static List<UndoNamedCardPlayRuntimeEntry> CaptureCardPlayEntries(object? target, UndoRuntimeCaptureContext context)
+        {
+            List<UndoNamedCardPlayRuntimeEntry> entries = [];
+            if (target == null)
+                return entries;
+
+            Type type = target.GetType();
+            foreach (PropertyInfo property in GetDeclaredReferenceRuntimeProperties(type, typeof(CardPlay)))
+            {
+                entries.Add(new UndoNamedCardPlayRuntimeEntry
+                {
+                    Name = property.Name,
+                    CardPlay = property.GetValue(target) is CardPlay cardPlay
+                        ? UndoCombatHistoryCodec.CaptureCardPlay(context.RunState, context.CombatState.Creatures, cardPlay)
+                        : null
+                });
+            }
+
+            foreach (FieldInfo field in GetDeclaredReferenceRuntimeFields(type, typeof(CardPlay)))
+            {
+                entries.Add(new UndoNamedCardPlayRuntimeEntry
+                {
+                    Name = field.Name,
+                    CardPlay = field.GetValue(target) is CardPlay cardPlay
+                        ? UndoCombatHistoryCodec.CaptureCardPlay(context.RunState, context.CombatState.Creatures, cardPlay)
+                        : null
+                });
+            }
+
+            return entries;
+        }
+
+        private static void RestoreCardPlayEntries(
+            object? target,
+            IReadOnlyList<UndoNamedCardPlayRuntimeEntry> entries,
+            UndoRuntimeRestoreContext context,
+            IReadOnlyDictionary<string, Creature> creaturesByKey)
+        {
+            if (target == null)
+                return;
+
+            Type type = target.GetType();
+            foreach (UndoNamedCardPlayRuntimeEntry entry in entries)
+            {
+                CardPlay? cardPlay = entry.CardPlay == null
+                    ? null
+                    : UndoCombatHistoryCodec.RestoreCardPlay(context.RunState, creaturesByKey, entry.CardPlay);
+                if (UndoReflectionUtil.FindProperty(type, entry.Name)?.PropertyType == typeof(CardPlay))
+                {
+                    UndoReflectionUtil.TrySetPropertyValue(target, entry.Name, cardPlay);
+                    continue;
+                }
+
+                if (UndoReflectionUtil.FindField(type, entry.Name)?.FieldType == typeof(CardPlay))
+                    UndoReflectionUtil.TrySetFieldValue(target, entry.Name, cardPlay);
+            }
+        }
+    }
+
+    private sealed class GenericPowerCardRefCollectionsCodec : UndoPowerRuntimeCodec<UndoPowerCardRefCollectionsRuntimeComplexState>
+    {
+        public override string CodecId => "power:Generic.cardCollections";
+
+        public override bool CanHandle(PowerModel power)
+        {
+            object? internalData = GetPowerInternalData(power);
+            Type type = power.GetType();
+            return GetDeclaredCollectionRuntimeProperties(type, typeof(CardModel)).Any()
+                || GetDeclaredCollectionRuntimeFields(type, typeof(CardModel)).Any()
+                || (internalData != null
+                    && (GetDeclaredCollectionRuntimeProperties(internalData.GetType(), typeof(CardModel)).Any()
+                        || GetDeclaredCollectionRuntimeFields(internalData.GetType(), typeof(CardModel)).Any()));
+        }
+
+        public override UndoPowerCardRefCollectionsRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
+        {
+            List<UndoNamedCardRefCollectionRuntimeEntry> directCollections = CaptureCardCollections(power, context);
+            List<UndoNamedCardRefCollectionRuntimeEntry> internalCollections = CaptureCardCollections(GetPowerInternalData(power), context);
+            if (directCollections.Count == 0 && internalCollections.Count == 0)
+                return null;
+
+            return new UndoPowerCardRefCollectionsRuntimeComplexState
+            {
+                CodecId = CodecId,
+                DirectCollections = directCollections,
+                InternalCollections = internalCollections
+            };
+        }
+
+        public override void Restore(PowerModel power, UndoPowerCardRefCollectionsRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            RestoreCardCollections(power, state.DirectCollections, context);
+            RestoreCardCollections(GetPowerInternalData(power), state.InternalCollections, context);
+        }
+
+        private static List<UndoNamedCardRefCollectionRuntimeEntry> CaptureCardCollections(object? target, UndoRuntimeCaptureContext context)
+        {
+            List<UndoNamedCardRefCollectionRuntimeEntry> collections = [];
+            if (target == null)
+                return collections;
+
+            Type type = target.GetType();
+            foreach (PropertyInfo property in GetDeclaredCollectionRuntimeProperties(type, typeof(CardModel)))
+            {
+                if (property.GetValue(target) is not IEnumerable<CardModel> cards)
+                    continue;
+
+                collections.Add(new UndoNamedCardRefCollectionRuntimeEntry
+                {
+                    Name = property.Name,
+                    Cards = cards.Select(card => UndoStableRefs.CaptureCardRef(context.RunState, card)).ToList()
+                });
+            }
+
+            foreach (FieldInfo field in GetDeclaredCollectionRuntimeFields(type, typeof(CardModel)))
+            {
+                if (field.GetValue(target) is not IEnumerable<CardModel> cards)
+                    continue;
+
+                collections.Add(new UndoNamedCardRefCollectionRuntimeEntry
+                {
+                    Name = field.Name,
+                    Cards = cards.Select(card => UndoStableRefs.CaptureCardRef(context.RunState, card)).ToList()
+                });
+            }
+
+            return collections;
+        }
+
+        private static void RestoreCardCollections(object? target, IReadOnlyList<UndoNamedCardRefCollectionRuntimeEntry> collections, UndoRuntimeRestoreContext context)
+        {
+            if (target == null)
+                return;
+
+            Type type = target.GetType();
+            foreach (UndoNamedCardRefCollectionRuntimeEntry collectionState in collections)
+            {
+                object? collection = UndoReflectionUtil.FindProperty(type, collectionState.Name)?.GetValue(target)
+                    ?? UndoReflectionUtil.FindField(type, collectionState.Name)?.GetValue(target);
+                if (collection == null)
+                    continue;
+
+                List<CardModel> resolvedCards = collectionState.Cards
+                    .Select(cardRef => UndoStableRefs.ResolveCardRef(context.RunState, cardRef))
+                    .ToList();
+                TryReplaceCollectionItems(collection, resolvedCards);
+            }
         }
     }
 

@@ -1,9 +1,24 @@
-﻿param(
+param(
     [string]$Configuration = 'Debug',
-    [string]$CacheRoot = 'F:\projects\undo-the-spire2-cache'
+    [string]$CacheRoot
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Resolve-PathSetting([string]$ConfiguredValue, [string]$EnvVarName, [string]$Fallback) {
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredValue)) {
+        return $ConfiguredValue
+    }
+
+    $environmentValue = [System.Environment]::GetEnvironmentVariable($EnvVarName)
+    if (-not [string]::IsNullOrWhiteSpace($environmentValue)) {
+        return $environmentValue
+    }
+
+    return $Fallback
+}
+
+$CacheRoot = Resolve-PathSetting $CacheRoot 'UNDO_THE_SPIRE2_CACHE_ROOT' 'F:\projects\undo-the-spire2-cache'
 $projectPath = Join-Path $PSScriptRoot '..\undo the spire2\undo the spire2.csproj'
 $dotnetHome = Join-Path $CacheRoot 'dotnet-home'
 $tempRoot = Join-Path $CacheRoot 'temp'

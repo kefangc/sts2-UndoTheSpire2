@@ -7,13 +7,14 @@ using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Saves.Runs;
 
 namespace UndoTheSpire2;
 
 internal sealed class UndoCombatFullState
 {
-    public const int CurrentSchemaVersion = 16;
+    public const int CurrentSchemaVersion = 19;
 
     public UndoCombatFullState(
         NetFullCombatState fullState,
@@ -43,7 +44,8 @@ internal sealed class UndoCombatFullState
         IReadOnlyList<UndoPlayerPotionState>? playerPotionStates = null,
         IReadOnlyList<UndoAudioLoopState>? audioLoopStates = null,
         int schemaVersion = CurrentSchemaVersion,
-        IReadOnlyList<UndoChoiceBranchState>? choiceBranchStates = null)
+        IReadOnlyList<UndoChoiceBranchState>? choiceBranchStates = null,
+        IReadOnlyList<UndoPendingCombatRewardState>? pendingCombatRewardStates = null)
     {
         SchemaVersion = schemaVersion;
         FullState = fullState;
@@ -65,6 +67,7 @@ internal sealed class UndoCombatFullState
         PlayerPotionStates = playerPotionStates ?? [];
         AudioLoopStates = audioLoopStates ?? [];
         ChoiceBranchStates = choiceBranchStates ?? [];
+        PendingCombatRewardStates = pendingCombatRewardStates ?? [];
         CardCostStates = cardCostStates;
         CardRuntimeStates = cardRuntimeStates ?? [];
         PowerRuntimeStates = powerRuntimeStates ?? [];
@@ -122,6 +125,8 @@ internal sealed class UndoCombatFullState
     public IReadOnlyList<UndoAudioLoopState> AudioLoopStates { get; }
 
     public IReadOnlyList<UndoChoiceBranchState> ChoiceBranchStates { get; }
+
+    public IReadOnlyList<UndoPendingCombatRewardState> PendingCombatRewardStates { get; }
 
     public IReadOnlyList<UndoPlayerPileCardCostState> CardCostStates { get; }
 
@@ -198,7 +203,32 @@ internal sealed class UndoChoiceBranchState
 
     public required int ReplayEventCount { get; init; }
 
+    public required int HistoryOrderReplayEventCount { get; init; }
+
     public required UndoActionKind ActionKind { get; init; }
 
     public required string ActionLabel { get; init; }
+
+    public bool IsChoiceAnchor { get; init; }
+
+    public UndoChoiceSpec? ChoiceSpec { get; init; }
+}
+
+internal enum UndoPendingCombatRewardKind
+{
+    TheHuntCardReward,
+    SwipeSpecialCardReward
+}
+
+internal sealed class UndoPendingCombatRewardState
+{
+    public required UndoPendingCombatRewardKind Kind { get; init; }
+
+    public required ulong PlayerNetId { get; init; }
+
+    public RoomType RoomType { get; init; }
+
+    public SerializableCard? Card { get; init; }
+
+    public ModelId EncounterSourceId { get; init; } = ModelId.none;
 }

@@ -248,6 +248,39 @@ internal sealed class UndoChoiceSpec
         return new UndoChoiceResultKey(mappedIndexes);
     }
 
+    public UndoChoiceResultKey? TryMapDisplayedSimpleGridSelection(IReadOnlyList<CardModel> displayedOptions, IEnumerable<CardModel> selectedCards)
+    {
+        List<CardModel> cards = [.. selectedCards];
+        if (cards.Count == 0)
+        {
+            if (!CanSkip)
+                return null;
+
+            return new UndoChoiceResultKey([]);
+        }
+
+        if (SourcePileCombatCards.Count > 0)
+        {
+            List<int> mappedIndexes = [];
+            foreach (CardModel card in cards)
+            {
+                int mappedIndex = IndexOfValue(SourcePileCombatCards, NetCombatCard.FromModel(card));
+                if (mappedIndex < 0)
+                    return null;
+
+                mappedIndexes.Add(mappedIndex);
+            }
+
+            return new UndoChoiceResultKey(mappedIndexes);
+        }
+
+        UndoChoiceResultKey? optionCardKey = TryMapOptionCardSelection(cards, useNegativeSkipIndex: false);
+        if (optionCardKey != null)
+            return optionCardKey;
+
+        return TryMapDisplayedOptionSelection(displayedOptions, cards);
+    }
+
     private UndoChoiceResultKey? TryMapIndexResult(List<int>? indexes)
     {
         if (indexes == null)

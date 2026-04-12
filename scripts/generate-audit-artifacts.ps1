@@ -1,10 +1,26 @@
 param(
-    [string]$OfficialSourceRoot = 'F:\projects\slay the spire2\sts2\MegaCrit\sts2\Core',
-    [string]$RepoRoot = 'C:\Users\21253\source\repos\undo the spire2\undo the spire2',
-    [string]$CacheRoot = 'F:\projects\undo-the-spire2-cache'
+    [string]$OfficialSourceRoot,
+    [string]$RepoRoot,
+    [string]$CacheRoot,
+    [string]$ArtifactsRoot,
+    [string]$ScenarioRoot,
+    [string]$ReportsRoot
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Resolve-PathSetting([string]$ConfiguredValue, [string]$EnvVarName, [string]$Fallback) {
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredValue)) {
+        return $ConfiguredValue
+    }
+
+    $environmentValue = [System.Environment]::GetEnvironmentVariable($EnvVarName)
+    if (-not [string]::IsNullOrWhiteSpace($environmentValue)) {
+        return $environmentValue
+    }
+
+    return $Fallback
+}
 
 function Ensure-Dir([string]$Path) {
     if (-not (Test-Path $Path)) {
@@ -61,10 +77,17 @@ function Get-Entries([string]$Category, [string]$Root) {
     }
 }
 
+$OfficialSourceRoot = Resolve-PathSetting $OfficialSourceRoot 'UNDO_THE_SPIRE2_OFFICIAL_SOURCE_ROOT' 'F:\projects\slay the spire2\sts2\MegaCrit\sts2\Core'
+$RepoRoot = if (-not [string]::IsNullOrWhiteSpace($RepoRoot)) {
+    $RepoRoot
+} else {
+    (Resolve-Path (Join-Path $PSScriptRoot '..\undo the spire2')).Path
+}
+$CacheRoot = Resolve-PathSetting $CacheRoot 'UNDO_THE_SPIRE2_CACHE_ROOT' 'F:\projects\undo-the-spire2-cache'
 $auditDir = Join-Path $CacheRoot 'audit'
-$artifactsDir = Join-Path $CacheRoot 'artifacts'
-$scenarioDir = Join-Path $artifactsDir 'scenario-definitions'
-$reportsDir = Join-Path $CacheRoot 'reports'
+$artifactsDir = Resolve-PathSetting $ArtifactsRoot 'UNDO_THE_SPIRE2_ARTIFACTS_ROOT' (Join-Path $CacheRoot 'artifacts')
+$scenarioDir = Resolve-PathSetting $ScenarioRoot 'UNDO_THE_SPIRE2_SCENARIO_ROOT' (Join-Path $artifactsDir 'scenario-definitions')
+$reportsDir = Resolve-PathSetting $ReportsRoot 'UNDO_THE_SPIRE2_REPORTS_ROOT' (Join-Path $CacheRoot 'reports')
 Ensure-Dir $auditDir
 Ensure-Dir $artifactsDir
 Ensure-Dir $scenarioDir

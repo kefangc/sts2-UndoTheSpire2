@@ -32,4 +32,9 @@ public sealed partial class UndoController
     {
         return _syntheticChoiceSession != null;
     }
+
+    internal UndoPerformanceSnapshot DebugGetPerformanceSnapshot()
+    {
+        return UndoPerformanceDiagnostics.CaptureSnapshot();
+    }
 }

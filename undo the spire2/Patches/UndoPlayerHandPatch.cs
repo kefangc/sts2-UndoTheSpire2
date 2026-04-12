@@ -9,10 +9,18 @@ namespace UndoTheSpire2;
 [HarmonyPatch]
 public static class UndoPlayerHandPatch
 {
+    private static readonly HashSet<ulong> HandsExitingTree = [];
+
+    private static ulong GetHandInstanceId(NPlayerHand hand)
+    {
+        return (ulong)hand.GetInstanceId();
+    }
+
     [HarmonyPatch(typeof(NPlayerHand), "OnSelectModeSourceFinished")]
     [HarmonyPrefix]
     public static void SelectModeSourceFinishedPrefix(NPlayerHand __instance, AbstractModel? source)
     {
+        HandsExitingTree.Remove(GetHandInstanceId(__instance));
         MainFile.Controller.OnOfficialHandChoiceSourceFinishing(__instance, source);
     }
 
@@ -20,6 +28,7 @@ public static class UndoPlayerHandPatch
     [HarmonyPostfix]
     public static void SelectModeSourceFinishedPostfix(NPlayerHand __instance, AbstractModel? source)
     {
+        HandsExitingTree.Remove(GetHandInstanceId(__instance));
         MainFile.Controller.OnOfficialHandChoiceSourceFinished(__instance, source);
     }
 
@@ -27,6 +36,7 @@ public static class UndoPlayerHandPatch
     [HarmonyPrefix]
     public static void ExitTreePrefix(NPlayerHand __instance)
     {
+        HandsExitingTree.Add(GetHandInstanceId(__instance));
         if (MainFile.Controller.IsRestoring)
         {
             UndoReflectionUtil.TrySetFieldValue(__instance, "_selectionCompletionSource", null);
@@ -40,6 +50,12 @@ public static class UndoPlayerHandPatch
     {
         if (!GodotObject.IsInstanceValid(__instance))
             return false;
+
+        if (HandsExitingTree.Contains(GetHandInstanceId(__instance)))
+        {
+            UndoDebugLog.Write("hand_after_cards_selected_suppressed reason=exit_tree");
+            return false;
+        }
 
         if (!__instance.IsInsideTree())
         {
@@ -60,6 +76,7 @@ public static class UndoPlayerHandPatch
     [HarmonyPrefix]
     public static void SelectCardsPrefix(NPlayerHand __instance, CardSelectorPrefs prefs)
     {
+        HandsExitingTree.Remove(GetHandInstanceId(__instance));
         MainFile.Controller.PrepareHandSelectionUiForOpen(__instance);
     }
 }

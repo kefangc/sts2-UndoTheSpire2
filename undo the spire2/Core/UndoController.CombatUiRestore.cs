@@ -27,6 +27,7 @@ using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
 using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Models.Orbs;
+using MegaCrit.Sts2.Core.MonsterMoves.Intents;
 using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Multiplayer.Replay;
@@ -60,8 +61,40 @@ namespace UndoTheSpire2;
 // Combat UI rebuild and presentation normalization after restore.
 public sealed partial class UndoController
 {
+    private enum CombatUiRefreshPlan
+    {
+        Full,
+        HandOnly,
+        HandAndPlay,
+        VisualOnly
+    }
+
+    private sealed class CombatUiRefreshContext
+    {
+        public required NCombatRoom CombatRoom { get; init; }
+
+        public required NCombatUi Ui { get; init; }
+
+        public required Player Player { get; init; }
+
+        public required NPlayerHand Hand { get; init; }
+
+        public required List<Node> RawHandHolderChildren { get; init; }
+
+        public required List<NHandCardHolder> HandHolders { get; init; }
+
+        public required List<CardModel> HandCards { get; init; }
+
+        public required List<NCard> PlayContainerCards { get; init; }
+
+        public required List<CardModel> PlayCards { get; init; }
+
+        public required bool TopologyRebuilt { get; init; }
+    }
+
     private static async Task RefreshCombatUiAsync(CombatState combatState, UndoCombatFullState? snapshotState = null)
     {
+        UndoPerformanceSnapshot perfBaseline = UndoPerformanceDiagnostics.CaptureSnapshot();
         RunState? runState = RunManager.Instance.DebugOnlyGetState();
         foreach (Player player in combatState.Players)
             player.PlayerCombatState?.RecalculateCardValues();
@@ -69,18 +102,21 @@ public sealed partial class UndoController
             UndoSpecialCreatureVisualNormalizer.DetachStateDisplayTracking(NCombatRoom.Instance);
         ClearTransientCardVisuals();
         NormalizeCombatInteractionState(combatState);
-        RebuildCombatCreatureNodesIfNeeded(combatState);
+        bool topologyRebuilt = RebuildCombatCreatureNodesIfNeeded(combatState);
         RefreshCreaturePowerDisplays(combatState);
         ApplySnapshotCreatureNodeVisuals(combatState, snapshotState);
         RefreshCreatureStateDisplays(combatState, snapshotState);
         RefreshPlayerOrbManagers(combatState);
         RestoreThievingHopperDisplayCards(combatState);
-        RebuildCombatUiCards(combatState);
         NCombatRoom? combatRoom = NCombatRoom.Instance;
+        Player? me = combatRoom == null ? null : LocalContext.GetMe(combatState);
+        CombatUiRefreshContext? refreshContext = combatRoom == null || me == null
+            ? null
+            : CreateCombatUiRefreshContext(combatRoom, me, topologyRebuilt);
+        RebuildCombatUiCards(combatState, refreshContext);
         if (combatRoom != null)
         {
             ReconcileSovereignBladeVfx(combatState, combatRoom);
-            Player? me = LocalContext.GetMe(combatState);
             ForceCombatUiInteractiveState(combatRoom.Ui, combatState, me);
             if (me != null)
                 RefreshCombatPileCounts(combatRoom.Ui, me);
@@ -91,9 +127,18 @@ public sealed partial class UndoController
                     continue;
 
                 if (UndoMonsterMoveStateUtil.HasVisibleNextIntent(creature))
+                {
+                    if (!ShouldRefreshCreatureIntentUi(creature, creatureNode, topologyRebuilt))
+                        continue;
+
+                    UndoPerformanceDiagnostics.RecordIntentRefresh();
                     await creatureNode.RefreshIntents();
+                }
                 else
-                    ClearCreatureIntentUi(creatureNode);
+                {
+                    if (creatureNode.IntentContainer.GetChildCount() > 0)
+                        ClearCreatureIntentUi(creatureNode);
+                }
             }
 
             SnapEnemyCreatureNodesToSlots(combatState, snapshotState);
@@ -116,7 +161,8 @@ public sealed partial class UndoController
         if (runState != null)
             RebuildPotionContainer(runState);
 
-        NotifyCombatStateChangedMethod?.Invoke(CombatManager.Instance.StateTracker, ["UndoRefreshCombatUiAsync"]);
+        NotifyCombatStateChanged("UndoRefreshCombatUiAsync");
+        UndoDebugLog.Write($"combat_ui_refresh_perf {UndoPerformanceDiagnostics.FormatDelta(perfBaseline)}");
     }
 
     private static async Task RefreshCombatUiAfterHandDiscardChoiceAsync(CombatState combatState, bool officialHandChoiceUiSettled)
@@ -137,16 +183,53 @@ public sealed partial class UndoController
         ForceCombatUiInteractiveState(combatRoom.Ui, combatState, me);
         await WaitOneFrameAsync();
         if (!officialHandChoiceUiSettled)
-            _ = ReconcileHandDiscardChoiceUiAfterSettleAsync(combatState);
+        {
+            MainFile.Controller.StartHandChoiceUiReconcileOperation(
+                "deferred_hand_discard_ui_reconcile",
+                lease => ReconcileHandDiscardChoiceUiAfterSettleAsync(lease, combatState));
+        }
     }
 
-    private static async Task ReconcileHandDiscardChoiceUiAfterSettleAsync(CombatState combatState)
+    private static async Task RefreshCombatUiAfterDetachedPlayedCardChoiceAsync(CombatState combatState)
+    {
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatRoom == null)
+            return;
+
+        RefreshCreaturePowerDisplays(combatState);
+        Player? me = LocalContext.GetMe(combatState);
+        if (me != null)
+        {
+            ClearTransientHandUiStateForRestore(combatRoom.Ui.Hand);
+            ClearPlayQueueUi(combatRoom.Ui.PlayQueue);
+            TrySyncExistingHandUi(combatRoom.Ui.Hand, me);
+            RefreshCombatPileCounts(combatRoom.Ui, me);
+            SyncPlayContainerCards(combatRoom.Ui, me);
+        }
+
+        ForceCombatUiInteractiveState(combatRoom.Ui, combatState, me);
+        await WaitOneFrameAsync();
+        if (me != null && NCombatRoom.Instance != null)
+        {
+            ClearTransientHandUiStateForRestore(NCombatRoom.Instance.Ui.Hand);
+            ClearPlayQueueUi(NCombatRoom.Instance.Ui.PlayQueue);
+            TrySyncExistingHandUi(NCombatRoom.Instance.Ui.Hand, me);
+            SyncPlayContainerCards(NCombatRoom.Instance.Ui, me);
+            RefreshCombatPileCounts(NCombatRoom.Instance.Ui, me);
+            ForceCombatUiInteractiveState(NCombatRoom.Instance.Ui, combatState, me);
+        }
+    }
+
+    private static async Task ReconcileHandDiscardChoiceUiAfterSettleAsync(UndoOperationLease lease, CombatState combatState)
     {
         try
         {
             Player? me = LocalContext.GetMe(combatState);
             for (int frame = 0; frame < 120; frame++)
             {
+                if (MainFile.Controller.ShouldAbortTrackedOperation(lease, $"deferred_hand_discard_ui_reconcile:{frame}"))
+                    return;
+
                 NCombatRoom? combatRoom = NCombatRoom.Instance;
                 if (combatRoom == null || !CombatManager.Instance.IsInProgress)
                     return;
@@ -163,12 +246,19 @@ public sealed partial class UndoController
             }
 
             if (NCombatRoom.Instance?.Ui?.Hand is { } handAfterWait
+                && !MainFile.Controller.ShouldAbortTrackedOperation(lease, "deferred_hand_discard_ui_reconcile:official_path")
                 && MainFile.Controller.IsAwaitingOfficialHandChoiceSourceFinish(handAfterWait, me)
-                && TryCompletePendingHandDiscardChoiceUiViaOfficialPath(handAfterWait))
+                && MainFile.Controller.TryCompletePendingHandDiscardChoiceUiViaOfficialPath(handAfterWait))
             {
                 await WaitOneFrameAsync();
-                await MainFile.Controller.WaitForOfficialHandChoiceUiSettleAsync(handAfterWait, me, maxFrames: 60);
+                if (MainFile.Controller.ShouldAbortTrackedOperation(lease, "deferred_hand_discard_ui_reconcile:after_official_path"))
+                    return;
+
+                await MainFile.Controller.WaitForOfficialHandChoiceUiSettleAsync(handAfterWait, me, lease, maxFrames: 60);
             }
+
+            if (MainFile.Controller.ShouldAbortTrackedOperation(lease, "deferred_hand_discard_ui_reconcile:recover"))
+                return;
 
             RecoverHandDiscardChoiceUiIfNeeded(combatState);
         }
@@ -201,42 +291,12 @@ public sealed partial class UndoController
         TrySyncExistingHandUi(hand, me, normalizeLayout: true);
         SyncPlayContainerCards(ui, me);
         ForceCombatUiInteractiveState(ui, combatState, me, normalizeHandLayout: true);
-        NotifyCombatStateChangedMethod?.Invoke(CombatManager.Instance.StateTracker, ["UndoHandDiscardChoiceUiRecovery"]);
-    }
-
-    private static bool TryCompletePendingHandDiscardChoiceUiViaOfficialPath(NPlayerHand hand)
-    {
-        AbstractModel? pendingSource = MainFile.Controller._pendingHandChoiceSource;
-        if (!GodotObject.IsInstanceValid(hand)
-            || pendingSource == null
-            || MainFile.Controller._pendingHandChoiceUiSettle?.CallbackObserved == true
-            || GetSelectedHandHolderCount(hand) == 0)
-        {
-            return false;
-        }
-
-        MethodInfo? handlerMethod = FindMethod(hand.GetType(), "OnSelectModeSourceFinished");
-        if (handlerMethod == null)
-            return false;
-
-        try
-        {
-            handlerMethod.Invoke(hand, [pendingSource]);
-            UndoDebugLog.Write(
-                $"hand_discard_ui_recovered_via_official source={pendingSource.GetType().Name}"
-                + $" holders={hand.CardHolderContainer.GetChildCount()} selected={GetSelectedHandHolderCount(hand)}");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            UndoDebugLog.Write($"hand_discard_ui_official_recover_failed:{ex}");
-            return false;
-        }
+        NotifyCombatStateChanged("UndoHandDiscardChoiceUiRecovery");
     }
 
     private static bool NeedsHandDiscardChoiceUiRecovery(NPlayerHand hand, Player player)
     {
-        if (!GodotObject.IsInstanceValid(hand))
+        if (!CanSafelyMutateHandUi(hand))
             return false;
 
         if (HasValidCurrentCardPlay(hand))
@@ -292,6 +352,9 @@ public sealed partial class UndoController
         foreach (Creature creature in combatState.Creatures)
         {
             NCreature? creatureNode = combatRoom.GetCreatureNode(creature);
+            if (creatureNode == null)
+                continue;
+
             NCreatureStateDisplay? stateDisplay = GetPrivateFieldValue<NCreatureStateDisplay>(creatureNode, "_stateDisplay");
             NPowerContainer? powerContainer = stateDisplay == null
                 ? null
@@ -460,7 +523,36 @@ public sealed partial class UndoController
         if (me != null && isPlayerTurn)
             CombatManager.Instance.UndoReadyToEndTurn(me);
     }
-    private static void RebuildCombatUiCards(CombatState combatState)
+
+    private static void NotifyCombatStateChanged(string source)
+    {
+        if (NotifyCombatStateChangedMethod == null)
+            return;
+
+        NotifyCombatStateChangedMethod.Invoke(CombatManager.Instance.StateTracker, [source]);
+        UndoPerformanceDiagnostics.RecordCombatUiNotify();
+    }
+    private static CombatUiRefreshContext CreateCombatUiRefreshContext(NCombatRoom combatRoom, Player player, bool topologyRebuilt)
+    {
+        NCombatUi ui = combatRoom.Ui;
+        NPlayerHand hand = ui.Hand;
+        List<Node> rawHandHolderChildren = hand.CardHolderContainer.GetChildren().Cast<Node>().ToList();
+        return new CombatUiRefreshContext
+        {
+            CombatRoom = combatRoom,
+            Ui = ui,
+            Player = player,
+            Hand = hand,
+            RawHandHolderChildren = rawHandHolderChildren,
+            HandHolders = rawHandHolderChildren.OfType<NHandCardHolder>().ToList(),
+            HandCards = PileType.Hand.GetPile(player).Cards.ToList(),
+            PlayContainerCards = ui.PlayContainer.GetChildren().OfType<NCard>().ToList(),
+            PlayCards = PileType.Play.GetPile(player).Cards.ToList(),
+            TopologyRebuilt = topologyRebuilt
+        };
+    }
+
+    private static void RebuildCombatUiCards(CombatState combatState, CombatUiRefreshContext? refreshContext = null)
     {
         NCombatRoom? combatRoom = NCombatRoom.Instance;
         if (combatRoom == null)
@@ -471,18 +563,25 @@ public sealed partial class UndoController
         if (me == null)
             return;
 
-        TrySyncExistingHandUi(ui.Hand, me);
+        refreshContext ??= CreateCombatUiRefreshContext(combatRoom, me, topologyRebuilt: false);
+        CombatUiRefreshPlan refreshPlan = BuildCombatUiRefreshPlan(ui, me, refreshContext);
+        if (refreshPlan is CombatUiRefreshPlan.Full or CombatUiRefreshPlan.HandOnly or CombatUiRefreshPlan.HandAndPlay)
+            TrySyncExistingHandUi(ui.Hand, me, refreshContext: refreshContext);
 
-        SyncPlayContainerCards(ui, me);
+        if (refreshPlan is CombatUiRefreshPlan.Full or CombatUiRefreshPlan.HandAndPlay)
+            SyncPlayContainerCards(ui, me, refreshContext);
     }
 
     // choice undo 时，屏幕中央“本次打出的牌”和左侧眼睛预览都依赖 PlayContainer。
     // 如果每次 restore 都直接清掉再用普通 NCard 重建，很容易丢掉官方的显示状态，
     // 并把卡留在左上角默认位置。这里优先复用已在场上的节点，只有不匹配时才重建。
-    private static bool TrySyncExistingHandUi(NPlayerHand hand, Player player, bool normalizeLayout = false)
+    private static bool TrySyncExistingHandUi(NPlayerHand hand, Player player, bool normalizeLayout = false, CombatUiRefreshContext? refreshContext = null)
     {
-        if (!TryGetReusableHandHolders(hand, player, out List<NHandCardHolder> holders))
-            return TryReconcileHandUiInPlace(hand, player, normalizeLayout);
+        if (!CanSafelyMutateHandUi(hand))
+            return false;
+
+        if (!TryGetReusableHandHolders(hand, player, out List<NHandCardHolder> holders, refreshContext))
+            return TryReconcileHandUiInPlace(hand, player, normalizeLayout, refreshContext);
 
         foreach (NHandCardHolder holder in holders)
             NormalizeHandHolderCard(holder);
@@ -494,15 +593,17 @@ public sealed partial class UndoController
         return true;
     }
 
-    private static bool TryReconcileHandUiInPlace(NPlayerHand hand, Player player, bool normalizeLayout = false)
+    private static bool TryReconcileHandUiInPlace(NPlayerHand hand, Player player, bool normalizeLayout = false, CombatUiRefreshContext? refreshContext = null)
     {
-        if (!GodotObject.IsInstanceValid(hand))
+        if (!CanSafelyMutateHandUi(hand))
             return false;
 
         ClearDetachedHandHolderNodes(hand);
         ClearTransientHandUiStateForRestore(hand);
 
-        List<Node> rawChildren = hand.CardHolderContainer.GetChildren().Cast<Node>().ToList();
+        List<Node> rawChildren = refreshContext?.Hand == hand
+            ? refreshContext.RawHandHolderChildren
+            : hand.CardHolderContainer.GetChildren().Cast<Node>().ToList();
         List<NHandCardHolder> existingHolders = [];
         foreach (Node child in rawChildren)
         {
@@ -542,7 +643,9 @@ public sealed partial class UndoController
             queuedHolders.Enqueue(holder);
         }
 
-        List<CardModel> handCards = PileType.Hand.GetPile(player).Cards.ToList();
+        List<CardModel> handCards = refreshContext?.Hand == hand
+            ? refreshContext.HandCards
+            : PileType.Hand.GetPile(player).Cards.ToList();
         Dictionary<CardModel, NHandCardHolder> matchedHoldersByCard = new(ReferenceEqualityComparer.Instance);
         HashSet<NHandCardHolder> retainedHolders = [];
         List<NHandCardHolder> returnedHolders = [];
@@ -579,7 +682,15 @@ public sealed partial class UndoController
             returnedHolders.Add(newHolder);
         }
 
-        InvokePrivateMethod(hand, "RefreshLayout");
+        if (returnedHolders.Count > 0)
+        {
+            UndoPerformanceDiagnostics.RecordHandLayoutRefresh(returnedHolders.Count);
+        }
+        else
+        {
+            InvokePrivateMethod(hand, "RefreshLayout");
+            UndoPerformanceDiagnostics.RecordHandLayoutRefresh();
+        }
         FinalizeReturnedHandHoldersInstantly(returnedHolders);
         hand.ForceRefreshCardIndices();
         if (normalizeLayout)
@@ -623,10 +734,10 @@ public sealed partial class UndoController
         holder.QueueFreeSafely();
     }
 
-    private static bool TryGetReusableHandHolders(NPlayerHand hand, Player player, out List<NHandCardHolder> holders)
+    private static bool TryGetReusableHandHolders(NPlayerHand hand, Player player, out List<NHandCardHolder> holders, CombatUiRefreshContext? refreshContext = null)
     {
         holders = [];
-        if (!GodotObject.IsInstanceValid(hand))
+        if (!CanSafelyMutateHandUi(hand))
             return false;
 
         if (HasDetachedHandHolders(hand)
@@ -635,8 +746,12 @@ public sealed partial class UndoController
             || GetAwaitingHandHolderCount(hand) > 0)
             return false;
 
-        List<CardModel> handCards = PileType.Hand.GetPile(player).Cards.ToList();
-        holders = hand.CardHolderContainer.GetChildren().OfType<NHandCardHolder>().ToList();
+        List<CardModel> handCards = refreshContext?.Hand == hand
+            ? refreshContext.HandCards
+            : PileType.Hand.GetPile(player).Cards.ToList();
+        holders = refreshContext?.Hand == hand
+            ? [.. refreshContext.HandHolders]
+            : hand.CardHolderContainer.GetChildren().OfType<NHandCardHolder>().ToList();
         if (holders.Count != handCards.Count)
             return false;
 
@@ -694,10 +809,14 @@ public sealed partial class UndoController
         }
     }
 
-    private static void SyncPlayContainerCards(NCombatUi ui, Player player)
+    private static void SyncPlayContainerCards(NCombatUi ui, Player player, CombatUiRefreshContext? refreshContext = null)
     {
-        List<CardModel> playCards = PileType.Play.GetPile(player).Cards.ToList();
-        List<NCard> existingCards = ui.PlayContainer.GetChildren().OfType<NCard>().ToList();
+        List<CardModel> playCards = refreshContext?.Ui == ui
+            ? refreshContext.PlayCards
+            : PileType.Play.GetPile(player).Cards.ToList();
+        List<NCard> existingCards = refreshContext?.Ui == ui
+            ? refreshContext.PlayContainerCards
+            : ui.PlayContainer.GetChildren().OfType<NCard>().ToList();
         bool canReuseExistingNodes = existingCards.Count == playCards.Count;
         if (canReuseExistingNodes)
         {
@@ -727,6 +846,55 @@ public sealed partial class UndoController
             NormalizePlayContainerCard(cardNode);
     }
 
+    private static CombatUiRefreshPlan BuildCombatUiRefreshPlan(NCombatUi ui, Player player, CombatUiRefreshContext? refreshContext = null)
+    {
+        if (refreshContext?.TopologyRebuilt == true)
+            return CombatUiRefreshPlan.Full;
+
+        NPlayerHand hand = ui.Hand;
+        if (!CanSafelyMutateHandUi(hand)
+            || HasValidCurrentCardPlay(hand)
+            || hand.IsInCardSelection
+            || GetSelectedHandHolderCount(hand) > 0
+            || GetAwaitingHandHolderCount(hand) > 0)
+        {
+            return CombatUiRefreshPlan.Full;
+        }
+
+        bool handMatches = TryGetReusableHandHolders(hand, player, out _, refreshContext);
+        bool playMatches = PlayContainerMatchesState(ui, player, refreshContext);
+        if (handMatches && playMatches)
+            return CombatUiRefreshPlan.VisualOnly;
+
+        if (!handMatches && playMatches)
+            return CombatUiRefreshPlan.HandOnly;
+
+        if (handMatches && !playMatches)
+            return CombatUiRefreshPlan.HandAndPlay;
+
+        return CombatUiRefreshPlan.Full;
+    }
+
+    private static bool PlayContainerMatchesState(NCombatUi ui, Player player, CombatUiRefreshContext? refreshContext = null)
+    {
+        List<CardModel> playCards = refreshContext?.Ui == ui
+            ? refreshContext.PlayCards
+            : PileType.Play.GetPile(player).Cards.ToList();
+        List<NCard> existingCards = refreshContext?.Ui == ui
+            ? refreshContext.PlayContainerCards
+            : ui.PlayContainer.GetChildren().OfType<NCard>().ToList();
+        if (existingCards.Count != playCards.Count)
+            return false;
+
+        for (int i = 0; i < playCards.Count; i++)
+        {
+            if (!ReferenceEquals(existingCards[i].Model, playCards[i]))
+                return false;
+        }
+
+        return true;
+    }
+
     private static void NormalizePlayContainerCard(NCard cardNode)
     {
         InvokePrivateMethod(cardNode, "Reload");
@@ -739,11 +907,70 @@ public sealed partial class UndoController
         cardNode.Modulate = Colors.White;
     }
 
-    private static void RebuildCombatCreatureNodesIfNeeded(CombatState combatState)
+    private static bool ShouldRefreshCreatureIntentUi(Creature creature, NCreature creatureNode, bool topologyRebuilt)
+    {
+        if (topologyRebuilt)
+            return true;
+
+        return !string.Equals(
+            BuildCurrentCreatureIntentSignature(creatureNode),
+            BuildExpectedCreatureIntentSignature(creature),
+            StringComparison.Ordinal);
+    }
+
+    private static string BuildExpectedCreatureIntentSignature(Creature creature)
+    {
+        CombatState? creatureCombatState = creature.CombatState;
+        if (creature.Monster?.NextMove == null || creatureCombatState == null)
+            return string.Empty;
+
+        List<Creature> targets = [.. creatureCombatState.Players.Select(static player => player.Creature)];
+        List<string> signatureParts = [];
+        foreach (AbstractIntent intent in creature.Monster.NextMove.Intents)
+        {
+            string label = intent switch
+            {
+                AttackIntent attackIntent => attackIntent.GetIntentLabel(targets, creature).GetFormattedText() ?? string.Empty,
+                StatusIntent => intent.GetIntentLabel(targets, creature).GetFormattedText() ?? string.Empty,
+                _ => string.Empty
+            };
+            signatureParts.Add($"{intent.GetType().FullName}:{intent.GetAnimation(targets, creature)}:{label}");
+        }
+
+        return string.Join("|", signatureParts);
+    }
+
+    private static string BuildCurrentCreatureIntentSignature(NCreature creatureNode)
+    {
+        List<string> signatureParts = [];
+        foreach (NIntent intentNode in creatureNode.IntentContainer.GetChildren().OfType<NIntent>())
+        {
+            string intentType = GetPrivateFieldValue<object>(intentNode, "_intent")?.GetType().FullName ?? string.Empty;
+            string animationName = GetPrivateFieldValue<string>(intentNode, "_animationName") ?? string.Empty;
+            signatureParts.Add($"{intentType}:{animationName}:{GetIntentNodeLabelText(intentNode)}");
+        }
+
+        return string.Join("|", signatureParts);
+    }
+
+    private static string GetIntentNodeLabelText(NIntent intentNode)
+    {
+        if (GetPrivateFieldValue<object>(intentNode, "_valueLabel") is not { } valueLabel)
+            return string.Empty;
+
+        if (UndoReflectionUtil.TryGetPropertyValue(valueLabel, "Text", out string? propertyText) && propertyText != null)
+            return propertyText;
+
+        return UndoReflectionUtil.TryGetFieldValue(valueLabel, "Text", out string? fieldText) && fieldText != null
+            ? fieldText
+            : string.Empty;
+    }
+
+    private static bool RebuildCombatCreatureNodesIfNeeded(CombatState combatState)
     {
         NCombatRoom? combatRoom = NCombatRoom.Instance;
         if (combatRoom == null)
-            return;
+            return false;
 
         List<Creature> creatures = combatState.Creatures.ToList();
         List<NCreature> creatureNodes = combatRoom.CreatureNodes.ToList();
@@ -782,7 +1009,7 @@ public sealed partial class UndoController
             || slotPositionMismatch
             || hasInvalidEnemySlots;
         if (!topologyMismatch)
-            return;
+            return false;
 
         foreach (NCreature node in creatureNodes.Concat(removingNodes).Distinct())
         {
@@ -807,6 +1034,7 @@ public sealed partial class UndoController
             InvokePrivateMethod(combatRoom, "CreateEnemyNodes");
         InvokePrivateMethod(combatRoom, "AdjustCreatureScaleForAspectRatio");
         InvokePrivateMethod(combatRoom, "UpdateCreatureNavigation");
+        return true;
     }
 
     private static void ApplySnapshotCreatureNodeVisuals(CombatState combatState, UndoCombatFullState? snapshotState)
@@ -862,7 +1090,7 @@ public sealed partial class UndoController
             float hue = creatureVisualState.VisualHue
                 ?? (FindField(creatureVisuals.GetType(), "_hue")?.GetValue(creatureVisuals) is float currentHue ? currentHue : 0f);
             RestoreCreatureVisualStateInstantly(creatureNode, scale, hue, creatureVisualState.TempScale);
-            RestoreCreatureSceneVisualState(creatureVisuals, creatureVisualState);
+            RestoreCreatureSceneVisualState(creatureNode, creatureVisuals, creatureVisualState);
             RestoreCreatureAnimatorState(creatureNode, creatureVisualState.AnimatorState);
         }
 
@@ -894,12 +1122,28 @@ public sealed partial class UndoController
         InvokePrivateMethodExact(creatureNode, "UpdateBounds", [typeof(Node)], creatureNode.Visuals);
     }
 
-    private static void RestoreCreatureSceneVisualState(NCreatureVisuals root, UndoCreatureVisualState state)
+    private static void RestoreCreatureSceneVisualState(NCreature creatureNode, NCreatureVisuals root, UndoCreatureVisualState state)
     {
         RestoreCreatureCanvasStates(root, state.CanvasStates);
         RestoreCreatureParticleStates(root, state.ParticleStates);
         RestoreCreatureShaderParams(root, state.ShaderParamStates);
-        RestoreCreatureTrackStates(root, state.TrackStates);
+        RestoreCreatureTrackStates(root, GetFilteredCreatureTrackStatesForRestore(creatureNode, state));
+    }
+
+    private static IReadOnlyList<UndoCreatureTrackState> GetFilteredCreatureTrackStatesForRestore(NCreature creatureNode, UndoCreatureVisualState state)
+    {
+        if (!creatureNode.Entity.IsPlayer || state.TrackStates.Count == 0)
+            return state.TrackStates;
+
+        UndoCreatureAnimatorState? animatorState = state.AnimatorState;
+        if (animatorState == null || IsTransientCreatureAnimationName(animatorState.StateId))
+            return state.TrackStates;
+
+        List<UndoCreatureTrackState> filtered = state.TrackStates
+            .Where(static trackState => !ShouldSuppressTransientPlayerTrackState(trackState))
+            .ToList();
+
+        return filtered.Count == state.TrackStates.Count ? state.TrackStates : filtered;
     }
 
     private static void RestoreCreatureCanvasStates(Node root, IReadOnlyList<UndoCreatureCanvasState> states)
@@ -993,7 +1237,10 @@ public sealed partial class UndoController
             HashSet<int> trackIndexes = pathStates == null
                 ? []
                 : [.. pathStates.Select(static state => state.TrackIndex)];
-            for (int trackIndex = 1; trackIndex < 4; trackIndex++)
+            // Track states filtered out during capture/restore are intentionally absent from the
+            // snapshot; clear every missing track so transient attack/cast animations do not leak
+            // through an undo restore.
+            for (int trackIndex = 0; trackIndex < 4; trackIndex++)
             {
                 if (!trackIndexes.Contains(trackIndex))
                     TryClearCreatureTrack(animationState, trackIndex);
@@ -1154,7 +1401,8 @@ public sealed partial class UndoController
         {
             try
             {
-                if (UndoReflectionUtil.FindProperty(animationState.GetType(), "BoundObject")?.GetValue(animationState) is GodotObject boundObject
+                if (UndoReflectionUtil.TryGetPropertyValue(animationState, "BoundObject", out GodotObject? boundObject)
+                    && boundObject != null
                     && boundObject.HasMethod("clear_track"))
                 {
                     boundObject.Call("clear_track", trackIndex);
@@ -1209,7 +1457,7 @@ public sealed partial class UndoController
 
         if (snapshotState?.CurrentPosition is Vector2 snapshotCurrentPosition)
             stateDisplay.Position = snapshotCurrentPosition;
-        else if (UndoReflectionUtil.FindField(stateDisplay.GetType(), "_originalPosition")?.GetValue(stateDisplay) is Vector2 originalPosition)
+        else if (UndoReflectionUtil.TryGetFieldValue(stateDisplay, "_originalPosition", out Vector2 originalPosition))
             stateDisplay.Position = originalPosition;
 
         if (snapshotState?.Visible is bool visible)
@@ -1238,7 +1486,7 @@ public sealed partial class UndoController
         {
             if (snapshotState?.CurrentBlockPosition is Vector2 snapshotCurrentBlockPosition)
                 blockContainer.Position = snapshotCurrentBlockPosition;
-            else if (UndoReflectionUtil.FindField(healthBar.GetType(), "_originalBlockPosition")?.GetValue(healthBar) is Vector2 originalBlockPosition)
+            else if (UndoReflectionUtil.TryGetFieldValue(healthBar, "_originalBlockPosition", out Vector2 originalBlockPosition))
                 blockContainer.Position = originalBlockPosition;
 
             if (snapshotState?.BlockVisible is bool blockVisible)
@@ -1335,16 +1583,9 @@ public sealed partial class UndoController
                 .Where(static blade => !blade.IsDupe && blade.Pile?.Type != PileType.Exhaust)
                 .ToList()
                 ?? [];
-            List<CardModel> validCards = activeBlades
-                .Select(static blade => (CardModel)(blade.DupeOf ?? blade))
-                .ToList();
 
             foreach (NSovereignBladeVfx bladeVfx in playerNode.GetChildren().OfType<NSovereignBladeVfx>().ToList())
             {
-                CardModel? trackedCard = bladeVfx.Card?.DupeOf ?? bladeVfx.Card;
-                if (trackedCard != null && validCards.Any(validCard => ReferenceEquals(validCard, trackedCard)))
-                    continue;
-
                 bladeVfx.GetParent()?.RemoveChild(bladeVfx);
                 QueueFreeNodeSafelyOnce(bladeVfx);
             }
@@ -1352,19 +1593,12 @@ public sealed partial class UndoController
             List<NSovereignBladeVfx> bladeNodes = [];
             foreach (SovereignBlade blade in activeBlades)
             {
-                CardModel trackedCard = blade.DupeOf ?? blade;
-                NSovereignBladeVfx? bladeVfx = playerNode.GetChildren()
-                    .OfType<NSovereignBladeVfx>()
-                    .FirstOrDefault(existing => ReferenceEquals(existing.Card?.DupeOf ?? existing.Card, trackedCard));
+                NSovereignBladeVfx? bladeVfx = NSovereignBladeVfx.Create(blade);
                 if (bladeVfx == null)
-                {
-                    bladeVfx = NSovereignBladeVfx.Create(blade);
-                    if (bladeVfx == null)
-                        continue;
+                    continue;
 
-                    playerNode.AddChildSafely(bladeVfx);
-                    bladeVfx.Position = Vector2.Zero;
-                }
+                playerNode.AddChildSafely(bladeVfx);
+                bladeVfx.Position = Vector2.Zero;
 
                 NormalizeSovereignBladeVfx(bladeVfx, blade);
                 bladeNodes.Add(bladeVfx);
@@ -1389,6 +1623,11 @@ public sealed partial class UndoController
         spineNode.Visible = true;
         spineNode.Scale = targetScale;
         spineNode.Rotation = 0f;
+        if (UndoReflectionUtil.TryReadMember(bladeVfx, "_targetOrbitPosition", out Vector2 targetOrbitPosition))
+            spineNode.GlobalPosition = targetOrbitPosition;
+
+        MegaSprite megaSprite = GetPrivateFieldValue<MegaSprite>(bladeVfx, "_animController") ?? new MegaSprite(spineNode);
+        megaSprite.GetAnimationState().SetAnimation("idle_loop", true, 0);
 
         GetPrivateFieldValue<Tween>(bladeVfx, "_attackTween")?.Kill();
         GetPrivateFieldValue<Tween>(bladeVfx, "_scaleTween")?.Kill();
@@ -1401,10 +1640,12 @@ public sealed partial class UndoController
         SetPrivateFieldValue(bladeVfx, "_bladeSize", bladeSize);
         SetPrivateFieldValue(bladeVfx, "_isForging", false);
         SetPrivateFieldValue(bladeVfx, "_isAttacking", false);
+        SetPrivateFieldValue(bladeVfx, "_trailStart", Vector2.Zero);
 
         if (GetPrivateFieldValue<Line2D>(bladeVfx, "_trail") is { } trail && GodotObject.IsInstanceValid(trail))
         {
             trail.Visible = false;
+            trail.GlobalPosition = Vector2.Zero;
             trail.ClearPoints();
             trail.Modulate = Colors.White;
         }
@@ -1430,10 +1671,17 @@ public sealed partial class UndoController
             chargeParticles.Emitting = chargeAmount > 0;
         }
 
+        StopSovereignBladeParticles(bladeVfx, "_slashParticles");
+        StopSovereignBladeParticles(bladeVfx, "_forgeSparks");
+        StopSovereignBladeParticles(bladeVfx, "_spawnFlames");
+        StopSovereignBladeParticles(bladeVfx, "_spawnFlamesBack");
+
         SyncSovereignBladeParticles(bladeVfx, "_spikeParticles", usePrimaryHilt);
         SyncSovereignBladeParticles(bladeVfx, "_spikeCircle", usePrimaryHilt);
         SyncSovereignBladeParticles(bladeVfx, "_spikeParticles2", !usePrimaryHilt);
         SyncSovereignBladeParticles(bladeVfx, "_spikeCircle2", !usePrimaryHilt);
+
+        UndoReflectionUtil.TryInvokeMethod(bladeVfx, "UpdateHoverTip", out _);
     }
 
     private static void SyncSovereignBladeParticles(NSovereignBladeVfx bladeVfx, string fieldName, bool visible)
@@ -1443,6 +1691,14 @@ public sealed partial class UndoController
 
         particles.Visible = visible;
         particles.Emitting = visible;
+    }
+
+    private static void StopSovereignBladeParticles(NSovereignBladeVfx bladeVfx, string fieldName)
+    {
+        if (GetPrivateFieldValue<GpuParticles2D>(bladeVfx, fieldName) is not { } particles || !GodotObject.IsInstanceValid(particles))
+            return;
+
+        particles.Emitting = false;
     }
 
     private static void RebuildEnemyNodesWithFallbackLayout(NCombatRoom combatRoom, CombatState combatState)
@@ -1469,8 +1725,12 @@ public sealed partial class UndoController
     private static float GetCombatRoomEncounterScaling(NCombatRoom combatRoom)
     {
         object? visuals = GetPrivateFieldValue<object>(combatRoom, "_visuals");
-        object? encounter = visuals == null ? null : FindProperty(visuals.GetType(), "Encounter")?.GetValue(visuals);
-        object? scaling = encounter == null ? null : FindMethod(encounter.GetType(), "GetCameraScaling")?.Invoke(encounter, null);
+        object? encounter = visuals != null && UndoReflectionUtil.TryGetPropertyValue(visuals, "Encounter", out object? resolvedEncounter)
+            ? resolvedEncounter
+            : null;
+        object? scaling = encounter != null && UndoReflectionUtil.TryInvokeMethod(encounter, "GetCameraScaling", out object? resolvedScaling)
+            ? resolvedScaling
+            : null;
         return scaling is float floatScaling ? floatScaling : 1f;
     }
 
@@ -1662,8 +1922,7 @@ public sealed partial class UndoController
 
     private static void SetHandPresentation(NPlayerHand hand, bool shouldBeEnabled)
     {
-        object? disabledValue = FindField(hand.GetType(), "_isDisabled")?.GetValue(hand);
-        bool isCurrentlyDisabled = disabledValue is bool disabled && disabled;
+        bool isCurrentlyDisabled = UndoReflectionUtil.TryGetFieldValue(hand, "_isDisabled", out bool disabled) && disabled;
         if (isCurrentlyDisabled != !shouldBeEnabled)
         {
             ClearTween(hand, "_animInTween");
@@ -1998,29 +2257,6 @@ public sealed partial class UndoController
 
         if (updatedAnyNodePosition)
             InvokePrivateMethod(combatRoom, "UpdateCreatureNavigation");
-    }
-    private void DetachPendingHandSelectionSource(NPlayerHand hand)
-    {
-        if (_pendingHandChoiceSource == null)
-            return;
-
-        MethodInfo? handlerMethod = FindMethod(hand.GetType(), "OnSelectModeSourceFinished");
-        if (handlerMethod == null)
-        {
-            _pendingHandChoiceSource = null;
-            return;
-        }
-
-        try
-        {
-            Action<AbstractModel> handler = (Action<AbstractModel>)handlerMethod.CreateDelegate(typeof(Action<AbstractModel>), hand);
-            _pendingHandChoiceSource.ExecutionFinished -= handler;
-        }
-        catch
-        {
-        }
-
-        _pendingHandChoiceSource = null;
     }
     // restore/撤销清理旧选牌 UI 时，不要把已选牌临时加回手牌。
     // hand.Add(...) 会立刻触发官方 RefreshLayout，若此时手牌 holder 还没清空，

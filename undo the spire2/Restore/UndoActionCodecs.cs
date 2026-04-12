@@ -146,7 +146,7 @@ internal static class UndoActionCodecRegistry
     {
         List<CardModel> selected = [.. selectedCards];
         List<int> indexes = selected.Select(card => IndexOfReference(options, card)).Where(static index => index >= 0).ToList();
-        UndoChoiceResultKey? key = state.ChoiceSpec?.TryMapDisplayedOptionSelection(options, selected);
+        UndoChoiceResultKey? key = state.ChoiceSpec?.TryMapDisplayedSimpleGridSelection(options, selected);
         uint? choiceId = GetChoiceId(runState, state, player);
         if (choiceId != null)
             RunManager.Instance.PlayerChoiceSynchronizer.SyncLocalChoice(player, choiceId.Value, PlayerChoiceResult.FromIndexes(indexes));
@@ -157,45 +157,58 @@ internal static class UndoActionCodecRegistry
 
     private static void TryResumeRestoredChoiceSourceAction(PausedChoiceState state)
     {
-        uint? sourceActionId = state.SourceActionRef?.ActionId;
-        if (sourceActionId == null
-            || string.Equals(state.SourceActionCodecId, "action:hook-choice", StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        GameAction? sourceAction = FindTrackedAction(sourceActionId.Value);
-        if (sourceAction == null)
+        if (!CanResumeRestoredChoiceSourceAction(state, out GameAction? sourceAction, out string? reason))
         {
             UndoDebugLog.Write(
                 $"restored_choice_resume_skipped codec={state.SourceActionCodecId ?? "unknown"}"
-                + $" sourceActionId={sourceActionId.Value}"
-                + " reason=source_action_missing");
-            return;
-        }
-
-        if (sourceAction.State != GameActionState.GatheringPlayerChoice)
-        {
-            UndoDebugLog.Write(
-                $"restored_choice_resume_skipped codec={state.SourceActionCodecId ?? "unknown"}"
-                + $" sourceActionId={sourceActionId.Value}"
-                + $" reason=state_{sourceAction.State}");
-            return;
-        }
-
-        if (!HasLivePlayerChoiceResumptionState(sourceAction, out string? reason))
-        {
-            UndoDebugLog.Write(
-                $"restored_choice_resume_skipped codec={state.SourceActionCodecId ?? "unknown"}"
-                + $" sourceActionId={sourceActionId.Value}"
+                + $" sourceActionId={state.SourceActionRef?.ActionId?.ToString() ?? "null"}"
                 + $" reason={reason ?? "missing_live_choice_state"}");
             return;
         }
 
-        RunManager.Instance.ActionQueueSynchronizer.RequestResumeActionAfterPlayerChoice(sourceAction);
+        RunManager.Instance.ActionQueueSynchronizer.RequestResumeActionAfterPlayerChoice(sourceAction!);
         UndoDebugLog.Write(
             $"restored_choice_resume_requested codec={state.SourceActionCodecId ?? "unknown"}"
-            + $" sourceActionId={sourceActionId.Value}");
+            + $" sourceActionId={state.SourceActionRef?.ActionId?.ToString() ?? "null"}");
+    }
+
+    internal static bool CanResumeRestoredChoiceSourceAction(PausedChoiceState? state, out string? reason)
+    {
+        return CanResumeRestoredChoiceSourceAction(state, out _, out reason);
+    }
+
+    private static bool CanResumeRestoredChoiceSourceAction(PausedChoiceState? state, out GameAction? sourceAction, out string? reason)
+    {
+        sourceAction = null;
+        reason = null;
+
+        uint? sourceActionId = state?.SourceActionRef?.ActionId;
+        if (sourceActionId == null)
+        {
+            reason = "source_action_missing";
+            return false;
+        }
+
+        if (string.Equals(state.SourceActionCodecId, "action:hook-choice", StringComparison.Ordinal))
+        {
+            reason = "hook_choice_requires_authoritative_restore";
+            return false;
+        }
+
+        sourceAction = FindTrackedAction(sourceActionId.Value);
+        if (sourceAction == null)
+        {
+            reason = "source_action_missing";
+            return false;
+        }
+
+        if (sourceAction.State != GameActionState.GatheringPlayerChoice)
+        {
+            reason = $"state_{sourceAction.State}";
+            return false;
+        }
+
+        return HasLivePlayerChoiceResumptionState(sourceAction, out reason);
     }
 
     private static GameAction? FindTrackedAction(uint actionId)
@@ -230,18 +243,25 @@ internal static class UndoActionCodecRegistry
             return false;
         }
 
-        if (UndoReflectionUtil.FindField(action.GetType(), "_executeAfterResumptionTaskSource")?.GetValue(action) == null)
-        {
-            reason = "missing_resume_task_source";
-            return false;
-        }
-
         object? executionTaskObject = UndoReflectionUtil.FindField(action.GetType(), "_executionTask")?.GetValue(action);
         if (executionTaskObject is not Task executionTask
             || executionTask.IsCompleted)
         {
             reason = executionTaskObject == null ? "missing_execution_task" : "execution_task_completed";
             return false;
+        }
+
+        if (UndoReflectionUtil.FindField(action.GetType(), "_executeAfterResumptionTaskSource")?.GetValue(action) == null)
+        {
+            if (!UndoReflectionUtil.TrySetFieldValue(action, "_executeAfterResumptionTaskSource", new TaskCompletionSource()))
+            {
+                reason = "missing_resume_task_source";
+                return false;
+            }
+
+            UndoDebugLog.Write(
+                $"restored_choice_resume_task_source_rearmed action={action.GetType().Name}"
+                + $" actionId={action.Id?.ToString() ?? "null"}");
         }
 
         return true;
