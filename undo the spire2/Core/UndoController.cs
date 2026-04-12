@@ -3264,6 +3264,16 @@ public sealed partial class UndoController
         return _hiddenChoiceAnchorSkipCount;
     }
 
+    private static bool ShouldWriteDetailedInteractionLog(string stage)
+    {
+        return stage.Contains("failed", StringComparison.Ordinal)
+            || stage.Contains("recovered", StringComparison.Ordinal)
+            || stage.Contains("retry", StringComparison.Ordinal)
+            || stage.Contains("skipped", StringComparison.Ordinal)
+            || stage.Contains("noop", StringComparison.Ordinal)
+            || stage.Contains("fallback", StringComparison.Ordinal);
+    }
+
     private static void WriteInteractionLog(string stage, string? extra = null)
     {
         _lastInteractionStage = stage;
@@ -3274,18 +3284,7 @@ public sealed partial class UndoController
             NCombatUi? ui = NCombatRoom.Instance?.Ui;
             NPlayerHand? hand = ui?.Hand;
             NEndTurnButton? endTurnButton = ui?.EndTurnButton;
-            object? endTurnState = endTurnButton == null ? null : FindField(endTurnButton.GetType(), "_state")?.GetValue(endTurnButton);
-            object? handDisabledRaw = hand == null ? null : FindField(hand.GetType(), "_isDisabled")?.GetValue(hand);
-            string handDisabled = handDisabledRaw is bool disabled ? disabled.ToString() : "null";
-            List<string> hitboxes = [];
-            if (hand != null)
-            {
-                foreach (Node child in hand.CardHolderContainer.GetChildren())
-                {
-                    if (child is NHandCardHolder holder)
-                        hitboxes.Add(holder.Hitbox.IsEnabled ? "1" : "0");
-                }
-            }
+            bool detailed = ShouldWriteDetailedInteractionLog(stage);
 
             string message = $"{stage}"
                 + $" | combatSide={(combatState == null ? "null" : combatState.CurrentSide)}"
@@ -3297,20 +3296,37 @@ public sealed partial class UndoController
                 + $" queuePaused={(me == null ? "null" : RunManager.Instance.ActionQueueSet.ActionQueueIsPaused(me.NetId))}"
                 + $" playerActionsDisabled={CombatManager.Instance.PlayerActionsDisabled}"
                 + $" isPlayPhase={CombatManager.Instance.IsPlayPhase}"
-                + $" endTurn1={CombatManager.Instance.EndingPlayerTurnPhaseOne}"
-                + $" endTurn2={CombatManager.Instance.EndingPlayerTurnPhaseTwo}"
                 + $" handMode={(hand == null ? "null" : hand.CurrentMode)}"
-                + $" handInPlay={(hand == null ? "null" : hand.InCardPlay)}"
-                + $" handSelecting={(hand == null ? "null" : hand.IsInCardSelection)}"
-                + $" handDisabled={handDisabled}"
-                + $" peeking={(hand == null ? "null" : hand.PeekButton.IsPeeking)}"
-                + $" endTurnState={(endTurnState ?? "null")}"
-                + $" endTurnEnabled={(endTurnButton == null ? "null" : endTurnButton.IsEnabled)}"
-                + $" overlayCount={(NOverlayStack.Instance == null ? "null" : NOverlayStack.Instance.ScreenCount)}"
-                + $" targeting={(NTargetManager.Instance == null ? "null" : NTargetManager.Instance.IsInSelection)}"
                 + $" activeScreen={(ActiveScreenContext.Instance.GetCurrentScreen()?.GetType().Name ?? "null")}"
-                + $" holders={(hand == null ? "null" : hand.CardHolderContainer.GetChildCount())}"
-                + $" hitboxes={string.Join(",", hitboxes)}";
+                + $" holders={(hand == null ? "null" : hand.CardHolderContainer.GetChildCount())}";
+
+            if (detailed)
+            {
+                object? endTurnState = endTurnButton == null ? null : FindField(endTurnButton.GetType(), "_state")?.GetValue(endTurnButton);
+                object? handDisabledRaw = hand == null ? null : FindField(hand.GetType(), "_isDisabled")?.GetValue(hand);
+                string handDisabled = handDisabledRaw is bool disabled ? disabled.ToString() : "null";
+                List<string> hitboxes = [];
+                if (hand != null)
+                {
+                    foreach (Node child in hand.CardHolderContainer.GetChildren())
+                    {
+                        if (child is NHandCardHolder holder)
+                            hitboxes.Add(holder.Hitbox.IsEnabled ? "1" : "0");
+                    }
+                }
+
+                message += $" endTurn1={CombatManager.Instance.EndingPlayerTurnPhaseOne}"
+                    + $" endTurn2={CombatManager.Instance.EndingPlayerTurnPhaseTwo}"
+                    + $" handInPlay={(hand == null ? "null" : hand.InCardPlay)}"
+                    + $" handSelecting={(hand == null ? "null" : hand.IsInCardSelection)}"
+                    + $" handDisabled={handDisabled}"
+                    + $" peeking={(hand == null ? "null" : hand.PeekButton.IsPeeking)}"
+                    + $" endTurnState={(endTurnState ?? "null")}"
+                    + $" endTurnEnabled={(endTurnButton == null ? "null" : endTurnButton.IsEnabled)}"
+                    + $" overlayCount={(NOverlayStack.Instance == null ? "null" : NOverlayStack.Instance.ScreenCount)}"
+                    + $" targeting={(NTargetManager.Instance == null ? "null" : NTargetManager.Instance.IsInSelection)}"
+                    + $" hitboxes={string.Join(",", hitboxes)}";
+            }
 
             if (!string.IsNullOrWhiteSpace(extra))
                 message += $" | {extra}";

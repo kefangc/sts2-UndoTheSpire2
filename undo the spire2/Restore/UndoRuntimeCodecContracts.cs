@@ -19,8 +19,6 @@ internal sealed class UndoRuntimeRestoreContext
     public required RunState RunState { get; init; }
 
     public required CombatState CombatState { get; init; }
-
-    public CardResolutionIndex? CardResolutionIndex { get; init; }
 }
 
 internal interface IUndoRuntimeCodec<TLive, TState>

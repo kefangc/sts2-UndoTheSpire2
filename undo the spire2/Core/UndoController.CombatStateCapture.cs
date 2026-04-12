@@ -283,6 +283,8 @@ public sealed partial class UndoController
             float? tempScale = FindField(creatureNode.GetType(), "_tempScale")?.GetValue(creatureNode) is float scale
                 ? scale
                 : null;
+            UndoCreatureAnimatorState? animatorState = CaptureCreatureAnimatorState(creatureNode);
+            IReadOnlyList<UndoCreatureTrackState> trackStates = CaptureCreatureTrackStates(creatureVisuals, creatureNode, animatorState);
             states.Add(new UndoCreatureVisualState
             {
                 CreatureKey = BuildCreatureKey(creature, i),
@@ -290,12 +292,12 @@ public sealed partial class UndoController
                 VisualDefaultScale = creatureVisuals.DefaultScale,
                 VisualHue = visualHue,
                 TempScale = tempScale,
-                TrackStates = CaptureCreatureTrackStates(creatureVisuals),
+                TrackStates = trackStates,
                 CanvasStates = CaptureCreatureCanvasStates(creatureVisuals),
                 ParticleStates = CaptureCreatureParticleStates(creatureVisuals),
                 ShaderParamStates = CaptureCreatureShaderParamStates(creatureVisuals),
                 StateDisplayState = CaptureCreatureStateDisplayState(creatureNode),
-                AnimatorState = CaptureCreatureAnimatorState(creatureNode)
+                AnimatorState = animatorState
             });
         }
 
@@ -334,9 +336,13 @@ public sealed partial class UndoController
         };
     }
 
-    private static IReadOnlyList<UndoCreatureTrackState> CaptureCreatureTrackStates(Node root)
+    private static IReadOnlyList<UndoCreatureTrackState> CaptureCreatureTrackStates(
+        Node root,
+        NCreature? creatureNode = null,
+        UndoCreatureAnimatorState? animatorState = null)
     {
         List<UndoCreatureTrackState> states = [];
+        bool suppressTransientPlayerTracks = ShouldSuppressTransientPlayerTrackStatesForCapture(creatureNode, animatorState);
         foreach (Node node in EnumerateCreatureVisualNodes(root))
         {
             if (node is not Node2D node2D || !string.Equals(node2D.GetClass(), "SpineSprite", StringComparison.Ordinal))
@@ -348,7 +354,26 @@ public sealed partial class UndoController
             {
                 UndoCreatureTrackState? trackState = TryCaptureCreatureTrackState(animationState, relativePath, trackIndex);
                 if (trackState != null)
+                {
+                    if (suppressTransientPlayerTracks && ShouldSuppressTransientPlayerTrackState(trackState))
+                    {
+                        if (trackState.RelativePath.Contains("WeaponAnim", StringComparison.Ordinal))
+                        {
+                            UndoDebugLog.Write(
+                                $"regent_weapon_track_suppressed path={trackState.RelativePath} track={trackState.TrackIndex} animation={trackState.AnimationName}");
+                        }
+                        continue;
+
+                    }
+
+                    if (trackState.RelativePath.Contains("WeaponAnim", StringComparison.Ordinal))
+                    {
+                        UndoDebugLog.Write(
+                            $"regent_weapon_track_kept path={trackState.RelativePath} track={trackState.TrackIndex} animation={trackState.AnimationName}");
+                    }
+
                     states.Add(trackState);
+                }
             }
         }
 
@@ -366,11 +391,62 @@ public sealed partial class UndoController
             return null;
         }
 
+        AnimState stateToCapture = ResolveStableCreatureAnimatorStateForCapture(creatureNode, currentState);
+
         return new UndoCreatureAnimatorState
         {
-            StateId = currentState.Id,
-            NextStateId = currentState.NextState?.Id,
-            HasLooped = currentState.HasLooped
+            StateId = stateToCapture.Id,
+            NextStateId = stateToCapture.NextState?.Id,
+            HasLooped = stateToCapture.HasLooped
+        };
+    }
+
+    private static AnimState ResolveStableCreatureAnimatorStateForCapture(NCreature creatureNode, AnimState currentState)
+    {
+        if (!creatureNode.Entity.IsPlayer)
+            return currentState;
+
+        if (currentState.IsLooping)
+            return currentState;
+
+        if (currentState.NextState is not { IsLooping: true } nextState)
+            return currentState;
+
+        return currentState.Id switch
+        {
+            "attack" or "cast" or "hit" => nextState,
+            _ => currentState
+        };
+    }
+
+    private static bool ShouldSuppressTransientPlayerTrackStatesForCapture(NCreature? creatureNode, UndoCreatureAnimatorState? animatorState)
+    {
+        if (creatureNode == null || !creatureNode.Entity.IsPlayer)
+            return false;
+
+        if (GetPrivateFieldValue<CreatureAnimator>(creatureNode, "_spineAnimator") is not CreatureAnimator animator)
+            return false;
+
+        if (FindField(animator.GetType(), "_currentState")?.GetValue(animator) is not AnimState currentState)
+            return false;
+
+        return IsTransientCreatureAnimationName(currentState.Id)
+            && animatorState != null
+            && !string.Equals(animatorState.StateId, currentState.Id, StringComparison.Ordinal);
+    }
+
+    private static bool ShouldSuppressTransientPlayerTrackState(UndoCreatureTrackState trackState)
+    {
+        return IsTransientCreatureAnimationName(trackState.AnimationName)
+            || trackState.Loop == false;
+    }
+
+    private static bool IsTransientCreatureAnimationName(string? animationName)
+    {
+        return animationName switch
+        {
+            "attack" or "attack2" or "cast" or "hit" => true,
+            _ => false
         };
     }
 
@@ -384,13 +460,21 @@ public sealed partial class UndoController
 
             MegaAnimation? animation = UndoReflectionUtil.FindMethod(trackEntry.GetType(), "GetAnimation")?.Invoke(trackEntry, null) as MegaAnimation;
             string? animationName = animation?.GetName();
-            if (string.IsNullOrWhiteSpace(animationName))
-                return null;
-
             bool? loop = TryReadTrackEntryLoop(trackEntry);
             float? trackTime = UndoReflectionUtil.FindMethod(trackEntry.GetType(), "GetTrackTime")?.Invoke(trackEntry, null) is float resolvedTrackTime
                 ? resolvedTrackTime
                 : null;
+            if (!string.IsNullOrWhiteSpace(animationName)
+    && relativePath.Contains("WeaponAnim", StringComparison.Ordinal))
+            {
+                UndoDebugLog.Write(
+                    $"regent_weapon_track_capture path={relativePath} track={trackIndex} animation={animationName} loop={loop} time={trackTime}");
+            }
+
+            if (string.IsNullOrWhiteSpace(animationName))
+                return null;
+
+
             return new UndoCreatureTrackState
             {
                 RelativePath = relativePath,

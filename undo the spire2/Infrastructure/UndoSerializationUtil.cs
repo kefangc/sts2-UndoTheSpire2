@@ -16,8 +16,13 @@ internal static class UndoSerializationUtil
 
     public static T ClonePacketSerializable<T>(T value) where T : IPacketSerializable, new()
     {
+        return DeserializePacketSerializable<T>(SerializePacketSerializable(value));
+    }
+
+    public static T DeserializePacketSerializable<T>(byte[] buffer) where T : IPacketSerializable, new()
+    {
         PacketReader reader = new();
-        reader.Reset(SerializePacketSerializable(value));
+        reader.Reset(buffer);
         return reader.Read<T>();
     }
 
@@ -101,7 +106,7 @@ internal static class UndoSerializationUtil
         return true;
     }
 
-    private static byte[] SerializePacketSerializable<T>(T value) where T : IPacketSerializable
+    public static byte[] SerializePacketSerializable<T>(T value) where T : IPacketSerializable
     {
         PacketWriter writer = new() { WarnOnGrow = false };
         writer.Write(value);

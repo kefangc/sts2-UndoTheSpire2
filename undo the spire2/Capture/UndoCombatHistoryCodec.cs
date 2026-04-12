@@ -40,7 +40,7 @@ internal static class UndoCombatHistoryCodec
         };
     }
 
-    public static void Restore(RunState runState, CombatState combatState, UndoCombatHistoryState historyState, CardResolutionIndex? cardResolutionIndex = null)
+    public static void Restore(RunState runState, CombatState combatState, UndoCombatHistoryState historyState)
     {
         CombatHistory history = CombatManager.Instance.History;
         history.Clear();
@@ -49,7 +49,7 @@ internal static class UndoCombatHistoryCodec
 
         Dictionary<string, Creature> creaturesByKey = UndoStableRefs.BuildCreatureKeyMap(GetHistoryCreatures(runState, combatState));
         foreach (UndoCombatHistoryEntryState state in historyState.Entries)
-            entries.Add(RestoreEntry(runState, creaturesByKey, history, state, cardResolutionIndex));
+            entries.Add(RestoreEntry(runState, creaturesByKey, history, state));
 
         if (UndoReflectionUtil.FindField(typeof(CombatHistory), "Changed")?.GetValue(history) is Action changed)
             changed();
@@ -225,8 +225,7 @@ internal static class UndoCombatHistoryCodec
         RunState runState,
         IReadOnlyDictionary<string, Creature> creaturesByKey,
         CombatHistory history,
-        UndoCombatHistoryEntryState state,
-        CardResolutionIndex? cardResolutionIndex)
+        UndoCombatHistoryEntryState state)
     {
         Creature actor = UndoStableRefs.ResolveCreature(creaturesByKey, state.Actor.Key)
             ?? throw new InvalidOperationException($"Could not resolve history actor {state.Actor.Key}.");
@@ -234,35 +233,35 @@ internal static class UndoCombatHistoryCodec
         return state.Kind switch
         {
             UndoCombatHistoryEntryKind.CardPlayStarted => new CardPlayStartedEntry(
-                RestoreCardPlay(runState, creaturesByKey, state.CardPlay!, cardResolutionIndex),
+                RestoreCardPlay(runState, creaturesByKey, state.CardPlay!),
                 state.RoundNumber,
                 state.CurrentSide,
                 history),
-            UndoCombatHistoryEntryKind.CardPlayFinished => RestoreCardPlayFinishedEntry(runState, creaturesByKey, history, state, cardResolutionIndex),
+            UndoCombatHistoryEntryKind.CardPlayFinished => RestoreCardPlayFinishedEntry(runState, creaturesByKey, history, state),
             UndoCombatHistoryEntryKind.CardAfflicted => new CardAfflictedEntry(
-                UndoStableRefs.ResolveCardRef(runState, state.Card!, cardResolutionIndex),
+                UndoStableRefs.ResolveCardRef(runState, state.Card!),
                 ModelDb.GetById<AfflictionModel>(state.AfflictionId!).ToMutable(),
                 state.RoundNumber,
                 state.CurrentSide,
                 history),
             UndoCombatHistoryEntryKind.CardDiscarded => new CardDiscardedEntry(
-                UndoStableRefs.ResolveCardRef(runState, state.Card!, cardResolutionIndex),
+                UndoStableRefs.ResolveCardRef(runState, state.Card!),
                 state.RoundNumber,
                 state.CurrentSide,
                 history),
             UndoCombatHistoryEntryKind.CardDrawn => new CardDrawnEntry(
-                UndoStableRefs.ResolveCardRef(runState, state.Card!, cardResolutionIndex),
+                UndoStableRefs.ResolveCardRef(runState, state.Card!),
                 state.RoundNumber,
                 state.CurrentSide,
                 state.BoolValue,
                 history),
             UndoCombatHistoryEntryKind.CardExhausted => new CardExhaustedEntry(
-                UndoStableRefs.ResolveCardRef(runState, state.Card!, cardResolutionIndex),
+                UndoStableRefs.ResolveCardRef(runState, state.Card!),
                 state.RoundNumber,
                 state.CurrentSide,
                 history),
             UndoCombatHistoryEntryKind.CardGenerated => new CardGeneratedEntry(
-                UndoStableRefs.ResolveCardRef(runState, state.Card!, cardResolutionIndex),
+                UndoStableRefs.ResolveCardRef(runState, state.Card!),
                 state.BoolValue,
                 state.RoundNumber,
                 state.CurrentSide,
@@ -277,14 +276,14 @@ internal static class UndoCombatHistoryCodec
                 RestoreDamageResult(creaturesByKey, state.DamageResult!),
                 actor,
                 UndoStableRefs.ResolveCreature(creaturesByKey, state.OtherCreature?.Key),
-                state.CardSource == null ? null : UndoStableRefs.ResolveCardRef(runState, state.CardSource, cardResolutionIndex),
+                state.CardSource == null ? null : UndoStableRefs.ResolveCardRef(runState, state.CardSource),
                 state.RoundNumber,
                 state.CurrentSide,
                 history),
             UndoCombatHistoryEntryKind.BlockGained => new BlockGainedEntry(
                 state.IntValue,
                 state.Props,
-                state.CardPlay == null ? null : RestoreCardPlay(runState, creaturesByKey, state.CardPlay, cardResolutionIndex),
+                state.CardPlay == null ? null : RestoreCardPlay(runState, creaturesByKey, state.CardPlay),
                 actor,
                 state.RoundNumber,
                 state.CurrentSide,
@@ -392,15 +391,11 @@ internal static class UndoCombatHistoryCodec
         };
     }
 
-    internal static CardPlay RestoreCardPlay(
-        RunState runState,
-        IReadOnlyDictionary<string, Creature> creaturesByKey,
-        UndoCardPlayState state,
-        CardResolutionIndex? cardResolutionIndex = null)
+    internal static CardPlay RestoreCardPlay(RunState runState, IReadOnlyDictionary<string, Creature> creaturesByKey, UndoCardPlayState state)
     {
         return new CardPlay
         {
-            Card = UndoStableRefs.ResolveCardRef(runState, state.Card, cardResolutionIndex),
+            Card = UndoStableRefs.ResolveCardRef(runState, state.Card),
             Target = UndoStableRefs.ResolveCreature(creaturesByKey, state.Target?.Key),
             ResultPile = state.ResultPile,
             Resources = new ResourceInfo
@@ -453,11 +448,10 @@ internal static class UndoCombatHistoryCodec
         RunState runState,
         IReadOnlyDictionary<string, Creature> creaturesByKey,
         CombatHistory history,
-        UndoCombatHistoryEntryState state,
-        CardResolutionIndex? cardResolutionIndex)
+        UndoCombatHistoryEntryState state)
     {
         CardPlayFinishedEntry entry = new(
-            RestoreCardPlay(runState, creaturesByKey, state.CardPlay!, cardResolutionIndex),
+            RestoreCardPlay(runState, creaturesByKey, state.CardPlay!),
             state.RoundNumber,
             state.CurrentSide,
             history);
