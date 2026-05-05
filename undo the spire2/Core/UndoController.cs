@@ -1219,10 +1219,14 @@ public sealed partial class UndoController
         if (node.Value.ActionKind != UndoActionKind.EndTurn)
             return node;
 
+        int startRound = node.Value.CombatState.RoundNumber;
         LinkedListNode<UndoSnapshot>? preferredStableNode = node;
         for (LinkedListNode<UndoSnapshot>? current = node; current != null; current = current.Next)
         {
             if (current.Value.ActionKind != UndoActionKind.EndTurn)
+                break;
+
+            if (current.Value.CombatState.RoundNumber != startRound)
                 break;
 
             if (current.Value.CombatState.CurrentSide == CombatSide.Player
