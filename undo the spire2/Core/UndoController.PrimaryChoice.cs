@@ -720,6 +720,15 @@ public sealed partial class UndoController
             return true;
         }
 
+        if (await TryExecuteHandAddToDrawTopChoiceAsync(session, selectedKey))
+        {
+            if (ShouldAbortStaleSyntheticChoiceSession(session, "custom_commit_after_hand_to_draw_top"))
+                return false;
+
+            await FinalizeCustomChoiceBranchAsync(session, selectedKey);
+            return true;
+        }
+
         if (await TryExecuteSimpleGridAddToHandChoiceAsync(session, selectedKey))
         {
             if (ShouldAbortStaleSyntheticChoiceSession(session, "custom_commit_after_grid_to_hand"))
@@ -781,6 +790,7 @@ public sealed partial class UndoController
         return IsRetainChoiceSource(choiceSpec)
             || IsOfficialFromHandDiscardChoice(choiceSpec)
             || IsHandExhaustChoiceSource(choiceSpec)
+            || IsHandAddToDrawTopChoiceSource(choiceSpec)
             || IsSelectedCardMutationSource(choiceSpec)
             || IsSimpleGridAddToHandChoiceSource(choiceSpec)
             || IsGeneratedGridToHandChoiceSource(choiceSpec)
@@ -1069,6 +1079,11 @@ public sealed partial class UndoController
             || IsSourceChoice(choiceSpec, typeof(TrueGrit))
             || IsSourceChoice(choiceSpec, typeof(TyrannyPower))
             || IsSourceChoice(choiceSpec, typeof(Ashwater));
+    }
+
+    private static bool IsHandAddToDrawTopChoiceSource(UndoChoiceSpec choiceSpec)
+    {
+        return IsSourceChoice(choiceSpec, typeof(Glimmer));
     }
 
     private static bool IsSimpleGridAddToHandChoiceSource(UndoChoiceSpec choiceSpec)
@@ -1584,6 +1599,46 @@ public sealed partial class UndoController
                 decimal strengthAmount = sourceCard?.DynamicVars.Strength.BaseValue ?? 0m;
                 await PowerCmd.Apply<StrengthPower>(player.Creature, strengthAmount, player.Creature, sourceCard, false);
             }
+
+            if (shouldFinalizeDetachedPlayedCard)
+                await FinalizeDetachedPlayedCardAsync(player, choiceContext, choiceSpec, sourceCard);
+        }
+        finally
+        {
+            EndDetachedPlayedCardChoiceContext(choiceContext, sourceCard);
+        }
+
+        return true;
+    }
+
+    private async Task<bool> TryExecuteHandAddToDrawTopChoiceAsync(UndoSyntheticChoiceSession session, UndoChoiceResultKey selectedKey)
+    {
+        UndoChoiceSpec choiceSpec = session.ChoiceSpec;
+        if (choiceSpec.Kind != UndoChoiceKind.HandSelection
+            || choiceSpec.SourcePileType != PileType.Hand
+            || !IsHandAddToDrawTopChoiceSource(choiceSpec))
+        {
+            return false;
+        }
+
+        DisableReplayChecksumComparison(session.AnchorSnapshot.CombatState.NextChecksumId);
+
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        Player? player = combatState == null ? null : LocalContext.GetMe(combatState);
+        if (player == null)
+            return false;
+
+        if (!TryResolveSelectedHandCards(choiceSpec, selectedKey, player, out List<CardModel> selectedCards))
+            return false;
+
+        PausedChoiceState? pausedChoiceState = session.AnchorSnapshot.CombatState.ActionKernelState.PausedChoiceState;
+        bool shouldFinalizeDetachedPlayedCard = ShouldFinalizeDetachedPlayedCardChoice(pausedChoiceState, choiceSpec);
+        BlockingPlayerChoiceContext choiceContext = new();
+        CardModel? sourceCard = BeginDetachedPlayedCardChoiceContext(player, choiceSpec, pausedChoiceState, choiceContext);
+        try
+        {
+            if (selectedCards.Count > 0)
+                await CardPileCmd.Add(selectedCards, PileType.Draw, CardPilePosition.Top, null, false);
 
             if (shouldFinalizeDetachedPlayedCard)
                 await FinalizeDetachedPlayedCardAsync(player, choiceContext, choiceSpec, sourceCard);

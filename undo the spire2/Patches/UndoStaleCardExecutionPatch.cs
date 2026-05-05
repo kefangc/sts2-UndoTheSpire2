@@ -58,10 +58,12 @@ internal static class UndoStaleCardExecutionPatch
         CardModel? cardSource,
         ref Task<IEnumerable<DamageResult>> __result)
     {
+        if (cardSource == null)
+            return true;
         if (!UndoLiveCardExecutionGuard.ShouldAbortExecution(choiceContext, cardSource, out string reason))
             return true;
 
-        if (cardSource != null)
+       
             UndoDebugLog.Write($"stale_card_damage_skipped card={cardSource.Id.Entry} reason={reason}");
 
         __result = Task.FromResult<IEnumerable<DamageResult>>(Enumerable.Empty<DamageResult>());

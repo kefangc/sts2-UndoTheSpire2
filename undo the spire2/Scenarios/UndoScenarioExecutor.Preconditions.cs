@@ -32,7 +32,7 @@ internal static partial class UndoScenarioExecutor
             "automation-power" => Require(me != null && CreatureHasPower(me.Creature, "AutomationPower"), "automation_power_required"),
             "infested-prism" => Require(AnyMonsterType(combatState, "InfestedPrism") || AnyCreatureHasPower(combatState, "VitalSparkPower"), "infested_prism_required"),
             "decimillipede" => Require(AnyMonsterType(combatState, "DecimillipedeSegment"), "decimillipede_required"),
-            "door-maker" => Require(AnyMonsterType(combatState, "Door") || AnyMonsterType(combatState, "Doormaker"), "door_or_doormaker_required"),
+            "door-maker" => Require(AnyMonsterType(combatState, "Doormaker"), "doormaker_required"),
             "paels-legion" => Require(me != null && PlayerHasRelic(me, "PaelsLegion") && combatState.Allies.Any(creature => creature.PetOwner == me && HasTypeName(creature.Monster, "PaelsLegion")), "paels_legion_pet_required"),
             "tunneler" => Require(AnyMonsterType(combatState, "Tunneler"), "tunneler_required"),
             "owl-magistrate-flight" => Require(AnyMonsterType(combatState, "OwlMagistrate"), "owl_magistrate_required"),

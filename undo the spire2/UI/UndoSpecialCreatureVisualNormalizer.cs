@@ -1,12 +1,9 @@
 // 文件说明：修正特殊 creature 在恢复后的视觉表现。
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using Godot;
 using MegaCrit.Sts2.Core.Assets;
 using MegaCrit.Sts2.Core.Combat;
-using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Commands;
+using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Helpers;
@@ -17,6 +14,9 @@ using MegaCrit.Sts2.Core.Models.Relics;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Vfx;
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using PaelsLegionMonster = MegaCrit.Sts2.Core.Models.Monsters.PaelsLegion;
 using PaelsLegionRelic = MegaCrit.Sts2.Core.Models.Relics.PaelsLegion;
 
@@ -32,6 +32,10 @@ internal static class UndoSpecialCreatureVisualNormalizer
         "monsters/beta/door_maker_placeholder_3.png",
         "monsters/beta/door_maker_placeholder_4.png"
     ];
+
+    private static readonly Dictionary<string, Texture2D> DoormakerClosedTextures = [];
+
+
 
     internal sealed class PaelsLegionVisualExpectation
     {
@@ -68,6 +72,28 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
         RefreshCreatureStatusVisual(creature, combatRoom, normalizeAnimation);
     }
+
+    public static void PrimeDoormakerClosedTextures(IReadOnlyList<Creature> creatures, NCombatRoom? combatRoom)
+    {
+        if (combatRoom == null)
+            return;
+
+        for (int i = 0; i < creatures.Count; i++)
+        {
+            Creature creature = creatures[i];
+            if (creature.Monster is not Doormaker doormaker)
+                continue;
+
+            if (ReadBoolMonsterProperty(doormaker, "IsPortalOpen"))
+                continue;
+
+            if (combatRoom.GetCreatureNode(creature)?.Body is not Sprite2D body)
+                continue;
+
+            RememberDoormakerClosedTexture(UndoStableRefs.BuildCreatureKey(creature, i), body.Texture);
+        }
+    }
+
 
     public static void DetachStateDisplayTracking(NCombatRoom combatRoom)
     {
@@ -162,21 +188,64 @@ internal static class UndoSpecialCreatureVisualNormalizer
         }
     }
 
+    //由于100版本后门初始贴图未暴露，故提前缓存
+    private static void RememberDoormakerClosedTexture(string creatureKey, Texture2D? texture)
+    {
+        if (texture == null)
+            return;
+
+        if (DoormakerClosedTextures.ContainsKey(creatureKey))
+            return;
+
+        DoormakerClosedTextures[creatureKey] = texture;
+    }
+
+
     internal static bool TryGetDoormakerExpectedTexturePath(Doormaker monster, out string? texturePath)
     {
         texturePath = null;
-        if (DoormakerVisualPaths.Length == 0)
+        if (DoormakerVisualPaths.Length < 3)
             return false;
 
-        int textureIndex = ((monster.TimesGotBackIn % DoormakerVisualPaths.Length) + DoormakerVisualPaths.Length) % DoormakerVisualPaths.Length;
-        texturePath = ImageHelper.GetImagePath(DoormakerVisualPaths[textureIndex]);
+        if (!ReadBoolMonsterProperty(monster, "IsPortalOpen"))
+            return false;
+
+        if (monster.Creature.HasPower<HungerPower>())
+            texturePath = ImageHelper.GetImagePath(DoormakerVisualPaths[1]);
+        else if (monster.Creature.HasPower<ScrutinyPower>())
+            texturePath = ImageHelper.GetImagePath(DoormakerVisualPaths[0]);
+        else if (monster.Creature.HasPower<GraspPower>())
+            texturePath = ImageHelper.GetImagePath(DoormakerVisualPaths[2]);
+
         return !string.IsNullOrWhiteSpace(texturePath);
     }
+
 
     private static void NormalizeDoormaker(Doormaker monster, NCreature creatureNode)
     {
         if (creatureNode.Body is not Sprite2D body)
             return;
+
+        CombatState? combatState = monster.Creature.CombatState;
+        if (combatState == null)
+            return;
+
+        IReadOnlyList<Creature> creatures = combatState.Creatures;
+        string creatureKey = UndoStableRefs.TryResolveCreatureKey(creatures, monster.Creature)
+            ?? throw new InvalidOperationException("Could not resolve doormaker creature key for visual normalization.");
+
+        bool isPortalOpen = ReadBoolMonsterProperty(monster, "IsPortalOpen");
+        if (!isPortalOpen)
+        {
+            if (DoormakerClosedTextures.TryGetValue(creatureKey, out Texture2D? closedTexture)
+                && !ReferenceEquals(body.Texture, closedTexture))
+            {
+                body.Texture = closedTexture;
+            }
+
+            return;
+        }
+
         if (!TryGetDoormakerExpectedTexturePath(monster, out string? texturePath) || string.IsNullOrWhiteSpace(texturePath))
             return;
 
@@ -184,6 +253,7 @@ internal static class UndoSpecialCreatureVisualNormalizer
         if (!ReferenceEquals(body.Texture, expectedTexture))
             body.Texture = expectedTexture;
     }
+
 
     private static void NormalizeSleepingBeetle(SlumberingBeetle monster, NCreature creatureNode)
     {
@@ -591,20 +661,18 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
     private static bool ShouldShowCreatureNode(Creature creature)
     {
-        if (creature.Monster is not Door door)
-            return creature.GetPower<DoorRevivalPower>()?.IsHalfDead != true;
+        foreach (PowerModel power in creature.Powers)
+        {
+            if (UndoReflectionUtil.FindProperty(power.GetType(), "IsHalfDead")?.GetValue(power) is bool isHalfDead
+                && isHalfDead)
+            {
+                return false;
+            }
+        }
 
-        bool isHalfDead = creature.GetPower<DoorRevivalPower>()?.IsHalfDead == true;
-        if (!isHalfDead)
-            return true;
-
-        Creature doormaker = door.Doormaker;
-        CombatState? combatState = creature.CombatState;
-        bool doormakerInCombat = combatState != null
-            && doormaker.CombatState == combatState
-            && combatState.ContainsCreature(doormaker);
-        return !doormakerInCombat;
+        return true;
     }
+
 
     private static void NormalizeStateDisplayVisibility(NCreature creatureNode, bool showStateDisplay)
     {
@@ -777,12 +845,12 @@ internal static class UndoSpecialCreatureVisualNormalizer
     {
         if (TryInvokePrivateMethod(creatureNode, "ImmediatelySetIdle"))
         {
-            string? currentAnimation = TryGetTrackAnimationName(creatureNode.SpineController?.GetAnimationState(), 0);
+            string? currentAnimation = TryGetTrackAnimationName(creatureNode.Visuals?.SpineBody?.GetAnimationState(), 0);
             if (string.Equals(currentAnimation, "idle_loop", StringComparison.Ordinal))
                 return;
         }
 
-        if (string.Equals(TryGetTrackAnimationName(creatureNode.SpineController?.GetAnimationState(), 0), "idle_loop", StringComparison.Ordinal))
+        if (string.Equals(TryGetTrackAnimationName(creatureNode.Visuals?.SpineBody?.GetAnimationState(), 0), "idle_loop", StringComparison.Ordinal))
             return;
         EnsureBaseAnimation(creatureNode, "idle_loop", loop: true);
     }
@@ -812,7 +880,7 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
     private static void EnsureBaseAnimation(NCreature creatureNode, string animationName, bool loop)
     {
-        var animationState = creatureNode.SpineController?.GetAnimationState();
+        var animationState = creatureNode.Visuals?.SpineBody?.GetAnimationState();
         if (animationState == null)
             return;
 

@@ -37,7 +37,6 @@ internal static partial class UndoRuntimeStateCodecRegistry
         new AfterimagePlayedCardsPowerCodec(),
         new NightmareSelectedCardPowerCodec(),
         new DampenPowerCodec(),
-        new DoorRevivalHalfDeadPowerCodec(),
         new RevivePendingPowerCodec(),
         new PrivateBoolFieldPowerCodec<BeaconOfHopePower>("power:BeaconOfHopePower.hasAlreadyBeenGivenBlock", "_hasAlreadyBeenGivenBlock"),
         new PrivateBoolFieldPowerCodec<NemesisPower>("power:NemesisPower.shouldApplyIntangible", "_shouldApplyIntangible"),

@@ -399,33 +399,7 @@ internal static partial class UndoRuntimeStateCodecRegistry
         }
     }
 
-    private sealed class DoorRevivalHalfDeadPowerCodec : UndoPowerRuntimeCodec<UndoBoolRuntimeComplexState>
-    {
-        public override string CodecId => "power:DoorRevivalPower.isHalfDead";
 
-        public override bool CanHandle(PowerModel power)
-        {
-            return power is DoorRevivalPower;
-        }
-
-        public override UndoBoolRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
-        {
-            return new UndoBoolRuntimeComplexState
-            {
-                CodecId = CodecId,
-                Value = power is DoorRevivalPower doorRevivalPower && doorRevivalPower.IsHalfDead
-            };
-        }
-
-        public override void Restore(PowerModel power, UndoBoolRuntimeComplexState state, UndoRuntimeRestoreContext context)
-        {
-            object? internalData = GetPowerInternalData(power);
-            if (internalData == null)
-                return;
-
-            UndoReflectionUtil.TrySetFieldValue(internalData, "isHalfDead", state.Value);
-        }
-    }
 
     private sealed class RevivePendingPowerCodec : UndoPowerRuntimeCodec<UndoBoolRuntimeComplexState>
     {

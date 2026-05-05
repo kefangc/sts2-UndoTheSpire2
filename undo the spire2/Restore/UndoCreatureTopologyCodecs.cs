@@ -22,7 +22,6 @@ internal static class UndoCreatureTopologyCodecRegistry
     {
         return
         [
-            "topology:DoorAndDoormaker",
             "topology:Decimillipede",
             "topology:TestSubject",
             "topology:InfestedPrism",
@@ -103,31 +102,14 @@ internal static class UndoCreatureTopologyCodecRegistry
             ? null
             : UndoReflectionUtil.FindField(moveStateMachine.GetType(), "_currentState")?.GetValue(moveStateMachine) as MonsterState;
         string? followUpStateType = (currentState as MoveState)?.FollowUpState?.Id;
-        bool isHalfDead = monster.Creature.GetPower<DoorRevivalPower>()?.IsHalfDead == true;
+        bool isHalfDead = HasAnyHalfDeadFlag(monster.Creature);
 
         string? runtimeCodecId = null;
         UndoCreatureTopologyRuntimeState? runtimePayload = null;
         IReadOnlyList<CreatureRef> linkedRefs = [];
         switch (monster)
         {
-            case Door door:
-                runtimeCodecId = "topology:DoorAndDoormaker";
-                Creature doormakerCreature = door.Doormaker;
-                bool doormakerInCombat = doormakerCreature.CombatState == door.Creature.CombatState
-                    && creatures.Contains(doormakerCreature);
-                linkedRefs = [.. CaptureLinkedCreatureRef(creatures, doormakerCreature)];
-                runtimePayload = new UndoDoorTopologyRuntimeState
-                {
-                    CodecId = runtimeCodecId,
-                    DoormakerRef = UndoStableRefs.CaptureCreatureRef(creatures, doormakerCreature),
-                    DeadStateFollowUpStateId = door.DeadState.FollowUpState?.Id,
-                    TimesGotBackIn = doormakerCreature.Monster is Doormaker doormaker ? doormaker.TimesGotBackIn : null,
-                    IsDoorVisible = TryDeriveDoorVisibilityState(door.Creature.CombatState, doormakerCreature, isHalfDead),
-                    DormantDoormakerState = !doormakerInCombat
-                        ? CaptureDormantCreatureState(doormakerCreature)
-                        : null
-                };
-                break;
+            
             case DecimillipedeSegment segment:
                 runtimeCodecId = "topology:Decimillipede";
                 linkedRefs = creatures
@@ -199,6 +181,21 @@ internal static class UndoCreatureTopologyCodecRegistry
         if (creatureRef != null)
             yield return creatureRef;
     }
+    //100版本门的属性变动，保留反射读ishalfdead
+    private static bool HasAnyHalfDeadFlag(Creature creature)
+    {
+        foreach (PowerModel power in creature.Powers)
+        {
+            if (UndoReflectionUtil.FindProperty(power.GetType(), "IsHalfDead")?.GetValue(power) is bool isHalfDead
+                && isHalfDead)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
 
     private static void RestoreCommonMonsterTopology(MonsterModel monster, CreatureTopologyState state)
     {
@@ -211,24 +208,7 @@ internal static class UndoCreatureTopologyCodecRegistry
     {
         switch (state.RuntimePayload)
         {
-            case UndoDoorTopologyRuntimeState doorState when monster is Door door:
-                Creature? doormakerCreature = null;
-                if (doorState.DoormakerRef != null && !creaturesByKey.TryGetValue(doorState.DoormakerRef.Key, out doormakerCreature))
-                    return false;
-
-                doormakerCreature ??= doorState.DormantDoormakerState == null
-                    ? TryGetDoorDoormaker(door)
-                    : RestoreDormantDoormaker(door, doorState.DormantDoormakerState);
-                if (doormakerCreature == null)
-                    return false;
-
-                UndoReflectionUtil.TrySetPropertyValue(door, "Doormaker", doormakerCreature);
-                if (door.DeadState != null && doorState.DeadStateFollowUpStateId != null && door.MoveStateMachine.States.TryGetValue(doorState.DeadStateFollowUpStateId, out MonsterState? followUpState) && followUpState is MoveState moveState)
-                    door.DeadState.FollowUpState = moveState;
-                if (door.Doormaker.Monster is Doormaker doormaker && doorState.TimesGotBackIn.HasValue)
-                    UndoReflectionUtil.TrySetPropertyValue(doormaker, "TimesGotBackIn", doorState.TimesGotBackIn.Value);
-                ApplyDoorVisibilityState(door, doorState.IsDoorVisible);
-                return true;
+            
             case UndoDecimillipedeTopologyRuntimeState decimillipedeState when monster is DecimillipedeSegment segment:
                 segment.StarterMoveIdx = decimillipedeState.StarterMoveIdx;
                 return decimillipedeState.SegmentRefs.All(creatureRef => creaturesByKey.ContainsKey(creatureRef.Key));
@@ -334,27 +314,8 @@ internal static class UndoCreatureTopologyCodecRegistry
         };
     }
 
-    private static bool? TryDeriveDoorVisibilityState(CombatState? combatState, Creature? doormakerCreature, bool isHalfDead)
-    {
-        if (!isHalfDead)
-            return true;
 
-        bool doormakerInCombat = combatState != null
-            && doormakerCreature?.CombatState == combatState
-            && combatState.ContainsCreature(doormakerCreature);
-        return !doormakerInCombat;
-    }
 
-    private static void ApplyDoorVisibilityState(Door door, bool? isDoorVisible)
-    {
-        if (!isDoorVisible.HasValue)
-            return;
-
-        if (isDoorVisible.Value)
-            door.Close();
-        else
-            door.Open();
-    }
 
     private static void RemoveCreatureNode(NCombatRoom? combatRoom, NCreature creatureNode)
     {
@@ -371,40 +332,7 @@ internal static class UndoCreatureTopologyCodecRegistry
         creatureNode.QueueFree();
     }
 
-    private static Creature? TryGetDoorDoormaker(Door door)
-    {
-        return UndoReflectionUtil.FindProperty(door.GetType(), "Doormaker")?.GetValue(door) as Creature
-            ?? UndoReflectionUtil.FindField(door.GetType(), "_doormaker")?.GetValue(door) as Creature;
-    }
 
-    private static Creature? RestoreDormantDoormaker(Door door, UndoDormantCreatureState dormantState)
-    {
-        CombatState? combatState = door.Creature.CombatState;
-        if (combatState == null)
-            return null;
-
-        Creature? currentDoormaker = TryGetDoorDoormaker(door);
-        if (currentDoormaker?.CombatState == combatState)
-        {
-            NCombatRoom? combatRoom = NCombatRoom.Instance;
-            NCreature? currentNode = combatRoom?.GetCreatureNode(currentDoormaker);
-            if (currentNode != null)
-                RemoveCreatureNode(combatRoom, currentNode);
-
-            if (combatState.ContainsCreature(currentDoormaker))
-                combatState.RemoveCreature(currentDoormaker, unattach: false);
-            CombatManager.Instance.RemoveCreature(currentDoormaker);
-        }
-
-        MonsterModel monster = ModelDb.Monster<Doormaker>().ToMutable();
-        Creature doormaker = combatState.CreateCreature(monster, CombatSide.Enemy, dormantState.MonsterState?.SlotName ?? "doormaker");
-
-        if (dormantState.CreatureState != null)
-            RestoreSnapshotCreatureState(doormaker, dormantState.CreatureState.Value);
-        if (dormantState.MonsterState != null && doormaker.Monster != null)
-            RestoreDetachedMonsterState(doormaker.Monster, dormantState.MonsterState);
-        return doormaker;
-    }
 
     private static void RestoreSnapshotCreatureState(Creature creature, NetFullCombatState.CreatureState saved)
     {
