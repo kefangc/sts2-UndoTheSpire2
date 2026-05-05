@@ -69,6 +69,8 @@ public sealed partial class UndoController
         UndoSelectionSessionState selectionSessionState = CaptureSelectionSessionState(choiceSpecOverride);
         UndoChoiceSpec? activeChoiceSpec = choiceSpecOverride ?? selectionSessionState.ChoiceSpec;
 
+        UndoSpecialCreatureVisualNormalizer.PrimeDoormakerClosedTextures(combatState.Creatures, NCombatRoom.Instance);
+
         return new UndoCombatFullState(
             CloneFullState(NetFullCombatState.FromRun(runState, null)),
             combatState.RoundNumber,

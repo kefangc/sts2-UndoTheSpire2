@@ -241,7 +241,9 @@ internal static class UndoCreatureStatusCodecRegistry
         new WaterfallGiantCurrentPressureGunDamageCodec(),
         new WaterfallGiantSteamEruptionDamageCodec(),
         new WaterfallGiantAboutToBlowCodec(),
-        new WaterfallGiantPressureBuildupIdxCodec()
+        new WaterfallGiantPressureBuildupIdxCodec(),
+        new DoormakerIsPortalOpenCodec(),
+        new DoormakerOriginalHpCodec()
     ];
 
     public static HashSet<string> GetImplementedCodecIds()
@@ -576,5 +578,19 @@ internal static class UndoCreatureStatusCodecRegistry
         public override string CodecId => "status:WaterfallGiant.PressureBuildupIdx";
 
         protected override string PropertyName => "PressureBuildupIdx";
+    }
+
+    private sealed class DoormakerIsPortalOpenCodec : UndoCreatureStatusBoolCodec<Doormaker>
+    {
+        public override string CodecId => "status:Doormaker.IsPortalOpen";
+
+        protected override string PropertyName => "IsPortalOpen";
+    }
+
+    private sealed class DoormakerOriginalHpCodec : UndoCreatureStatusIntCodec<Doormaker>
+    {
+        public override string CodecId => "status:Doormaker.OriginalHp";
+
+        protected override string PropertyName => "OriginalHp";
     }
 }

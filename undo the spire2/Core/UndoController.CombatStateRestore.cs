@@ -93,7 +93,6 @@ public sealed partial class UndoController
             UndoPlayerOrbState? playerOrbState = GetPlayerOrbState(snapshotState, player.NetId);
 
             player.PlayerRng.LoadFromSerializable(playerState.rngSet);
-            player.PlayerOdds.LoadFromSerializable(playerState.oddsSet);
             player.RelicGrabBag.LoadFromSerializable(playerState.relicGrabBag);
             player.Gold = playerState.gold;
             if (playerOrbState != null)

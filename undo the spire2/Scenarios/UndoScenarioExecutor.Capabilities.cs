@@ -18,7 +18,7 @@ internal static partial class UndoScenarioExecutor
             "automation-power" => ["power:AutomationPower.cardsLeft"],
             "infested-prism" => ["power:VitalSparkPower.playersTriggeredThisTurn", "topology:InfestedPrism"],
             "decimillipede" => ["topology:Decimillipede"],
-            "door-maker" => ["topology:DoorAndDoormaker", "power:DoorRevivalPower.isHalfDead"],
+            "door-maker" => [],
             "paels-legion" => ["relic:PaelsLegion.affectedCardPlay"],
             "tunneler" => ["reconcile:Tunneler.BurrowIntent"],
             "owl-magistrate-flight" => ["status:OwlMagistrate.IsFlying", "reconcile:OwlMagistrate.FlightState"],
