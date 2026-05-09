@@ -119,7 +119,7 @@ internal static class UndoCombatHistoryCodec
                 RoundNumber = value.RoundNumber,
                 CurrentSide = value.CurrentSide,
                 Card = UndoStableRefs.CaptureCardRef(runState, value.Card),
-                BoolValue = value.GeneratedByPlayer
+                BoolValue = value.Creator != null
             },
             CreatureAttackedEntry value => new UndoCombatHistoryEntryState
             {
@@ -262,7 +262,7 @@ internal static class UndoCombatHistoryCodec
                 history),
             UndoCombatHistoryEntryKind.CardGenerated => new CardGeneratedEntry(
                 UndoStableRefs.ResolveCardRef(runState, state.Card!),
-                state.BoolValue,
+                state.BoolValue ? actor.Player : null,
                 state.RoundNumber,
                 state.CurrentSide,
                 history),

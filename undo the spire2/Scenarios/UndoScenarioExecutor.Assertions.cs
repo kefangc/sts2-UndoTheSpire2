@@ -5,16 +5,25 @@ using MegaCrit.Sts2.Core.Assets;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models.Monsters;
 using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
+using MegaCrit.Sts2.Core.Runs;
 
 namespace UndoTheSpire2;
 
 internal static partial class UndoScenarioExecutor
 {
+    private static bool IsCombatPlayPhase()
+    {
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        return combatState?.CurrentSide == CombatSide.Player
+            && RunManager.Instance.ActionQueueSynchronizer.CombatState == ActionSynchronizerCombatState.PlayPhase;
+    }
+
     private static List<UndoScenarioAssertionResult> BuildRoundtripAssertions(
         UndoScenarioDefinition scenario,
         UndoCombatFullState targetState,
@@ -207,7 +216,8 @@ internal static partial class UndoScenarioExecutor
         NCombatUi? ui = NCombatRoom.Instance?.Ui;
         bool isSelecting = ui?.Hand?.IsInCardSelection == true;
         bool handDisabled = ui?.Hand != null && (UndoReflectionUtil.FindField(ui.Hand.GetType(), "_isDisabled")?.GetValue(ui.Hand) as bool? == true);
-        bool passed = CombatManager.Instance.IsPlayPhase
+        bool isPlayPhase = IsCombatPlayPhase();
+        bool passed = isPlayPhase
             && !isSelecting
             && !handDisabled
             && !CombatManager.Instance.PlayerActionsDisabled;
@@ -215,7 +225,7 @@ internal static partial class UndoScenarioExecutor
         {
             Assertion = assertion,
             Passed = passed,
-            Detail = $"is_play_phase={CombatManager.Instance.IsPlayPhase}; selecting={isSelecting}; hand_disabled={handDisabled}; player_actions_disabled={CombatManager.Instance.PlayerActionsDisabled}"
+            Detail = $"is_play_phase={isPlayPhase}; selecting={isSelecting}; hand_disabled={handDisabled}; player_actions_disabled={CombatManager.Instance.PlayerActionsDisabled}"
         };
     }
 

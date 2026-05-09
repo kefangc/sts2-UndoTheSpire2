@@ -803,7 +803,7 @@ public sealed partial class UndoController
     internal static UndoCardRuntimeState CaptureChoiceOptionRuntimeState(CardModel card)
     {
         RunState? runState = RunManager.Instance.DebugOnlyGetState();
-        CombatState? combatState = card.Owner?.Creature?.CombatState ?? CombatManager.Instance.DebugOnlyGetState();
+        CombatState? combatState = card.Owner?.Creature?.CombatState as CombatState ?? CombatManager.Instance.DebugOnlyGetState();
         if (runState != null && combatState != null)
         {
             UndoRuntimeCaptureContext context = new()

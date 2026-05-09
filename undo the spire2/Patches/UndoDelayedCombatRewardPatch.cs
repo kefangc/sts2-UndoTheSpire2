@@ -61,10 +61,10 @@ public static class UndoDelayedCombatRewardPatch
             .WithHitFx("vfx/vfx_attack_slash", null, null)
             .Execute(choiceContext);
 
-        if (!shouldTriggerFatal || !attackCommand.Results.Any(static result => result.WasTargetKilled))
+        if (!shouldTriggerFatal || !attackCommand.Results.SelectMany(static result => result).Any(static result => result.WasTargetKilled))
             return;
 
         UndoDelayedCombatRewardService.QueueTheHuntReward(card.Owner, combatRoom.RoomType);
-        await PowerCmd.Apply<TheHuntPower>(card.Owner.Creature, 1m, card.Owner.Creature, card, false);
+        await PowerCmd.Apply<TheHuntPower>(choiceContext, card.Owner.Creature, 1m, card.Owner.Creature, card, false);
     }
 }

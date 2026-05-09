@@ -12,7 +12,7 @@ internal static class UndoLiveCardExecutionGuard
         if (card == null || card.HasBeenRemovedFromState || card.Owner == null)
             return false;
 
-        CombatState? combatState = card.CombatState ?? card.Owner.Creature.CombatState;
+        CombatState? combatState = card.CombatState as CombatState ?? card.Owner.Creature.CombatState as CombatState;
         return combatState != null && combatState.ContainsCard(card);
     }
 

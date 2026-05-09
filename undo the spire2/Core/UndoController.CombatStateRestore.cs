@@ -481,7 +481,7 @@ public sealed partial class UndoController
         RestoreCardCostState(card, costState);
 
         RunState? runState = RunManager.Instance.DebugOnlyGetState();
-        CombatState? combatState = player.Creature.CombatState ?? CombatManager.Instance.DebugOnlyGetState();
+        CombatState? combatState = player.Creature.CombatState as CombatState ?? CombatManager.Instance.DebugOnlyGetState();
         if (runState == null || combatState == null || runtimeState == null)
             return;
 

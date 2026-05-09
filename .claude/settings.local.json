@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(xargs grep -li \"门扉\\\\|缔造者\\\\|GateCreator\\\\|DoorMaker\\\\|GateMaker\\\\|Gatekeeper\")",
-      "Bash(dotnet build *)"
-    ]
-  }
-}

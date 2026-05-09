@@ -43,3 +43,6 @@ Desktop.ini
 
 # Local development docs
 doc/
+
+# Claude local workspace files
+.claude/
