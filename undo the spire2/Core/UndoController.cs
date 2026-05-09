@@ -529,7 +529,7 @@ public sealed partial class UndoController
         if (power.Owner == null)
             return false;
 
-        CombatState? combatState = power.CombatState ?? CombatManager.Instance.DebugOnlyGetState();
+        CombatState? combatState = power.CombatState as CombatState ?? CombatManager.Instance.DebugOnlyGetState();
         if (combatState == null)
             return false;
 
@@ -740,6 +740,13 @@ public sealed partial class UndoController
 
         ulong? localNetId = LocalContext.NetId;
         return localNetId == null || player.NetId == localNetId.Value;
+    }
+
+    private static bool IsCombatPlayPhase()
+    {
+        CombatState? combatState = CombatManager.Instance.DebugOnlyGetState();
+        return combatState?.CurrentSide == CombatSide.Player
+            && RunManager.Instance.ActionQueueSynchronizer.CombatState == ActionSynchronizerCombatState.PlayPhase;
     }
 
     public void ClearHistory(string reason)
@@ -3299,7 +3306,7 @@ public sealed partial class UndoController
                 + $" me={(me == null ? "null" : me.NetId)}"
                 + $" queuePaused={(me == null ? "null" : RunManager.Instance.ActionQueueSet.ActionQueueIsPaused(me.NetId))}"
                 + $" playerActionsDisabled={CombatManager.Instance.PlayerActionsDisabled}"
-                + $" isPlayPhase={CombatManager.Instance.IsPlayPhase}"
+                + $" isPlayPhase={IsCombatPlayPhase()}"
                 + $" handMode={(hand == null ? "null" : hand.CurrentMode)}"
                 + $" activeScreen={(ActiveScreenContext.Instance.GetCurrentScreen()?.GetType().Name ?? "null")}"
                 + $" holders={(hand == null ? "null" : hand.CardHolderContainer.GetChildCount())}";

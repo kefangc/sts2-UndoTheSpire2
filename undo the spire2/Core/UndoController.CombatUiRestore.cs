@@ -920,7 +920,7 @@ public sealed partial class UndoController
 
     private static string BuildExpectedCreatureIntentSignature(Creature creature)
     {
-        CombatState? creatureCombatState = creature.CombatState;
+        CombatState? creatureCombatState = creature.CombatState as CombatState;
         if (creature.Monster?.NextMove == null || creatureCombatState == null)
             return string.Empty;
 

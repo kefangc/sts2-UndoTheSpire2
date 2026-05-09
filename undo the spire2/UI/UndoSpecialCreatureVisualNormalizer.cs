@@ -81,10 +81,11 @@ internal static class UndoSpecialCreatureVisualNormalizer
         for (int i = 0; i < creatures.Count; i++)
         {
             Creature creature = creatures[i];
-            if (creature.Monster is not Doormaker doormaker)
+            MonsterModel? monster = creature.Monster;
+            if (!IsLegacyDoormaker(monster))
                 continue;
 
-            if (ReadBoolMonsterProperty(doormaker, "IsPortalOpen"))
+            if (ReadBoolMonsterProperty(monster, "IsPortalOpen"))
                 continue;
 
             if (combatRoom.GetCreatureNode(creature)?.Body is not Sprite2D body)
@@ -170,8 +171,9 @@ internal static class UndoSpecialCreatureVisualNormalizer
             case ThievingHopper thievingHopper:
                 NormalizeThievingHopper(thievingHopper, creatureNode);
                 break;
-            case Doormaker doormaker:
-                NormalizeDoormaker(doormaker, creatureNode);
+            default:
+                if (IsLegacyDoormaker(monster))
+                    NormalizeDoormaker(monster, creatureNode);
                 break;
             case FatGremlin fatGremlin:
                 NormalizeGremlinAwakeState(creatureNode, ReadBoolMonsterProperty(fatGremlin, "IsAwake"));
@@ -201,7 +203,7 @@ internal static class UndoSpecialCreatureVisualNormalizer
     }
 
 
-    internal static bool TryGetDoormakerExpectedTexturePath(Doormaker monster, out string? texturePath)
+    internal static bool TryGetDoormakerExpectedTexturePath(MonsterModel monster, out string? texturePath)
     {
         texturePath = null;
         if (DoormakerVisualPaths.Length < 3)
@@ -210,23 +212,23 @@ internal static class UndoSpecialCreatureVisualNormalizer
         if (!ReadBoolMonsterProperty(monster, "IsPortalOpen"))
             return false;
 
-        if (monster.Creature.HasPower<HungerPower>())
+        if (HasPowerNamed(monster.Creature, "HungerPower"))
             texturePath = ImageHelper.GetImagePath(DoormakerVisualPaths[1]);
-        else if (monster.Creature.HasPower<ScrutinyPower>())
+        else if (HasPowerNamed(monster.Creature, "ScrutinyPower"))
             texturePath = ImageHelper.GetImagePath(DoormakerVisualPaths[0]);
-        else if (monster.Creature.HasPower<GraspPower>())
+        else if (HasPowerNamed(monster.Creature, "GraspPower"))
             texturePath = ImageHelper.GetImagePath(DoormakerVisualPaths[2]);
 
         return !string.IsNullOrWhiteSpace(texturePath);
     }
 
 
-    private static void NormalizeDoormaker(Doormaker monster, NCreature creatureNode)
+    private static void NormalizeDoormaker(MonsterModel monster, NCreature creatureNode)
     {
         if (creatureNode.Body is not Sprite2D body)
             return;
 
-        CombatState? combatState = monster.Creature.CombatState;
+        CombatState? combatState = monster.Creature.CombatState as CombatState;
         if (combatState == null)
             return;
 
@@ -615,7 +617,7 @@ internal static class UndoSpecialCreatureVisualNormalizer
         ReconcileWaterfallGiantVfx(monster, creatureNode);
 
         bool aboutToBlow = ReadBoolMonsterProperty(monster, "IsAboutToBlow")
-            || monster.Creature.ShowsInfiniteHp
+            || IsHpDisplayInfinite(monster.Creature)
             || string.Equals(monster.NextMove?.Id, "ABOUT_TO_BLOW_MOVE", StringComparison.Ordinal);
 
         if (aboutToBlow)
@@ -689,7 +691,7 @@ internal static class UndoSpecialCreatureVisualNormalizer
         if (visible)
             TryInvokePrivateMethod(stateDisplay, "RefreshValues");
 
-        if (creatureNode.Entity is Creature creature && !creature.ShowsInfiniteHp)
+        if (creatureNode.Entity is Creature creature && !IsHpDisplayInfinite(creature))
             HideInfinityHealthIndicator(stateDisplay);
     }
 
@@ -740,7 +742,7 @@ internal static class UndoSpecialCreatureVisualNormalizer
             return;
 
         bool aboutToBlow = ReadBoolMonsterProperty(monster, "IsAboutToBlow")
-            || monster.Creature.ShowsInfiniteHp
+            || IsHpDisplayInfinite(monster.Creature)
             || string.Equals(monster.NextMove?.Id, "ABOUT_TO_BLOW_MOVE", StringComparison.Ordinal);
         int pressureBuildupIdx = ReadIntMonsterProperty(monster, "PressureBuildupIdx");
         int buildupLevel = pressureBuildupIdx <= 0 ? 0 : Math.Clamp((int)MathF.Floor(pressureBuildupIdx * 0.5f), 1, 3);
@@ -993,6 +995,21 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
         string fieldName = '_' + char.ToLowerInvariant(propertyName[0]) + propertyName[1..];
         return UndoReflectionUtil.TryGetFieldValue(monster, fieldName, out int fieldValue) ? fieldValue : 0;
+    }
+
+    private static bool IsHpDisplayInfinite(Creature creature)
+    {
+        return creature.HpDisplay != HpDisplay.Normal;
+    }
+
+    private static bool HasPowerNamed(Creature creature, string typeName)
+    {
+        return creature.Powers.Any(power => string.Equals(power.GetType().Name, typeName, StringComparison.Ordinal));
+    }
+
+    private static bool IsLegacyDoormaker(MonsterModel? monster)
+    {
+        return monster != null && string.Equals(monster.GetType().Name, "Doormaker", StringComparison.Ordinal);
     }
 
     private static bool TryGetPaelsLegionExpectation(Creature creature, out PaelsLegionVisualExpectation? expectation, out PaelsLegionRelic? relic)

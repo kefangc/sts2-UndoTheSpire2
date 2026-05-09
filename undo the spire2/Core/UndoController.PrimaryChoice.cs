@@ -1038,7 +1038,7 @@ public sealed partial class UndoController
         RebuildActionQueues(runState.Players);
 
         ActionSynchronizerCombatState targetSynchronizerState = combatState.CurrentSide == CombatSide.Player
-            && CombatManager.Instance.IsPlayPhase
+            && IsCombatPlayPhase()
                 ? ActionSynchronizerCombatState.PlayPhase
                 : ActionSynchronizerCombatState.NotPlayPhase;
         RestoreActionSynchronizationState(targetSynchronizerState, ActionKernelBoundaryKind.StableBoundary, out _);
@@ -1211,7 +1211,7 @@ public sealed partial class UndoController
 
                 if (IsSourceChoice(choiceSpec, typeof(HiddenDaggers)))
                 {
-                    CombatState? shivCombatState = detachedSourceCard?.CombatState ?? player.Creature.CombatState;
+                    CombatState? shivCombatState = detachedSourceCard?.CombatState as CombatState ?? player.Creature.CombatState as CombatState;
                     if (shivCombatState == null)
                         return false;
 
@@ -1271,7 +1271,7 @@ public sealed partial class UndoController
         {
             if (IsSourceChoice(choiceSpec, typeof(Nightmare)))
             {
-                NightmarePower nightmarePower = await PowerCmd.Apply<NightmarePower>(player.Creature, 3m, player.Creature, sourceCard, false);
+                NightmarePower nightmarePower = await PowerCmd.Apply<NightmarePower>(choiceContext, player.Creature, 3m, player.Creature, sourceCard, false);
                 nightmarePower.SetSelectedCard(selectedCard);
             }
             else if (IsSourceChoice(choiceSpec, typeof(HandTrick)))
@@ -1416,7 +1416,7 @@ public sealed partial class UndoController
         if (playedCard == null)
             return;
 
-        CombatState? combatState = playedCard.CombatState ?? player.Creature.CombatState;
+        CombatState? combatState = playedCard.CombatState as CombatState ?? player.Creature.CombatState as CombatState;
         CardPlay? pendingCardPlay = combatState == null ? null : TryResolveDetachedPendingCardPlay(combatState, playedCard);
 
         playedCard.InvokeExecutionFinished();
@@ -1590,14 +1590,14 @@ public sealed partial class UndoController
             else if (IsSourceChoice(choiceSpec, typeof(Scavenge)))
             {
                 int energyNextTurn = sourceCard?.DynamicVars.Energy.IntValue ?? 0;
-                await PowerCmd.Apply<EnergyNextTurnPower>(player.Creature, energyNextTurn, player.Creature, sourceCard, false);
+                await PowerCmd.Apply<EnergyNextTurnPower>(choiceContext, player.Creature, energyNextTurn, player.Creature, sourceCard, false);
             }
             else if (IsSourceChoice(choiceSpec, typeof(Brand)))
             {
                 NCombatRoom.Instance?.CombatVfxContainer.AddChildSafely(NGroundFireVfx.Create(player.Creature, VfxColor.Red));
                 SfxCmd.Play("event:/sfx/characters/attack_fire", 1f);
                 decimal strengthAmount = sourceCard?.DynamicVars.Strength.BaseValue ?? 0m;
-                await PowerCmd.Apply<StrengthPower>(player.Creature, strengthAmount, player.Creature, sourceCard, false);
+                await PowerCmd.Apply<StrengthPower>(choiceContext, player.Creature, strengthAmount, player.Creature, sourceCard, false);
             }
 
             if (shouldFinalizeDetachedPlayedCard)
@@ -1725,7 +1725,7 @@ public sealed partial class UndoController
         try
         {
             foreach (CardModel selectedCard in selectedCards)
-                await CardPileCmd.AddGeneratedCardToCombat(selectedCard, PileType.Hand, true, CardPilePosition.Bottom);
+                await CardPileCmd.AddGeneratedCardToCombat(selectedCard, PileType.Hand, player, CardPilePosition.Bottom);
 
             if (shouldFinalizeDetachedPlayedCard)
                 await FinalizeDetachedPlayedCardAsync(player, choiceContext, choiceSpec, sourceCard);

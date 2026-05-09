@@ -531,13 +531,13 @@ internal static class UndoCreatureStatusCodecRegistry
             return new UndoBoolCreatureStatusRuntimePayload
             {
                 CodecId = CodecId,
-                Value = monster.Creature.ShowsInfiniteHp
+                Value = monster.Creature.HpDisplay != HpDisplay.Normal
             };
         }
 
         public bool RestoreTyped(MonsterModel monster, UndoBoolCreatureStatusRuntimePayload state)
         {
-            monster.Creature.ShowsInfiniteHp = state.Value;
+            monster.Creature.HpDisplay = state.Value ? HpDisplay.InfiniteWithNumbers : HpDisplay.Normal;
             return true;
         }
 
@@ -580,17 +580,136 @@ internal static class UndoCreatureStatusCodecRegistry
         protected override string PropertyName => "PressureBuildupIdx";
     }
 
-    private sealed class DoormakerIsPortalOpenCodec : UndoCreatureStatusBoolCodec<Doormaker>
+    private sealed class DoormakerIsPortalOpenCodec : IUndoCreatureStatusCodec<UndoBoolCreatureStatusRuntimePayload>
     {
-        public override string CodecId => "status:Doormaker.IsPortalOpen";
+        public string CodecId => "status:Doormaker.IsPortalOpen";
 
-        protected override string PropertyName => "IsPortalOpen";
+        public bool CanHandle(MonsterModel monster)
+        {
+            return IsLegacyDoormaker(monster);
+        }
+
+        public UndoBoolCreatureStatusRuntimePayload? CaptureTyped(MonsterModel monster)
+        {
+            return TryReadBool(monster, "IsPortalOpen", out bool value)
+                ? new UndoBoolCreatureStatusRuntimePayload
+                {
+                    CodecId = CodecId,
+                    Value = value
+                }
+                : null;
+        }
+
+        public bool RestoreTyped(MonsterModel monster, UndoBoolCreatureStatusRuntimePayload state)
+        {
+            return TryWriteBool(monster, "IsPortalOpen", state.Value);
+        }
+
+        UndoCreatureStatusRuntimePayload? IUndoCreatureStatusCodec.Capture(MonsterModel monster)
+        {
+            return CaptureTyped(monster);
+        }
+
+        bool IUndoCreatureStatusCodec.Restore(MonsterModel monster, UndoCreatureStatusRuntimePayload state)
+        {
+            return state is UndoBoolCreatureStatusRuntimePayload typed && RestoreTyped(monster, typed);
+        }
     }
 
-    private sealed class DoormakerOriginalHpCodec : UndoCreatureStatusIntCodec<Doormaker>
+    private sealed class DoormakerOriginalHpCodec : IUndoCreatureStatusCodec<UndoIntCreatureStatusRuntimePayload>
     {
-        public override string CodecId => "status:Doormaker.OriginalHp";
+        public string CodecId => "status:Doormaker.OriginalHp";
 
-        protected override string PropertyName => "OriginalHp";
+        public bool CanHandle(MonsterModel monster)
+        {
+            return IsLegacyDoormaker(monster);
+        }
+
+        public UndoIntCreatureStatusRuntimePayload? CaptureTyped(MonsterModel monster)
+        {
+            return TryReadInt(monster, "OriginalHp", out int value)
+                ? new UndoIntCreatureStatusRuntimePayload
+                {
+                    CodecId = CodecId,
+                    Value = value
+                }
+                : null;
+        }
+
+        public bool RestoreTyped(MonsterModel monster, UndoIntCreatureStatusRuntimePayload state)
+        {
+            return TryWriteInt(monster, "OriginalHp", state.Value);
+        }
+
+        UndoCreatureStatusRuntimePayload? IUndoCreatureStatusCodec.Capture(MonsterModel monster)
+        {
+            return CaptureTyped(monster);
+        }
+
+        bool IUndoCreatureStatusCodec.Restore(MonsterModel monster, UndoCreatureStatusRuntimePayload state)
+        {
+            return state is UndoIntCreatureStatusRuntimePayload typed && RestoreTyped(monster, typed);
+        }
+    }
+
+    private static bool IsLegacyDoormaker(MonsterModel monster)
+    {
+        return string.Equals(monster.GetType().Name, "Doormaker", StringComparison.Ordinal);
+    }
+
+    private static bool TryReadBool(MonsterModel monster, string propertyName, out bool value)
+    {
+        value = false;
+        if (UndoReflectionUtil.FindProperty(monster.GetType(), propertyName)?.GetValue(monster) is bool propertyValue)
+        {
+            value = propertyValue;
+            return true;
+        }
+
+        string fieldName = '_' + char.ToLowerInvariant(propertyName[0]) + propertyName[1..];
+        if (UndoReflectionUtil.FindField(monster.GetType(), fieldName)?.GetValue(monster) is bool fieldValue)
+        {
+            value = fieldValue;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryWriteBool(MonsterModel monster, string propertyName, bool value)
+    {
+        if (UndoReflectionUtil.TrySetPropertyValue(monster, propertyName, value))
+            return true;
+
+        string fieldName = '_' + char.ToLowerInvariant(propertyName[0]) + propertyName[1..];
+        return UndoReflectionUtil.TrySetFieldValue(monster, fieldName, value);
+    }
+
+    private static bool TryReadInt(MonsterModel monster, string propertyName, out int value)
+    {
+        value = 0;
+        if (UndoReflectionUtil.FindProperty(monster.GetType(), propertyName)?.GetValue(monster) is int propertyValue)
+        {
+            value = propertyValue;
+            return true;
+        }
+
+        string fieldName = '_' + char.ToLowerInvariant(propertyName[0]) + propertyName[1..];
+        if (UndoReflectionUtil.FindField(monster.GetType(), fieldName)?.GetValue(monster) is int fieldValue)
+        {
+            value = fieldValue;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryWriteInt(MonsterModel monster, string propertyName, int value)
+    {
+        if (UndoReflectionUtil.TrySetPropertyValue(monster, propertyName, value))
+            return true;
+
+        string fieldName = '_' + char.ToLowerInvariant(propertyName[0]) + propertyName[1..];
+        return UndoReflectionUtil.TrySetFieldValue(monster, fieldName, value);
     }
 }
