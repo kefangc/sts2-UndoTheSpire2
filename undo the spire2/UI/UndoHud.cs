@@ -18,7 +18,7 @@ public partial class UndoHud : Control
         ProcessMode = Node.ProcessModeEnum.Inherit;
         TopLevel = true;
         ZAsRelative = false;
-        ZIndex = 5000;
+        ZIndex = 4095;
         SetAnchorsPreset(LayoutPreset.TopLeft);
 
         _undoButton = CreateButton("UndoButton", true);
