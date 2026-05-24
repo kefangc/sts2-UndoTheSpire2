@@ -38,3 +38,10 @@
 - 新的恢复路径优先放进 `Restore/`，不要继续堆进 `UndoController`。
 - `Patches/` 中只保留 patch 入口；复杂逻辑应委托给 `Core/` 或服务类。
 - 文件级注释只说明“这个文件负责什么”，复杂算法只在必要代码段附近写短注释。
+
+## Version Notes
+
+- Current Slay the Spire 2 decompiled source reference: `F:\projects\slay the spire2\106`.
+- Build references should point at the live game DLL via `$(Sts2DataDir)/sts2.dll`, not stale copied DLLs from old decompile folders.
+- STS2 v0.106 changed combat history entry constructors to include an `IEnumerable<Player> players` argument. When undo restore starts failing with `MissingMethodException` or `history_count_mismatch`, re-check constructors under `MegaCrit\sts2\Core\Combat\History\Entries`.
+- STS2 v0.106 also changed `NCardFlyVfx.Create` to take a `PileType` target instead of a raw `Vector2` target position.

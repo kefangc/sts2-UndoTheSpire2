@@ -308,8 +308,7 @@ public sealed partial class UndoController
 
                 Node vfxContainer = combatRoom.CombatVfxContainer;
                 cardNode.Reparent(vfxContainer, true);
-                Vector2 targetPosition = PileType.Discard.GetTargetPosition(cardNode);
-                NCardFlyVfx? flyVfx = NCardFlyVfx.Create(cardNode, targetPosition, true, me.Character.TrailPath);
+                NCardFlyVfx? flyVfx = NCardFlyVfx.Create(cardNode, PileType.Discard, true, me.Character.TrailPath);
                 if (flyVfx != null)
                     vfxContainer.AddChildSafely(flyVfx);
             }

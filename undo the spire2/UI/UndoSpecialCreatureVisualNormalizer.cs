@@ -528,6 +528,8 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
     private static void NormalizeTestSubject(TestSubject monster, NCreature creatureNode)
     {
+        ClearTestSubjectBurnVfx(monster);
+
         int respawns = ReadIntMonsterProperty(monster, "Respawns");
         int phaseIndex = Math.Clamp(respawns + 1, 1, 3);
         creatureNode.SetDefaultScaleTo(1f + respawns * 0.1f, 0f);
@@ -546,6 +548,15 @@ internal static class UndoSpecialCreatureVisualNormalizer
         }
 
         EnsureBaseAnimation(creatureNode, $"idle_loop{phaseIndex}", loop: true);
+    }
+
+    private static void ClearTestSubjectBurnVfx(TestSubject monster)
+    {
+        Control? backVfxContainer = monster.Creature.GetBackVfxContainer();
+        if (backVfxContainer == null || !GodotObject.IsInstanceValid(backVfxContainer))
+            return;
+
+        RemoveDescendantsOfType<NTestSubjectBurnVfx>(backVfxContainer);
     }
 
     private static void NormalizeDecimillipedeSegment(DecimillipedeSegment monster, NCreature creatureNode)
@@ -832,6 +843,22 @@ internal static class UndoSpecialCreatureVisualNormalizer
         }
 
         return null;
+    }
+
+    private static void RemoveDescendantsOfType<TNode>(Node root)
+        where TNode : Node
+    {
+        foreach (Node child in root.GetChildren().OfType<Node>().ToList())
+        {
+            if (child is TNode)
+            {
+                child.GetParent()?.RemoveChild(child);
+                child.QueueFreeSafely();
+                continue;
+            }
+
+            RemoveDescendantsOfType<TNode>(child);
+        }
     }
 
     private static void ApplyBoundsContainer(NCreature creatureNode, string boundsContainerName)

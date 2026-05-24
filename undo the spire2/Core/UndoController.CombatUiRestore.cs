@@ -1463,7 +1463,9 @@ public sealed partial class UndoController
         if (snapshotState?.Visible is bool visible)
             stateDisplay.Visible = visible;
         if (snapshotState?.Modulate is Color modulate)
-            stateDisplay.Modulate = modulate;
+            stateDisplay.Modulate = NormalizeSavestateCreatureStateDisplayModulate(modulate);
+        else
+            stateDisplay.Modulate = Colors.White;
 
         NHealthBar? healthBar = GetPrivateFieldValue<NHealthBar>(stateDisplay, "_healthBar");
         if (healthBar != null)
@@ -1471,6 +1473,14 @@ public sealed partial class UndoController
 
         InvokePrivateMethodExact(stateDisplay, "SetCreatureBounds", [typeof(Control)], creatureNode.Hitbox);
         InvokePrivateMethod(stateDisplay, "RefreshValues");
+    }
+
+    private static Color NormalizeSavestateCreatureStateDisplayModulate(Color modulate)
+    {
+        // Creature state displays drive the power container as a child. Restoring an in-flight
+        // dim/black tint here can leave rebuilt buff icons looking disabled even though the
+        // underlying power models do not encode that visual state.
+        return new Color(1f, 1f, 1f, modulate.A);
     }
 
     private static void NormalizeHealthBarLayout(NHealthBar healthBar, UndoCreatureHealthBarState? snapshotState)

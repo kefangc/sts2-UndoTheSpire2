@@ -1,4 +1,4 @@
-// 文件说明：把官方战斗历史编码为可保存的 undo 快照片段。
+// Encodes official combat history entries into undo snapshot state.
 using System.Collections;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Combat.History;
@@ -49,7 +49,17 @@ internal static class UndoCombatHistoryCodec
 
         Dictionary<string, Creature> creaturesByKey = UndoStableRefs.BuildCreatureKeyMap(GetHistoryCreatures(runState, combatState));
         foreach (UndoCombatHistoryEntryState state in historyState.Entries)
-            entries.Add(RestoreEntry(runState, creaturesByKey, history, state));
+        {
+            try
+            {
+                entries.Add(RestoreEntry(runState, creaturesByKey, history, state));
+            }
+            catch (Exception ex)
+            {
+                MainFile.Logger.Warn($"Skipping combat history entry {state.Kind} during undo restore: {ex.Message}");
+                UndoDebugLog.Write($"history entry restore skipped kind={state.Kind} reason={ex.GetType().Name}:{ex.Message}");
+            }
+        }
 
         if (UndoReflectionUtil.FindField(typeof(CombatHistory), "Changed")?.GetValue(history) is Action changed)
             changed();
@@ -58,6 +68,8 @@ internal static class UndoCombatHistoryCodec
     private static UndoCombatHistoryEntryState CaptureEntry(RunState runState, IReadOnlyList<Creature> creatures, CombatHistoryEntry entry)
     {
         CreatureRef actor = CaptureEntryActor(creatures, entry);
+        int roundNumber = ReadHistoryRoundNumber(entry);
+        CombatSide currentSide = ReadHistoryCurrentSide(entry);
 
         return entry switch
         {
@@ -65,16 +77,16 @@ internal static class UndoCombatHistoryCodec
             {
                 Kind = UndoCombatHistoryEntryKind.CardPlayStarted,
                 Actor = actor,
-                RoundNumber = value.RoundNumber,
-                CurrentSide = value.CurrentSide,
+                RoundNumber = roundNumber,
+                CurrentSide = currentSide,
                 CardPlay = CaptureCardPlay(runState, creatures, value.CardPlay)
             },
             CardPlayFinishedEntry value => new UndoCombatHistoryEntryState
             {
                 Kind = UndoCombatHistoryEntryKind.CardPlayFinished,
                 Actor = actor,
-                RoundNumber = value.RoundNumber,
-                CurrentSide = value.CurrentSide,
+                RoundNumber = roundNumber,
+                CurrentSide = currentSide,
                 CardPlay = CaptureCardPlay(runState, creatures, value.CardPlay),
                 BoolValue = value.WasEthereal
             },
@@ -82,8 +94,8 @@ internal static class UndoCombatHistoryCodec
             {
                 Kind = UndoCombatHistoryEntryKind.CardAfflicted,
                 Actor = actor,
-                RoundNumber = value.RoundNumber,
-                CurrentSide = value.CurrentSide,
+                RoundNumber = roundNumber,
+                CurrentSide = currentSide,
                 Card = UndoStableRefs.CaptureCardRef(runState, value.Card),
                 AfflictionId = value.Affliction.Id
             },
@@ -91,16 +103,16 @@ internal static class UndoCombatHistoryCodec
             {
                 Kind = UndoCombatHistoryEntryKind.CardDiscarded,
                 Actor = actor,
-                RoundNumber = value.RoundNumber,
-                CurrentSide = value.CurrentSide,
+                RoundNumber = roundNumber,
+                CurrentSide = currentSide,
                 Card = UndoStableRefs.CaptureCardRef(runState, value.Card)
             },
             CardDrawnEntry value => new UndoCombatHistoryEntryState
             {
                 Kind = UndoCombatHistoryEntryKind.CardDrawn,
                 Actor = actor,
-                RoundNumber = value.RoundNumber,
-                CurrentSide = value.CurrentSide,
+                RoundNumber = roundNumber,
+                CurrentSide = currentSide,
                 Card = UndoStableRefs.CaptureCardRef(runState, value.Card),
                 BoolValue = value.FromHandDraw
             },
@@ -108,16 +120,16 @@ internal static class UndoCombatHistoryCodec
             {
                 Kind = UndoCombatHistoryEntryKind.CardExhausted,
                 Actor = actor,
-                RoundNumber = value.RoundNumber,
-                CurrentSide = value.CurrentSide,
+                RoundNumber = roundNumber,
+                CurrentSide = currentSide,
                 Card = UndoStableRefs.CaptureCardRef(runState, value.Card)
             },
             CardGeneratedEntry value => new UndoCombatHistoryEntryState
             {
                 Kind = UndoCombatHistoryEntryKind.CardGenerated,
                 Actor = actor,
-                RoundNumber = value.RoundNumber,
-                CurrentSide = value.CurrentSide,
+                RoundNumber = roundNumber,
+                CurrentSide = currentSide,
                 Card = UndoStableRefs.CaptureCardRef(runState, value.Card),
                 BoolValue = value.Creator != null
             },
@@ -125,16 +137,16 @@ internal static class UndoCombatHistoryCodec
             {
                 Kind = UndoCombatHistoryEntryKind.CreatureAttacked,
                 Actor = actor,
-                RoundNumber = value.RoundNumber,
-                CurrentSide = value.CurrentSide,
+                RoundNumber = roundNumber,
+                CurrentSide = currentSide,
                 DamageResults = [.. value.DamageResults.Select(result => CaptureDamageResult(creatures, result))]
             },
             DamageReceivedEntry value => new UndoCombatHistoryEntryState
             {
                 Kind = UndoCombatHistoryEntryKind.DamageReceived,
                 Actor = actor,
-                RoundNumber = value.RoundNumber,
-                CurrentSide = value.CurrentSide,
+                RoundNumber = roundNumber,
+                CurrentSide = currentSide,
                 DamageResult = CaptureDamageResult(creatures, value.Result),
                 OtherCreature = UndoStableRefs.CaptureCreatureRef(creatures, value.Dealer),
                 CardSource = value.CardSource == null ? null : UndoStableRefs.CaptureCardRef(runState, value.CardSource)
@@ -143,8 +155,8 @@ internal static class UndoCombatHistoryCodec
             {
                 Kind = UndoCombatHistoryEntryKind.BlockGained,
                 Actor = actor,
-                RoundNumber = value.RoundNumber,
-                CurrentSide = value.CurrentSide,
+                RoundNumber = roundNumber,
+                CurrentSide = currentSide,
                 Props = value.Props,
                 IntValue = value.Amount,
                 CardPlay = value.CardPlay == null ? null : CaptureCardPlay(runState, creatures, value.CardPlay)
@@ -153,16 +165,16 @@ internal static class UndoCombatHistoryCodec
             {
                 Kind = UndoCombatHistoryEntryKind.EnergySpent,
                 Actor = actor,
-                RoundNumber = value.RoundNumber,
-                CurrentSide = value.CurrentSide,
+                RoundNumber = roundNumber,
+                CurrentSide = currentSide,
                 IntValue = value.Amount
             },
             MonsterPerformedMoveEntry value => new UndoCombatHistoryEntryState
             {
                 Kind = UndoCombatHistoryEntryKind.MonsterPerformedMove,
                 Actor = actor,
-                RoundNumber = value.RoundNumber,
-                CurrentSide = value.CurrentSide,
+                RoundNumber = roundNumber,
+                CurrentSide = currentSide,
                 MonsterMove = new UndoMonsterPerformedMoveState
                 {
                     Monster = actor,
@@ -178,16 +190,16 @@ internal static class UndoCombatHistoryCodec
             {
                 Kind = UndoCombatHistoryEntryKind.OrbChanneled,
                 Actor = actor,
-                RoundNumber = value.RoundNumber,
-                CurrentSide = value.CurrentSide,
+                RoundNumber = roundNumber,
+                CurrentSide = currentSide,
                 Orb = CaptureOrbRef(value.Orb)
             },
             PotionUsedEntry value => new UndoCombatHistoryEntryState
             {
                 Kind = UndoCombatHistoryEntryKind.PotionUsed,
                 Actor = actor,
-                RoundNumber = value.RoundNumber,
-                CurrentSide = value.CurrentSide,
+                RoundNumber = roundNumber,
+                CurrentSide = currentSide,
                 Potion = CapturePotionRef(value.Potion),
                 OtherCreature = UndoStableRefs.CaptureCreatureRef(creatures, value.Target)
             },
@@ -195,8 +207,8 @@ internal static class UndoCombatHistoryCodec
             {
                 Kind = UndoCombatHistoryEntryKind.PowerReceived,
                 Actor = actor,
-                RoundNumber = value.RoundNumber,
-                CurrentSide = value.CurrentSide,
+                RoundNumber = roundNumber,
+                CurrentSide = currentSide,
                 Power = UndoStableRefs.CapturePowerRef(creatures, value.Power),
                 OtherCreature = UndoStableRefs.CaptureCreatureRef(creatures, value.Applier),
                 DecimalValue = value.Amount
@@ -205,16 +217,16 @@ internal static class UndoCombatHistoryCodec
             {
                 Kind = UndoCombatHistoryEntryKind.StarsModified,
                 Actor = actor,
-                RoundNumber = value.RoundNumber,
-                CurrentSide = value.CurrentSide,
+                RoundNumber = roundNumber,
+                CurrentSide = currentSide,
                 IntValue = value.Amount
             },
             SummonedEntry value => new UndoCombatHistoryEntryState
             {
                 Kind = UndoCombatHistoryEntryKind.Summoned,
                 Actor = actor,
-                RoundNumber = value.RoundNumber,
-                CurrentSide = value.CurrentSide,
+                RoundNumber = roundNumber,
+                CurrentSide = currentSide,
                 IntValue = value.Amount
             },
             _ => throw new NotSupportedException($"Unsupported combat history entry type {entry.GetType().FullName}.")
@@ -229,6 +241,7 @@ internal static class UndoCombatHistoryCodec
     {
         Creature actor = UndoStableRefs.ResolveCreature(creaturesByKey, state.Actor.Key)
             ?? throw new InvalidOperationException($"Could not resolve history actor {state.Actor.Key}.");
+        IReadOnlyList<Player> historyPlayers = runState.Players;
 
         return state.Kind switch
         {
@@ -236,42 +249,49 @@ internal static class UndoCombatHistoryCodec
                 RestoreCardPlay(runState, creaturesByKey, state.CardPlay!),
                 state.RoundNumber,
                 state.CurrentSide,
-                history),
+                history,
+                historyPlayers),
             UndoCombatHistoryEntryKind.CardPlayFinished => RestoreCardPlayFinishedEntry(runState, creaturesByKey, history, state),
             UndoCombatHistoryEntryKind.CardAfflicted => new CardAfflictedEntry(
                 UndoStableRefs.ResolveCardRef(runState, state.Card!),
                 ModelDb.GetById<AfflictionModel>(state.AfflictionId!).ToMutable(),
                 state.RoundNumber,
                 state.CurrentSide,
-                history),
+                history,
+                historyPlayers),
             UndoCombatHistoryEntryKind.CardDiscarded => new CardDiscardedEntry(
                 UndoStableRefs.ResolveCardRef(runState, state.Card!),
                 state.RoundNumber,
                 state.CurrentSide,
-                history),
+                history,
+                historyPlayers),
             UndoCombatHistoryEntryKind.CardDrawn => new CardDrawnEntry(
                 UndoStableRefs.ResolveCardRef(runState, state.Card!),
                 state.RoundNumber,
                 state.CurrentSide,
                 state.BoolValue,
-                history),
+                history,
+                historyPlayers),
             UndoCombatHistoryEntryKind.CardExhausted => new CardExhaustedEntry(
                 UndoStableRefs.ResolveCardRef(runState, state.Card!),
                 state.RoundNumber,
                 state.CurrentSide,
-                history),
+                history,
+                historyPlayers),
             UndoCombatHistoryEntryKind.CardGenerated => new CardGeneratedEntry(
                 UndoStableRefs.ResolveCardRef(runState, state.Card!),
                 state.BoolValue ? actor.Player : null,
                 state.RoundNumber,
                 state.CurrentSide,
-                history),
+                history,
+                historyPlayers),
             UndoCombatHistoryEntryKind.CreatureAttacked => new CreatureAttackedEntry(
                 actor,
                 [.. state.DamageResults.Select(result => RestoreDamageResult(creaturesByKey, result))],
                 state.RoundNumber,
                 state.CurrentSide,
-                history),
+                history,
+                historyPlayers),
             UndoCombatHistoryEntryKind.DamageReceived => new DamageReceivedEntry(
                 RestoreDamageResult(creaturesByKey, state.DamageResult!),
                 actor,
@@ -279,7 +299,8 @@ internal static class UndoCombatHistoryCodec
                 state.CardSource == null ? null : UndoStableRefs.ResolveCardRef(runState, state.CardSource),
                 state.RoundNumber,
                 state.CurrentSide,
-                history),
+                history,
+                historyPlayers),
             UndoCombatHistoryEntryKind.BlockGained => new BlockGainedEntry(
                 state.IntValue,
                 state.Props,
@@ -287,42 +308,47 @@ internal static class UndoCombatHistoryCodec
                 actor,
                 state.RoundNumber,
                 state.CurrentSide,
-                history),
-            UndoCombatHistoryEntryKind.EnergySpent => new EnergySpentEntry(state.IntValue, actor.Player!, state.RoundNumber, state.CurrentSide, history),
+                history,
+                historyPlayers),
+            UndoCombatHistoryEntryKind.EnergySpent => new EnergySpentEntry(state.IntValue, actor.Player!, state.RoundNumber, state.CurrentSide, history, historyPlayers),
             UndoCombatHistoryEntryKind.MonsterPerformedMove => new MonsterPerformedMoveEntry(
                 actor.Monster!,
                 CreatePlaceholderMove(state.MonsterMove!.MoveId),
                 state.MonsterMove.Targets.Select(target => UndoStableRefs.ResolveCreature(creaturesByKey, target.Key)).Where(static target => target != null)!,
                 state.RoundNumber,
                 state.CurrentSide,
-                history),
+                history,
+                historyPlayers),
             UndoCombatHistoryEntryKind.OrbChanneled => new OrbChanneledEntry(
                 RestoreOrbRef(runState, state.Orb!),
                 state.RoundNumber,
                 state.CurrentSide,
-                history),
+                history,
+                historyPlayers),
             UndoCombatHistoryEntryKind.PotionUsed => new PotionUsedEntry(
                 RestorePotionRef(runState, state.Potion!),
                 UndoStableRefs.ResolveCreature(creaturesByKey, state.OtherCreature?.Key),
                 state.RoundNumber,
                 state.CurrentSide,
-                history),
+                history,
+                historyPlayers),
             UndoCombatHistoryEntryKind.PowerReceived => new PowerReceivedEntry(
                 RestorePowerRef(creaturesByKey, state.Power!),
                 state.DecimalValue,
                 UndoStableRefs.ResolveCreature(creaturesByKey, state.OtherCreature?.Key),
                 state.RoundNumber,
                 state.CurrentSide,
-                history),
-            UndoCombatHistoryEntryKind.StarsModified => new StarsModifiedEntry(state.IntValue, actor.Player!, state.RoundNumber, state.CurrentSide, history),
-            UndoCombatHistoryEntryKind.Summoned => new SummonedEntry(state.IntValue, actor.Player!, state.RoundNumber, state.CurrentSide, history),
+                history,
+                historyPlayers),
+            UndoCombatHistoryEntryKind.StarsModified => new StarsModifiedEntry(state.IntValue, actor.Player!, state.RoundNumber, state.CurrentSide, history, historyPlayers),
+            UndoCombatHistoryEntryKind.Summoned => new SummonedEntry(state.IntValue, actor.Player!, state.RoundNumber, state.CurrentSide, history, historyPlayers),
             _ => throw new NotSupportedException($"Unsupported combat history entry kind {state.Kind}.")
         };
     }
 
     private static CreatureRef CaptureEntryActor(IReadOnlyList<Creature> creatures, CombatHistoryEntry entry)
     {
-        CreatureRef? actor = UndoStableRefs.CaptureCreatureRef(creatures, entry.Actor);
+        CreatureRef? actor = UndoStableRefs.CaptureCreatureRef(creatures, ReadHistoryActor(entry));
         if (actor != null)
             return actor;
 
@@ -369,6 +395,28 @@ internal static class UndoCombatHistoryCodec
         }
 
         throw new InvalidOperationException($"Could not capture history actor for {entry.GetType().Name}.");
+    }
+
+    private static int ReadHistoryRoundNumber(CombatHistoryEntry entry)
+    {
+        return UndoReflectionUtil.TryGetPropertyValue(entry, "RoundNumber", out int roundNumber)
+            || UndoReflectionUtil.TryGetFieldValue(entry, "<RoundNumber>k__BackingField", out roundNumber)
+            ? roundNumber
+            : 0;
+    }
+
+    private static CombatSide ReadHistoryCurrentSide(CombatHistoryEntry entry)
+    {
+        return UndoReflectionUtil.TryGetPropertyValue(entry, "CurrentSide", out CombatSide currentSide)
+            || UndoReflectionUtil.TryGetFieldValue(entry, "<CurrentSide>k__BackingField", out currentSide)
+            ? currentSide
+            : CombatSide.Player;
+    }
+
+    private static Creature? ReadHistoryActor(CombatHistoryEntry entry)
+    {
+        return UndoReflectionUtil.GetPropertyValue<Creature>(entry, "Actor")
+            ?? UndoReflectionUtil.GetFieldValue<Creature>(entry, "<Actor>k__BackingField");
     }
 
     internal static UndoCardPlayState CaptureCardPlay(RunState runState, IReadOnlyList<Creature> creatures, CardPlay cardPlay)
@@ -454,7 +502,8 @@ internal static class UndoCombatHistoryCodec
             RestoreCardPlay(runState, creaturesByKey, state.CardPlay!),
             state.RoundNumber,
             state.CurrentSide,
-            history);
+            history,
+            runState.Players);
         UndoReflectionUtil.TrySetFieldValue(entry, "<WasEthereal>k__BackingField", state.BoolValue);
         return entry;
     }

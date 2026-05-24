@@ -56,3 +56,8 @@ Bug reports are much easier to investigate if you include:
 The log is typically located at:
 
 `C:\Users\YourUserName\AppData\Roaming\SlayTheSpire2\undo-the-spire2`
+
+## Developer Version Notes
+
+- Current decompiled source reference: `F:\projects\slay the spire2\106`
+- The project references the live game DLL through `$(Sts2DataDir)/sts2.dll`; update source notes and API checks when the game version changes.
