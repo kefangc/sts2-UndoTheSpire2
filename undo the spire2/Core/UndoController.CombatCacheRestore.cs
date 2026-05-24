@@ -3,6 +3,7 @@ using Godot;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Actions;
 using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Relics;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
@@ -256,6 +257,42 @@ public sealed partial class UndoController
 
         ClearNodeChildren(relicInventory);
         relicInventory.Initialize(runState);
+        NormalizeRelicInventoryIconVisualState(relicInventory);
         InvokePrivateMethod(relicInventory, "UpdateNavigation");
+    }
+
+    private static void NormalizeCurrentRelicInventoryIconVisualState()
+    {
+        NRelicInventory? relicInventory = NRun.Instance?.GlobalUi?.RelicInventory;
+        if (relicInventory == null)
+            return;
+
+        NormalizeRelicInventoryIconVisualState(relicInventory);
+    }
+
+    private static void NormalizeRelicInventoryIconVisualState(NRelicInventory relicInventory)
+    {
+        if (GetPrivateFieldValue<System.Collections.IList>(relicInventory, "_relicNodes") is not { } relicNodes)
+            return;
+
+        foreach (NRelicInventoryHolder holder in relicNodes.OfType<NRelicInventoryHolder>())
+        {
+            NRelic relic = holder.Relic;
+            TextureRect icon = relic.Icon;
+            icon.Visible = true;
+            icon.SelfModulate = Colors.White;
+
+            if (icon.Material is ShaderMaterial material)
+            {
+                ShaderMaterial materialCopy = (ShaderMaterial)material.Duplicate(true);
+                materialCopy.SetShaderParameter("pulse", relic.Model.Status == RelicStatus.Active ? 1 : 0);
+                materialCopy.SetShaderParameter("is_used", relic.Model.Status == RelicStatus.Disabled ? 1 : 0);
+                icon.Material = materialCopy;
+            }
+
+            relic.Model.UpdateTexture(icon);
+            InvokePrivateMethod(holder, "RefreshStatus");
+            InvokePrivateMethod(holder, "RefreshAmount");
+        }
     }
 }

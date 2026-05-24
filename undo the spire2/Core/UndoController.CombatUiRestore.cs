@@ -104,6 +104,7 @@ public sealed partial class UndoController
         NormalizeCombatInteractionState(combatState);
         bool topologyRebuilt = RebuildCombatCreatureNodesIfNeeded(combatState);
         RefreshCreaturePowerDisplays(combatState);
+        NormalizeCurrentRelicInventoryIconVisualState();
         ApplySnapshotCreatureNodeVisuals(combatState, snapshotState);
         RefreshCreatureStateDisplays(combatState, snapshotState);
         RefreshPlayerOrbManagers(combatState);
@@ -172,6 +173,7 @@ public sealed partial class UndoController
             return;
 
         RefreshCreaturePowerDisplays(combatState);
+        NormalizeCurrentRelicInventoryIconVisualState();
         Player? me = LocalContext.GetMe(combatState);
         if (me != null)
         {
@@ -197,6 +199,7 @@ public sealed partial class UndoController
             return;
 
         RefreshCreaturePowerDisplays(combatState);
+        NormalizeCurrentRelicInventoryIconVisualState();
         Player? me = LocalContext.GetMe(combatState);
         if (me != null)
         {
@@ -375,12 +378,32 @@ public sealed partial class UndoController
 
                 NPower powerNode = NPower.Create(power);
                 powerNode.Container = powerContainer;
+                NormalizePowerIconVisualState(powerNode);
                 powerNodes.Add(powerNode);
                 powerContainer.AddChildSafely(powerNode);
             }
 
             InvokePrivateMethod(powerContainer, "UpdatePositions");
         }
+    }
+
+    private static void NormalizePowerIconVisualState(NPower powerNode)
+    {
+        powerNode.Visible = true;
+        powerNode.Modulate = Colors.White;
+        if (GetPrivateFieldValue<TextureRect>(powerNode, "_icon") is not { } icon)
+            return;
+
+        icon.Visible = true;
+        icon.Modulate = Colors.White;
+        icon.SelfModulate = Colors.White;
+        icon.Scale = Vector2.One;
+        if (icon.Material is not ShaderMaterial material)
+            return;
+
+        ShaderMaterial materialCopy = (ShaderMaterial)material.Duplicate(true);
+        materialCopy.SetShaderParameter("pulse", 0);
+        icon.Material = materialCopy;
     }
 
     private static void RebuildOrbManagerNodes(NOrbManager orbManager, OrbQueue orbQueue)
