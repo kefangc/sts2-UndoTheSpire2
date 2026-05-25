@@ -62,3 +62,8 @@
 - [Undo the Spire (STS1)](https://github.com/filippobaroni/undo-the-spire)
 - [ModTemplate-StS2-master](https://github.com/Alchyr/ModTemplate-StS2)
 - [sts2-quickRestart-main](https://github.com/freude916/sts2-quickRestart)
+
+## Developer Version Notes
+
+- Current decompiled source reference: `F:\projects\slay the spire2\106`.
+- The project references the live game DLL through `$(Sts2DataDir)/sts2.dll`; update source notes and API checks when the game version changes.

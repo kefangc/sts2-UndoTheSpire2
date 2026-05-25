@@ -74,7 +74,7 @@
       <HintPath>$(Sts2DataDir)/0Harmony.dll</HintPath>
     </Reference>
     <Reference Include="sts2">
-      <HintPath>F:\programing\dnSpy\sts2.dll</HintPath>
+      <HintPath>$(Sts2DataDir)/sts2.dll</HintPath>
     </Reference>
 
     <AdditionalFiles Include="UndoTheSpire2\localization\**\*.json" />
