@@ -61,3 +61,4 @@ The log is typically located at:
 
 - Current decompiled source reference: `F:\projects\slay the spire2\106`
 - The project references the live game DLL through `$(Sts2DataDir)/sts2.dll`; update source notes and API checks when the game version changes.
+- Runtime-sensitive v0.106 cases are documented in `ARCHITECTURE.md`: Aeonglass/Wither fake upgrades and ThinkingAhead hand-selection replay.

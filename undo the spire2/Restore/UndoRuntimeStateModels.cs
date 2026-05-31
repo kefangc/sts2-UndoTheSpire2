@@ -31,6 +31,13 @@ internal sealed class UndoPairDecimalRuntimeComplexState : UndoComplexRuntimeSta
     public decimal SecondValue { get; init; }
 }
 
+internal sealed class UndoWitherRuntimeComplexState : UndoComplexRuntimeState
+{
+    public int FakeUpgradeLevel { get; init; }
+
+    public decimal DamageBaseValue { get; init; }
+}
+
 internal sealed class UndoSovereignBladeRuntimeComplexState : UndoComplexRuntimeState
 {
     public decimal CurrentDamage { get; init; }

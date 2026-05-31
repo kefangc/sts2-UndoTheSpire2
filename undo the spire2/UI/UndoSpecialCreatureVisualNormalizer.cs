@@ -1,5 +1,6 @@
 // 文件说明：修正特殊 creature 在恢复后的视觉表现。
 using Godot;
+using MegaCrit.Sts2.Core.Bindings.MegaSpine;
 using MegaCrit.Sts2.Core.Assets;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Commands;
@@ -14,6 +15,7 @@ using MegaCrit.Sts2.Core.Models.Relics;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Vfx;
+using MegaCrit.Sts2.Core.Nodes.Vfx.Backgrounds;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -60,6 +62,8 @@ internal static class UndoSpecialCreatureVisualNormalizer
 
         foreach (Creature creature in combatState.Creatures)
             RefreshCreatureStatusVisual(creature, combatRoom);
+
+        RefreshKaiserCrabBossBackground(combatState, combatRoom);
     }
 
     public static void RefreshSingle(Creature creature, NCombatRoom combatRoom, bool normalizeAnimation = true)
@@ -82,7 +86,7 @@ internal static class UndoSpecialCreatureVisualNormalizer
         {
             Creature creature = creatures[i];
             MonsterModel? monster = creature.Monster;
-            if (!IsLegacyDoormaker(monster))
+            if (monster == null || !IsLegacyDoormaker(monster))
                 continue;
 
             if (ReadBoolMonsterProperty(monster, "IsPortalOpen"))
@@ -187,6 +191,109 @@ internal static class UndoSpecialCreatureVisualNormalizer
             case WaterfallGiant waterfallGiant:
                 NormalizeWaterfallGiant(waterfallGiant, creatureNode);
                 break;
+        }
+    }
+
+    private static void RefreshKaiserCrabBossBackground(CombatState combatState, NCombatRoom combatRoom)
+    {
+        Crusher? crusher = combatState.Enemies.Select(static creature => creature.Monster).OfType<Crusher>().FirstOrDefault();
+        Rocket? rocket = combatState.Enemies.Select(static creature => creature.Monster).OfType<Rocket>().FirstOrDefault();
+        if (crusher == null && rocket == null)
+            return;
+
+        NKaiserCrabBossBackground? background = combatRoom.Background?.GetNodeOrNull<NKaiserCrabBossBackground>("%KaiserCrab");
+        if (background == null || !GodotObject.IsInstanceValid(background))
+            return;
+
+        background.Visible = true;
+        if (crusher != null)
+            UndoReflectionUtil.TrySetFieldValue(crusher, "_background", background);
+        if (rocket != null)
+            UndoReflectionUtil.TrySetFieldValue(rocket, "_background", background);
+
+        Node2D? visuals = background.GetNodeOrNull<Node2D>("%Visuals");
+        if (visuals == null)
+            return;
+
+        MegaAnimationState animationState = new MegaSprite(visuals).GetAnimationState();
+        bool crusherAlive = crusher?.Creature.IsAlive == true;
+        bool rocketAlive = rocket?.Creature.IsAlive == true;
+
+        SetKaiserCrabTrack(animationState, 0, crusherAlive || rocketAlive ? "body/idle_loop" : "body/die", crusherAlive || rocketAlive);
+        SetKaiserCrabTrack(animationState, 1, crusherAlive ? "left/idle_loop" : "left/die", crusherAlive);
+
+        string rightAnimation = GetKaiserCrabRightArmAnimation(rocket);
+        SetKaiserCrabTrack(animationState, 2, rightAnimation, rocketAlive);
+        SetKaiserCrabRightArmState(background, rightAnimation);
+
+        try
+        {
+            animationState.AddEmptyAnimation(3);
+        }
+        catch
+        {
+        }
+
+        ClearKaiserCrabTransientParticles(background);
+    }
+
+    private static string GetKaiserCrabRightArmAnimation(Rocket? rocket)
+    {
+        if (rocket?.Creature.IsAlive != true)
+            return "right/die";
+
+        return rocket.NextMove?.Id switch
+        {
+            "LASER_MOVE" => "right/charged_loop",
+            "RECHARGE_MOVE" => "right/rest_loop",
+            _ => "right/idle_loop"
+        };
+    }
+
+    private static void SetKaiserCrabTrack(MegaAnimationState animationState, int trackIndex, string animationName, bool loop)
+    {
+        if (string.Equals(TryGetTrackAnimationName(animationState, trackIndex), animationName, StringComparison.Ordinal))
+            return;
+
+        try
+        {
+            animationState.SetAnimation(animationName, loop, trackIndex);
+        }
+        catch (Exception ex)
+        {
+            UndoDebugLog.Write($"kaiser_crab_track_restore_failed track={trackIndex} animation={animationName} error={ex.GetType().Name}");
+        }
+    }
+
+    private static void SetKaiserCrabRightArmState(NKaiserCrabBossBackground background, string rightAnimation)
+    {
+        System.Reflection.FieldInfo? field = UndoReflectionUtil.FindField(background.GetType(), "_rightArmState");
+        if (field == null)
+            return;
+
+        int stateValue = rightAnimation switch
+        {
+            "right/charged_loop" => 1,
+            "right/rest_loop" => 2,
+            _ => 0
+        };
+        field.SetValue(background, Enum.ToObject(field.FieldType, stateValue));
+    }
+
+    private static void ClearKaiserCrabTransientParticles(Node root)
+    {
+        foreach (GpuParticles2D particles in EnumerateDescendants(root).OfType<GpuParticles2D>())
+            particles.Emitting = false;
+    }
+
+    private static IEnumerable<Node> EnumerateDescendants(Node root)
+    {
+        foreach (Node child in root.GetChildren().OfType<Node>())
+        {
+            yield return child;
+
+            foreach (Node descendant in EnumerateDescendants(child))
+                yield return descendant;
         }
     }
 

@@ -24,13 +24,13 @@ internal static class UndoSovereignBladeDiagnosticsPatch
 
     [HarmonyPatch(typeof(SovereignBlade), nameof(SovereignBlade.AfterCardChangedPiles))]
     [HarmonyPrefix]
-    private static void AfterCardChangedPilesPrefix(SovereignBlade __instance, CardModel card, PileType oldPileType, AbstractModel? source)
+    private static void AfterCardChangedPilesPrefix(SovereignBlade __instance, CardModel card, PileType oldPileType, AbstractModel? clonedBy)
     {
         if (!ReferenceEquals(__instance, card))
             return;
 
         UndoDebugLog.Write(
-            $"sovereign_blade_after_card_changed_piles card={__instance.Id.Entry} oldPile={oldPileType} newPile={__instance.Pile?.Type.ToString() ?? "null"} createdThroughForge={__instance.CreatedThroughForge} source={source?.GetType().Name ?? "null"} restoring={MainFile.Controller.IsRestoring}");
+            $"sovereign_blade_after_card_changed_piles card={__instance.Id.Entry} oldPile={oldPileType} newPile={__instance.Pile?.Type.ToString() ?? "null"} createdThroughForge={__instance.CreatedThroughForge} clonedBy={clonedBy?.GetType().Name ?? "null"} restoring={MainFile.Controller.IsRestoring}");
     }
 
     [HarmonyPatch(typeof(NSovereignBladeVfx), nameof(NSovereignBladeVfx.Forge))]

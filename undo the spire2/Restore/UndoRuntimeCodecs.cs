@@ -19,6 +19,7 @@ internal static partial class UndoRuntimeStateCodecRegistry
     private static readonly IReadOnlyList<IUndoCardRuntimeCodec> CardCodecs =
     [
         new UpMySleeveCardCodec(),
+        new WitherCardCodec(),
         new DamageGrowthCardCodec(),
         new SovereignBladeCardCodec()
     ];

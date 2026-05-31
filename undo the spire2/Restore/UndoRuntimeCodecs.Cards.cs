@@ -29,6 +29,38 @@ internal static partial class UndoRuntimeStateCodecRegistry
         }
     }
 
+    private sealed class WitherCardCodec : UndoCardRuntimeCodec<UndoWitherRuntimeComplexState>
+    {
+        public override string CodecId => "card:Wither.fakeUpgrade";
+
+        public override bool CanHandle(CardModel card)
+        {
+            return card is Wither;
+        }
+
+        public override UndoWitherRuntimeComplexState? Capture(CardModel card, UndoRuntimeCaptureContext context)
+        {
+            if (card is not Wither wither)
+                return null;
+
+            return new UndoWitherRuntimeComplexState
+            {
+                CodecId = CodecId,
+                FakeUpgradeLevel = UndoReflectionUtil.FindField(wither.GetType(), "_fakeUpgradeLevel")?.GetValue(wither) is int value ? value : 0,
+                DamageBaseValue = wither.DynamicVars.Damage.BaseValue
+            };
+        }
+
+        public override void Restore(CardModel card, UndoWitherRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            if (card is not Wither wither)
+                return;
+
+            UndoReflectionUtil.TrySetFieldValue(wither, "_fakeUpgradeLevel", state.FakeUpgradeLevel);
+            wither.DynamicVars.Damage.BaseValue = state.DamageBaseValue;
+        }
+    }
+
     private sealed class DamageGrowthCardCodec : UndoCardRuntimeCodec<UndoPairDecimalRuntimeComplexState>
     {
         public override string CodecId => "card:DamageGrowth.baseAndAccumulator";

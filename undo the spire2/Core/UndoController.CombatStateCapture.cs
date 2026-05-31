@@ -203,6 +203,8 @@ public sealed partial class UndoController
                     ? turnsUntilSummonable
                     : null,
                 CallForBackupCount = monster is TwoTailedRat twoTailedRatWithBackup ? twoTailedRatWithBackup.CallForBackupCount : null,
+                AeonglassAdditionalStrength = CaptureAeonglassAdditionalStrength(monster),
+                AeonglassWitherUpgradeCount = CaptureAeonglassWitherUpgradeCount(monster),
                 FabricatorLastSpawnedMonsterId = CaptureFabricatorLastSpawnedMonsterId(monster),
                 LivingFogBloatAmount = CaptureLivingFogBloatAmount(monster),
                 ToughEggIsHatched = CaptureToughEggIsHatched(monster),
@@ -214,6 +216,22 @@ public sealed partial class UndoController
         }
 
         return states;
+    }
+
+    private static int? CaptureAeonglassAdditionalStrength(MonsterModel monster)
+    {
+        return monster is Aeonglass
+            && FindField(monster.GetType(), "_additionalStrength")?.GetValue(monster) is int additionalStrength
+                ? additionalStrength
+                : null;
+    }
+
+    private static int? CaptureAeonglassWitherUpgradeCount(MonsterModel monster)
+    {
+        return monster is Aeonglass
+            && FindField(monster.GetType(), "_witherUpgradeCount")?.GetValue(monster) is int witherUpgradeCount
+                ? witherUpgradeCount
+                : null;
     }
 
     private static ModelId? CaptureFabricatorLastSpawnedMonsterId(MonsterModel monster)
