@@ -45,3 +45,14 @@
 - Build references should point at the live game DLL via `$(Sts2DataDir)/sts2.dll`, not stale copied DLLs from old decompile folders.
 - STS2 v0.106 changed combat history entry constructors to include an `IEnumerable<Player> players` argument. When undo restore starts failing with `MissingMethodException` or `history_count_mismatch`, re-check constructors under `MegaCrit\sts2\Core\Combat\History\Entries`.
 - STS2 v0.106 also changed `NCardFlyVfx.Create` to take a `PileType` target instead of a raw `Vector2` target position.
+
+## Runtime Restore Watchlist
+
+- Aeonglass/Wither:
+  - Official source: `MegaCrit\sts2\Core\Models\Monsters\Aeonglass.cs` and `MegaCrit\sts2\Core\Models\Cards\Wither.cs`.
+  - Aeonglass stores private `_additionalStrength` and `_witherUpgradeCount`. `INCREASING_INTENSITY_MOVE` fake-upgrades existing Withers, increments `_witherUpgradeCount`, then applies that count again to future generated Withers.
+  - Undo must restore both the monster counters and each Wither's private `_fakeUpgradeLevel` plus damage base value. Restoring only pile/card membership makes old Withers lose their displayed upgrade count and new Withers inherit the wrong count.
+- ThinkingAhead:
+  - Official source: `MegaCrit\sts2\Core\Models\Cards\ThinkingAhead.cs`.
+  - The card draws 2, opens a hand selection, then moves the selected card to the top of the draw pile.
+  - Treat it like Glimmer for primary-choice replay: after undoing back to the selection screen, choosing a different card must use the custom hand-to-draw-top execution path instead of synthesized default branch replay.

@@ -1083,7 +1083,8 @@ public sealed partial class UndoController
 
     private static bool IsHandAddToDrawTopChoiceSource(UndoChoiceSpec choiceSpec)
     {
-        return IsSourceChoice(choiceSpec, typeof(Glimmer));
+        return IsSourceChoice(choiceSpec, typeof(Glimmer))
+            || IsSourceChoice(choiceSpec, typeof(ThinkingAhead));
     }
 
     private static bool IsSimpleGridAddToHandChoiceSource(UndoChoiceSpec choiceSpec)

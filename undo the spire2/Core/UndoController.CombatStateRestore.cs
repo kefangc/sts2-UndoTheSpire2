@@ -1456,6 +1456,15 @@ public sealed partial class UndoController
                 twoTailedRat.CallForBackupCount = callForBackupCount;
         }
 
+        if (monster is Aeonglass aeonglass)
+        {
+            if (state.AeonglassAdditionalStrength is int additionalStrength)
+                UndoReflectionUtil.TrySetFieldValue(aeonglass, "_additionalStrength", additionalStrength);
+
+            if (state.AeonglassWitherUpgradeCount is int witherUpgradeCount)
+                UndoReflectionUtil.TrySetFieldValue(aeonglass, "_witherUpgradeCount", witherUpgradeCount);
+        }
+
         RestoreSummonMonsterRuntimeState(monster, moveStateMachine, state);
 
         UndoReflectionUtil.TrySetPropertyValue(monster, "SpawnedThisTurn", state.SpawnedThisTurn);

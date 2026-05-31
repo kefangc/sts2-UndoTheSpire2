@@ -39,6 +39,10 @@ internal sealed class UndoMonsterState
 
     public int? CallForBackupCount { get; init; }
 
+    public int? AeonglassAdditionalStrength { get; init; }
+
+    public int? AeonglassWitherUpgradeCount { get; init; }
+
     public ModelId? FabricatorLastSpawnedMonsterId { get; init; }
 
     public int? LivingFogBloatAmount { get; init; }
