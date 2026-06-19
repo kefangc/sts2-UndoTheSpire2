@@ -108,7 +108,7 @@ internal static partial class UndoScenarioExecutor
                 continue;
 
             NCreature? creatureNode = combatRoom.GetCreatureNode(creature);
-            string? animationName = creatureNode?.Visuals?.SpineBody?.GetAnimationState()?.GetCurrent(0)?.GetAnimation()?.GetName();
+            string? animationName = creatureNode?.Visuals?.SpineBody?.GetAnimationState()?.GetCurrent(0)?.GetAnimationName();
             bool passed = animationName != null && expectation.AcceptableAnimationNames.Contains(animationName, StringComparer.Ordinal);
             return new UndoScenarioAssertionResult
             {

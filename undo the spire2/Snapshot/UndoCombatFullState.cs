@@ -14,7 +14,7 @@ namespace UndoTheSpire2;
 
 internal sealed class UndoCombatFullState
 {
-    public const int CurrentSchemaVersion = 19;
+    public const int CurrentSchemaVersion = 20;
 
     public UndoCombatFullState(
         NetFullCombatState fullState,
@@ -45,7 +45,8 @@ internal sealed class UndoCombatFullState
         IReadOnlyList<UndoAudioLoopState>? audioLoopStates = null,
         int schemaVersion = CurrentSchemaVersion,
         IReadOnlyList<UndoChoiceBranchState>? choiceBranchStates = null,
-        IReadOnlyList<UndoPendingCombatRewardState>? pendingCombatRewardStates = null)
+        IReadOnlyList<UndoPendingCombatRewardState>? pendingCombatRewardStates = null,
+        IReadOnlyList<UndoPlayerCombatTurnState>? playerCombatTurnStates = null)
     {
         SchemaVersion = schemaVersion;
         FullState = fullState;
@@ -65,6 +66,7 @@ internal sealed class UndoCombatFullState
         PlayerOrbStates = playerOrbStates ?? [];
         PlayerDeckStates = playerDeckStates ?? [];
         PlayerPotionStates = playerPotionStates ?? [];
+        PlayerCombatTurnStates = playerCombatTurnStates ?? [];
         AudioLoopStates = audioLoopStates ?? [];
         ChoiceBranchStates = choiceBranchStates ?? [];
         PendingCombatRewardStates = pendingCombatRewardStates ?? [];
@@ -121,6 +123,8 @@ internal sealed class UndoCombatFullState
     public IReadOnlyList<UndoPlayerDeckState> PlayerDeckStates { get; }
 
     public IReadOnlyList<UndoPlayerPotionState> PlayerPotionStates { get; }
+
+    public IReadOnlyList<UndoPlayerCombatTurnState> PlayerCombatTurnStates { get; }
 
     public IReadOnlyList<UndoAudioLoopState> AudioLoopStates { get; }
 
@@ -186,6 +190,13 @@ internal sealed class UndoPlayerPotionState
     public required ulong PlayerNetId { get; init; }
 
     public required IReadOnlyList<UndoPotionSlotState> Slots { get; init; }
+}
+
+internal sealed class UndoPlayerCombatTurnState
+{
+    public required ulong PlayerNetId { get; init; }
+
+    public required int TurnNumber { get; init; }
 }
 
 internal sealed class UndoPotionSlotState

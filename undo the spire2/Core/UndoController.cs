@@ -65,6 +65,13 @@ public sealed partial class UndoController
 
     private static readonly MethodInfo? NotifyCombatStateChangedMethod =
         typeof(CombatStateTracker).GetMethod("NotifyCombatStateChanged", BindingFlags.Instance | BindingFlags.NonPublic);
+    private static readonly PropertyInfo? RunManagerIsSingleplayerOrFakeMultiplayerProperty =
+        typeof(RunManager).GetProperty("IsSingleplayerOrFakeMultiplayer", BindingFlags.Instance | BindingFlags.Public)
+        ?? typeof(RunManager).GetProperty("IsSinglePlayerOrFakeMultiplayer", BindingFlags.Instance | BindingFlags.Public);
+    private static readonly MethodInfo? RunManagerSetUpSavedSingleplayerMethod =
+        typeof(RunManager).GetMethod("SetUpSavedSingleplayer", BindingFlags.Instance | BindingFlags.Public, [typeof(RunState), typeof(SerializableRun)])
+        ?? typeof(RunManager).GetMethod("SetUpSavedSinglePlayer", BindingFlags.Instance | BindingFlags.Public, [typeof(RunState), typeof(SerializableRun)]);
+    private static bool _runManagerSingleplayerFallbackWarningWritten;
     private static readonly object RestoreTailTaskLock = new();
     private static readonly List<Task> RestoreTailTasks = [];
     private readonly object _operationLeaseLock = new();
@@ -566,7 +573,7 @@ public sealed partial class UndoController
 
     public void OnCombatReplayInitialized(SerializableRun initialRun)
     {
-        if (!RunManager.Instance.IsSinglePlayerOrFakeMultiplayer)
+        if (!IsSingleplayerOrFakeMultiplayerRun())
             return;
 
         if (IsRestoring)
@@ -600,7 +607,7 @@ public sealed partial class UndoController
         if (_combatReplay != null)
             return true;
 
-        if (!RunManager.Instance.IsSinglePlayerOrFakeMultiplayer || !CombatManager.Instance.IsInProgress || IsRestoring)
+        if (!IsSingleplayerOrFakeMultiplayerRun() || !CombatManager.Instance.IsInProgress || IsRestoring)
             return false;
 
         try
@@ -735,7 +742,7 @@ public sealed partial class UndoController
 
     private static bool ShouldTrackLocalChoice(Player player)
     {
-        if (!RunManager.Instance.IsSinglePlayerOrFakeMultiplayer)
+        if (!IsSingleplayerOrFakeMultiplayerRun())
             return false;
 
         ulong? localNetId = LocalContext.NetId;
@@ -1623,7 +1630,7 @@ public sealed partial class UndoController
         await NGame.Instance!.Transition.FadeOut();
 
         RunManager.Instance.CleanUp();
-        RunManager.Instance.SetUpSavedSinglePlayer(runState, initialRun);
+        await SetUpSavedSingleplayerAsync(runState, initialRun);
         NGame.Instance.ReactionContainer.InitializeNetworking(new NetSingleplayerGameService());
 
         await PreloadManager.LoadRunAssets(runState.Players.Select(static player => player.Character));
@@ -2464,9 +2471,56 @@ public sealed partial class UndoController
 
     private static bool IsSinglePlayerCombat()
     {
-        return RunManager.Instance.IsSinglePlayerOrFakeMultiplayer
+        return IsSingleplayerOrFakeMultiplayerRun()
             && CombatManager.Instance.IsInProgress
             && NGame.Instance?.CurrentRunNode != null;
+    }
+
+    private static bool IsSingleplayerOrFakeMultiplayerRun()
+    {
+        try
+        {
+            RunManager runManager = RunManager.Instance;
+            if (RunManagerIsSingleplayerOrFakeMultiplayerProperty?.GetValue(runManager) is bool value)
+                return value;
+
+            object? isInProgress = typeof(RunManager).GetProperty("IsInProgress", BindingFlags.Instance | BindingFlags.Public)?.GetValue(runManager);
+            if (isInProgress is bool inProgress && !inProgress)
+                return false;
+
+            object? netService = typeof(RunManager).GetProperty("NetService", BindingFlags.Instance | BindingFlags.Public)?.GetValue(runManager);
+            object? netGameType = netService?.GetType().GetProperty("Type", BindingFlags.Instance | BindingFlags.Public)?.GetValue(netService);
+            return string.Equals(netGameType?.ToString(), "Singleplayer", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex)
+        {
+            if (!_runManagerSingleplayerFallbackWarningWritten)
+            {
+                _runManagerSingleplayerFallbackWarningWritten = true;
+                UndoDebugLog.Write($"singleplayer run check failed: {ex.GetType().Name}: {ex.Message}");
+            }
+
+            return false;
+        }
+    }
+
+    private static async Task SetUpSavedSingleplayerAsync(RunState runState, SerializableRun save)
+    {
+        if (RunManagerSetUpSavedSingleplayerMethod == null)
+            throw new MissingMethodException(typeof(RunManager).FullName, "SetUpSavedSingleplayer");
+
+        object? result;
+        try
+        {
+            result = RunManagerSetUpSavedSingleplayerMethod.Invoke(RunManager.Instance, [runState, save]);
+        }
+        catch (TargetInvocationException ex) when (ex.InnerException != null)
+        {
+            throw ex.InnerException;
+        }
+
+        if (result is Task task)
+            await task;
     }
 
     private static bool IsSupportedChoiceAnchorKind(UndoChoiceSpec? choiceSpec)
@@ -3406,7 +3460,7 @@ public sealed partial class UndoController
     {
         return !IsRestoring
             && EnsureCombatReplayInitialized()
-            && RunManager.Instance.IsSinglePlayerOrFakeMultiplayer
+            && IsSingleplayerOrFakeMultiplayerRun()
             && CombatManager.Instance.IsInProgress;
     }
 

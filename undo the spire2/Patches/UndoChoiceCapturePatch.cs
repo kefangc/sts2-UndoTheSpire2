@@ -60,4 +60,21 @@ public static class UndoChoiceCapturePatch
     {
         MainFile.Controller.RegisterPendingSimpleGridChoice(player, cardsIn, prefs, context.LastInvolvedModel);
     }
+
+    [HarmonyPatch(typeof(CardSelectCmd), nameof(CardSelectCmd.FromCombatPile), typeof(PlayerChoiceContext), typeof(CardPile), typeof(Player), typeof(CardSelectorPrefs), typeof(Func<CardModel, bool>))]
+    [HarmonyPrefix]
+    public static void CombatPilePrefix(PlayerChoiceContext context, CardPile pile, Player player, CardSelectorPrefs prefs, Func<CardModel, bool> filter)
+    {
+        if (CombatManager.Instance.IsEnding || !pile.IsCombatPile)
+            return;
+
+        List<CardModel> eligibleCards = [.. pile.Cards.Where(filter)];
+        if (eligibleCards.Count == 0)
+            return;
+
+        if (!prefs.RequireManualConfirmation && eligibleCards.Count <= prefs.MinSelect)
+            return;
+
+        MainFile.Controller.RegisterPendingSimpleGridChoice(player, eligibleCards, prefs, context.LastInvolvedModel);
+    }
 }

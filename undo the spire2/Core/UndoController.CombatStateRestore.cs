@@ -108,7 +108,8 @@ public sealed partial class UndoController
                 playerState,
                 GetCardCostStatesForPlayer(snapshotState, player.NetId),
                 GetCardRuntimeStatesForPlayer(snapshotState, player.NetId),
-                playerOrbState);
+                playerOrbState,
+                GetPlayerCombatTurnState(snapshotState, player.NetId));
         }
     }
 
@@ -322,7 +323,8 @@ public sealed partial class UndoController
         NetFullCombatState.PlayerState playerState,
         IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardCostState>>? cardCostStatesByPile,
         IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardRuntimeState>>? cardRuntimeStatesByPile,
-        UndoPlayerOrbState? playerOrbState)
+        UndoPlayerOrbState? playerOrbState,
+        UndoPlayerCombatTurnState? playerCombatTurnState)
     {
         PlayerCombatState playerCombatState = player.PlayerCombatState
             ?? throw new InvalidOperationException($"Player {player.NetId} has no combat state.");
@@ -370,8 +372,26 @@ public sealed partial class UndoController
 
         playerCombatState.Energy = playerState.energy;
         playerCombatState.Stars = playerState.stars;
+        RestorePlayerTurnNumber(player, playerCombatState, playerCombatTurnState);
         RestoreOrbQueue(player, playerState, playerOrbState);
         playerCombatState.RecalculateCardValues();
+    }
+
+    private static void RestorePlayerTurnNumber(Player player, PlayerCombatState playerCombatState, UndoPlayerCombatTurnState? playerCombatTurnState)
+    {
+        if (playerCombatTurnState == null)
+            return;
+
+        int before = playerCombatState.TurnNumber;
+        int target = Math.Max(1, playerCombatTurnState.TurnNumber);
+        if (!TrySetPrivateAutoPropertyBackingField(playerCombatState, "TurnNumber", target))
+            SetPrivatePropertyValue(playerCombatState, "TurnNumber", target);
+
+        if (before != playerCombatState.TurnNumber)
+        {
+            UndoDebugLog.Write(
+                $"player_turn_number_restored player={player.NetId} before={before} after={playerCombatState.TurnNumber}");
+        }
     }
 
     private static void RestoreCardState(RunState runState, CombatState combatState, CardModel card, NetFullCombatState.CardState cardState, UndoCardCostState? costState, UndoCardRuntimeState? runtimeState)
@@ -430,6 +450,11 @@ public sealed partial class UndoController
     private static UndoPlayerPotionState? GetPlayerPotionState(UndoCombatFullState snapshotState, ulong playerNetId)
     {
         return snapshotState.PlayerPotionStates.FirstOrDefault(state => state.PlayerNetId == playerNetId);
+    }
+
+    private static UndoPlayerCombatTurnState? GetPlayerCombatTurnState(UndoCombatFullState snapshotState, ulong playerNetId)
+    {
+        return snapshotState.PlayerCombatTurnStates.FirstOrDefault(state => state.PlayerNetId == playerNetId);
     }
 
     private static IReadOnlyDictionary<PileType, IReadOnlyList<UndoCardRuntimeState>>? GetCardRuntimeStatesForPlayer(UndoCombatFullState snapshotState, ulong playerNetId)
