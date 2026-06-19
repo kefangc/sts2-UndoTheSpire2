@@ -107,6 +107,7 @@ public sealed partial class UndoController
         NormalizeCurrentRelicInventoryIconVisualState();
         ApplySnapshotCreatureNodeVisuals(combatState, snapshotState);
         RefreshCreatureStateDisplays(combatState, snapshotState);
+        NormalizeCreaturePowerIconVisualStates(combatState, "initial");
         RefreshPlayerOrbManagers(combatState);
         RestoreThievingHopperDisplayCards(combatState);
         NCombatRoom? combatRoom = NCombatRoom.Instance;
@@ -146,6 +147,7 @@ public sealed partial class UndoController
             UndoSpecialCreatureVisualNormalizer.Refresh(combatState, combatRoom);
             ApplySnapshotPresentationState(combatState, snapshotState);
             RefreshCreatureStateDisplays(combatState, snapshotState);
+            NormalizeCreaturePowerIconVisualStates(combatState, "post_presentation");
         }
         await WaitOneFrameAsync();
         if (NCombatRoom.Instance != null)
@@ -157,6 +159,8 @@ public sealed partial class UndoController
             UndoSpecialCreatureVisualNormalizer.Refresh(combatState, NCombatRoom.Instance);
             ApplySnapshotPresentationState(combatState, snapshotState);
             RefreshCreatureStateDisplays(combatState, snapshotState);
+            NormalizeCreaturePowerIconVisualStates(combatState, "post_frame");
+            NormalizeCurrentRelicInventoryIconVisualState();
         }
 
         if (runState != null)
@@ -404,6 +408,58 @@ public sealed partial class UndoController
         ShaderMaterial materialCopy = (ShaderMaterial)material.Duplicate(true);
         materialCopy.SetShaderParameter("pulse", 0);
         icon.Material = materialCopy;
+    }
+
+    private static void NormalizeCreaturePowerIconVisualStates(CombatState combatState, string reason)
+    {
+        NCombatRoom? combatRoom = NCombatRoom.Instance;
+        if (combatRoom == null)
+            return;
+
+        int corrected = 0;
+        foreach (Creature creature in combatState.Creatures)
+        {
+            NCreature? creatureNode = combatRoom.GetCreatureNode(creature);
+            if (creatureNode == null)
+                continue;
+
+            NCreatureStateDisplay? stateDisplay = GetPrivateFieldValue<NCreatureStateDisplay>(creatureNode, "_stateDisplay");
+            NPowerContainer? powerContainer = stateDisplay == null
+                ? null
+                : GetPrivateFieldValue<NPowerContainer>(stateDisplay, "_powerContainer");
+            System.Collections.IList? powerNodes = powerContainer == null
+                ? null
+                : GetPrivateFieldValue<System.Collections.IList>(powerContainer, "_powerNodes");
+            if (powerContainer == null || powerNodes == null)
+                continue;
+
+            Color containerModulate = powerContainer.Modulate;
+            if (IsVisibleDarkColor(containerModulate))
+                corrected++;
+
+            powerContainer.Modulate = new Color(1f, 1f, 1f, Math.Max(containerModulate.A, 1f));
+            foreach (NPower powerNode in powerNodes.OfType<NPower>())
+            {
+                if (IsVisibleDarkColor(powerNode.Modulate))
+                    corrected++;
+
+                if (GetPrivateFieldValue<TextureRect>(powerNode, "_icon") is { } icon
+                    && (IsVisibleDarkColor(icon.Modulate) || IsVisibleDarkColor(icon.SelfModulate)))
+                {
+                    corrected++;
+                }
+
+                NormalizePowerIconVisualState(powerNode);
+            }
+        }
+
+        if (corrected > 0)
+            UndoDebugLog.Write($"power_icon_visual_state_normalized reason={reason} corrected={corrected}");
+    }
+
+    private static bool IsVisibleDarkColor(Color color)
+    {
+        return color.A > 0.05f && color.R < 0.2f && color.G < 0.2f && color.B < 0.2f;
     }
 
     private static void RebuildOrbManagerNodes(NOrbManager orbManager, OrbQueue orbQueue)
@@ -1474,6 +1530,8 @@ public sealed partial class UndoController
 
         GetPrivateFieldValue<Tween>(stateDisplay, "_showHideTween")?.Kill();
         SetPrivateFieldValue(stateDisplay, "_showHideTween", null);
+        GetPrivateFieldValue<Tween>(stateDisplay, "_hoverTween")?.Kill();
+        SetPrivateFieldValue(stateDisplay, "_hoverTween", null);
 
         if (snapshotState?.OriginalPosition is Vector2 snapshotOriginalPosition)
             SetPrivateFieldValue(stateDisplay, "_originalPosition", snapshotOriginalPosition);
@@ -1493,6 +1551,9 @@ public sealed partial class UndoController
         NHealthBar? healthBar = GetPrivateFieldValue<NHealthBar>(stateDisplay, "_healthBar");
         if (healthBar != null)
             NormalizeHealthBarLayout(healthBar, snapshotState?.HealthBarState);
+
+        if (GetPrivateFieldValue<NPowerContainer>(stateDisplay, "_powerContainer") is { } powerContainer)
+            powerContainer.Modulate = Colors.White;
 
         InvokePrivateMethodExact(stateDisplay, "SetCreatureBounds", [typeof(Control)], creatureNode.Hitbox);
         InvokePrivateMethod(stateDisplay, "RefreshValues");

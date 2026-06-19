@@ -27,6 +27,7 @@ internal static partial class UndoRuntimeStateCodecRegistry
     private static readonly IReadOnlyList<IUndoPowerRuntimeCodec> PowerCodecs =
     [
         new AutomationCardsLeftPowerCodec(),
+        new WitheringPresenceCardsLeftPowerCodec(),
         new CardsPlayedThisTurnPowerCodec(),
         new JugglingAttacksPlayedPowerCodec(),
         new PowerIntFieldsCodec<DarkEmbracePower>("power:DarkEmbracePower.etherealCount", true, "etherealCount"),

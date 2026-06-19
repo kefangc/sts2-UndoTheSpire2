@@ -206,7 +206,7 @@ internal sealed class UndoChoiceSpec
         return Kind switch
         {
             UndoChoiceKind.ChooseACard => TryMapIndexResult(result.indexes),
-            UndoChoiceKind.SimpleGridSelection => TryMapIndexResult(result.indexes),
+            UndoChoiceKind.SimpleGridSelection => TryMapSimpleGridReplayResult(result),
             UndoChoiceKind.HandSelection => TryMapCombatCardResult(result.combatCards),
             _ => null
         };
@@ -287,6 +287,15 @@ internal sealed class UndoChoiceSpec
             return null;
 
         return new UndoChoiceResultKey(indexes);
+    }
+
+    private UndoChoiceResultKey? TryMapSimpleGridReplayResult(NetPlayerChoiceResult result)
+    {
+        UndoChoiceResultKey? indexResult = TryMapIndexResult(result.indexes);
+        if (indexResult != null)
+            return indexResult;
+
+        return TryMapCombatCardResult(result.combatCards);
     }
 
     private UndoChoiceResultKey? TryMapCombatCardResult(List<NetCombatCard>? combatCards)

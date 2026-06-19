@@ -275,10 +275,19 @@ public sealed partial class UndoController
         if (GetPrivateFieldValue<System.Collections.IList>(relicInventory, "_relicNodes") is not { } relicNodes)
             return;
 
+        int corrected = 0;
         foreach (NRelicInventoryHolder holder in relicNodes.OfType<NRelicInventoryHolder>())
         {
+            GetPrivateFieldValue<Tween>(holder, "_hoverTween")?.Kill();
+            SetPrivateFieldValue(holder, "_hoverTween", null);
+            GetPrivateFieldValue<Tween>(holder, "_obtainedTween")?.Kill();
+            SetPrivateFieldValue(holder, "_obtainedTween", null);
+
             NRelic relic = holder.Relic;
             TextureRect icon = relic.Icon;
+            if (IsVisibleDarkColor(icon.Modulate) || IsVisibleDarkColor(icon.SelfModulate))
+                corrected++;
+
             icon.Visible = true;
             icon.SelfModulate = Colors.White;
 
@@ -291,8 +300,13 @@ public sealed partial class UndoController
             }
 
             relic.Model.UpdateTexture(icon);
+            if (!relic.Model.IsMelted)
+                icon.SelfModulate = Colors.White;
             InvokePrivateMethod(holder, "RefreshStatus");
             InvokePrivateMethod(holder, "RefreshAmount");
         }
+
+        if (corrected > 0)
+            UndoDebugLog.Write($"relic_icon_visual_state_normalized corrected={corrected}");
     }
 }

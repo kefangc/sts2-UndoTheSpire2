@@ -17,6 +17,11 @@ internal sealed class UndoBoolRuntimeComplexState : UndoComplexRuntimeState
     public bool Value { get; init; }
 }
 
+internal sealed class UndoDecimalRuntimeComplexState : UndoComplexRuntimeState
+{
+    public decimal Value { get; init; }
+}
+
 internal sealed class UndoPairIntRuntimeComplexState : UndoComplexRuntimeState
 {
     public int FirstValue { get; init; }

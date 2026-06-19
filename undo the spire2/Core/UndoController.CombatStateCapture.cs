@@ -95,8 +95,18 @@ public sealed partial class UndoController
             playerOrbStates: CapturePlayerOrbStates(runState),
             playerDeckStates: CapturePlayerDeckStates(runState),
             playerPotionStates: CapturePlayerPotionStates(runState),
+            playerCombatTurnStates: CapturePlayerCombatTurnStates(runState),
             audioLoopStates: UndoAudioLoopTracker.CaptureSnapshot(),
             pendingCombatRewardStates: UndoDelayedCombatRewardService.CaptureSnapshot());
+    }
+
+    private static IReadOnlyList<UndoPlayerCombatTurnState> CapturePlayerCombatTurnStates(RunState runState)
+    {
+        return [.. runState.Players.Select(player => new UndoPlayerCombatTurnState
+        {
+            PlayerNetId = player.NetId,
+            TurnNumber = player.PlayerCombatState?.TurnNumber ?? 1
+        })];
     }
 
     private static IReadOnlyList<UndoPlayerOrbState> CapturePlayerOrbStates(RunState runState)

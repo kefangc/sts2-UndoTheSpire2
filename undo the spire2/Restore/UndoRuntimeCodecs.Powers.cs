@@ -44,6 +44,39 @@ internal static partial class UndoRuntimeStateCodecRegistry
         }
     }
 
+    private sealed class WitheringPresenceCardsLeftPowerCodec : UndoPowerRuntimeCodec<UndoDecimalRuntimeComplexState>
+    {
+        private const string CardsLeftKey = "CardsLeft";
+
+        public override string CodecId => "power:WitheringPresencePower.cardsLeft";
+
+        public override bool CanHandle(PowerModel power)
+        {
+            return power is WitheringPresencePower && power.DynamicVars.ContainsKey(CardsLeftKey);
+        }
+
+        public override UndoDecimalRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
+        {
+            if (!power.DynamicVars.ContainsKey(CardsLeftKey))
+                return null;
+
+            return new UndoDecimalRuntimeComplexState
+            {
+                CodecId = CodecId,
+                Value = power.DynamicVars[CardsLeftKey].BaseValue
+            };
+        }
+
+        public override void Restore(PowerModel power, UndoDecimalRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            if (!power.DynamicVars.ContainsKey(CardsLeftKey))
+                return;
+
+            power.DynamicVars[CardsLeftKey].BaseValue = state.Value;
+            InvokeDisplayAmountChanged(power);
+        }
+    }
+
     private sealed class CardsPlayedThisTurnPowerCodec : UndoPowerRuntimeCodec<UndoIntRuntimeComplexState>
     {
         public override string CodecId => "power:CardsPlayedThisTurn.counter";

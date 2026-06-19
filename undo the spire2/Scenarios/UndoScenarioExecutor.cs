@@ -504,7 +504,7 @@ internal static partial class UndoScenarioExecutor
             if (creatureNode == null || creature.Monster == null)
                 continue;
 
-            string? animation = creatureNode.Visuals?.SpineBody?.GetAnimationState()?.GetCurrent(0)?.GetAnimation()?.GetName();
+            string? animation = creatureNode.Visuals?.SpineBody?.GetAnimationState()?.GetCurrent(0)?.GetAnimationName();
             bool nodeVisible = creatureNode.Visible && creatureNode.Visuals.Visible && creatureNode.Body.Visible;
             bool hasSleepingVfx = UndoReflectionUtil.FindProperty(creature.Monster.GetType(), "SleepingVfx")?.GetValue(creature.Monster) != null
                 || UndoReflectionUtil.FindField(creature.Monster.GetType(), "_sleepingVfx")?.GetValue(creature.Monster) != null;
