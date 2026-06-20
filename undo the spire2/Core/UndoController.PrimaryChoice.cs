@@ -114,13 +114,13 @@ public sealed partial class UndoController
             primarySession.RememberBranch(branchSnapshot.ChoiceResultKey, branchSnapshot);
         bool shouldHandleSelectionAsync =
             choiceSpec.Kind is UndoChoiceKind.ChooseACard or UndoChoiceKind.SimpleGridSelection
-            || (choiceSpec.Kind == UndoChoiceKind.HandSelection
-                && pausedChoiceState != null
-                && !ShouldUseSyntheticEntropyChoice(pausedChoiceState, choiceSpec));
+            || (choiceSpec.Kind == UndoChoiceKind.HandSelection && pausedChoiceState != null);
         if (shouldHandleSelectionAsync)
         {
             Task<UndoChoiceResultKey?> selectionTask;
-            if (pausedChoiceState != null)
+            if (pausedChoiceState != null && ShouldUseSyntheticEntropyChoice(pausedChoiceState, choiceSpec))
+                selectionTask = ShowSyntheticChoiceSelectionAsync(primarySession);
+            else if (pausedChoiceState != null)
                 selectionTask = UndoActionCodecRegistry.RestoreAsync(pausedChoiceState, runState);
             else
                 selectionTask = RestorePrimaryChoiceAnchorAsync(choiceSpec, runState);
@@ -1406,7 +1406,7 @@ public sealed partial class UndoController
                 ClearPendingHandChoiceSourceTracking();
                 UndoDebugLog.Write("official_transform_hand_choice_reconcile_suppressed source=Guards");
                 await EnsureSelectedHandCardsHaveUiNodesForOfficialTransformAsync(player, selectedCards);
-                MoveSelectedHandCardsToEndForOfficialSelection(player, selectedCards);
+                MoveSelectedHandCardsToEndForOfficialSelection(player, selectedCards, "Guards");
                 foreach (CardModel selectedCard in selectedCards)
                 {
                     CardModel transformedCard = combatState.CreateCard<MinionSacrifice>(player);
@@ -1432,7 +1432,7 @@ public sealed partial class UndoController
         return true;
     }
 
-    private static void MoveSelectedHandCardsToEndForOfficialSelection(Player player, IReadOnlyList<CardModel> selectedCards)
+    private static void MoveSelectedHandCardsToEndForOfficialSelection(Player player, IReadOnlyList<CardModel> selectedCards, string sourceName)
     {
         if (selectedCards.Count == 0)
             return;
@@ -1446,7 +1446,7 @@ public sealed partial class UndoController
         }
 
         UndoDebugLog.Write(
-            $"official_hand_choice_model_order_replayed source=Guards"
+            $"official_hand_choice_model_order_replayed source={sourceName}"
             + $" selected={string.Join(",", selectedCards.Select(static card => card.Id.Entry))}"
             + $" before={before}"
             + $" after={FormatHandOrderForLog(handPile)}");
@@ -1719,6 +1719,8 @@ public sealed partial class UndoController
             selectedCards.Add(handCards[handIndex]);
         }
 
+        await EnsureSelectedHandCardsHaveUiNodesForOfficialTransformAsync(player, selectedCards);
+        MoveSelectedHandCardsToEndForOfficialSelection(player, selectedCards, "EntropyPower");
         foreach (CardModel selectedCard in selectedCards)
             await CardCmd.TransformToRandom(selectedCard, player.RunState.Rng.CombatCardSelection, CardPreviewStyle.HorizontalLayout);
 

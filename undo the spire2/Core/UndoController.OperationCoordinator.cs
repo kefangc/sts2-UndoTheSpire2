@@ -45,7 +45,7 @@ public sealed partial class UndoController
         StartTrackedOperation(UndoOperationLane.HandChoiceUiReconcile, stage, operation);
     }
 
-    private void CancelAllTrackedOperations(string reason)
+    private bool CancelAllTrackedOperations(string reason)
     {
         List<UndoOperationLease> leases;
         lock (_operationLeaseLock)
@@ -56,6 +56,8 @@ public sealed partial class UndoController
 
         foreach (UndoOperationLease lease in leases)
             CancelTrackedOperationLease(lease, reason);
+
+        return leases.Any(static lease => lease.Lane == UndoOperationLane.HistoryMove);
     }
 
     private void StartTrackedOperation(UndoOperationLane lane, string stage, Func<UndoOperationLease, Task> operation)

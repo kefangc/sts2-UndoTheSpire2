@@ -141,8 +141,36 @@ public sealed partial class UndoController
 
     public void OnCombatUiDeactivated(NCombatUi combatUi)
     {
-        CancelAllTrackedOperations("combat_ui_deactivated");
+        bool canceledHistoryMove = CancelAllTrackedOperations("combat_ui_deactivated");
+        if (canceledHistoryMove)
+            AbortActiveRestoreAfterCancellation("combat_ui_deactivated");
         NotifyStateChanged();
+    }
+
+    private void AbortActiveRestoreAfterCancellation(string reason)
+    {
+        if (!IsRestoring
+            && _syntheticChoiceSession == null
+            && _pendingHandChoiceUiState == null
+            && _pendingPlayActionSnapshots.Count == 0
+            && _deferredActionSnapshots.Count == 0)
+        {
+            return;
+        }
+
+        UndoDebugLog.Write(
+            $"restore_state_aborted reason={reason}"
+            + $" restoring={IsRestoring}"
+            + $" pendingHandChoice={_pendingHandChoiceUiState?.Source.GetType().Name ?? "null"}"
+            + $" syntheticChoice={_syntheticChoiceSession?.ChoiceSpec.SourceModelTypeName ?? "null"}");
+        IsRestoring = false;
+        _queuedHistoryMoves = 0;
+        _syntheticChoiceSession = null;
+        ClearPendingHandChoiceSourceTracking(canceled: true);
+        DiscardDeferredActionSnapshots(reason);
+        DiscardPendingPlayActionSnapshots(reason);
+        ReleaseDetachedHandDiscardExecutionGuard(reason);
+        ClearTurnTransitionBlock();
     }
 
     private UndoSnapshot? GetVisibleSnapshot(LinkedList<UndoSnapshot> snapshots)
