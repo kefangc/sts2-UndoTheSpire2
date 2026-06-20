@@ -166,8 +166,25 @@ public sealed partial class UndoController
         if (runState != null)
             RebuildPotionContainer(runState);
 
+        _ = TaskHelper.RunSafely(GuardCombatIconVisualStateAfterRestoreAsync(combatState));
         NotifyCombatStateChanged("UndoRefreshCombatUiAsync");
         UndoDebugLog.Write($"combat_ui_refresh_perf {UndoPerformanceDiagnostics.FormatDelta(perfBaseline)}");
+    }
+
+    private static async Task GuardCombatIconVisualStateAfterRestoreAsync(CombatState combatState)
+    {
+        for (int frame = 0; frame < 240; frame++)
+        {
+            await WaitOneFrameAsync();
+            if (NCombatRoom.Instance == null)
+                return;
+
+            if (frame < 30 || frame % 15 == 0)
+            {
+                NormalizeCreaturePowerIconVisualStates(combatState, "guard", logDiagnostics: false);
+                NormalizeCurrentRelicInventoryIconVisualState(logDiagnostics: false);
+            }
+        }
     }
 
     private static async Task RefreshCombatUiAfterHandDiscardChoiceAsync(CombatState combatState, bool officialHandChoiceUiSettled)
@@ -386,6 +403,7 @@ public sealed partial class UndoController
                 NormalizePowerIconVisualState(powerNode);
                 powerNodes.Add(powerNode);
                 powerContainer.AddChildSafely(powerNode);
+                NormalizePowerIconVisualState(powerNode);
                 LogPowerIconDiagnostic(powerNode, "rebuild_after_add");
             }
 
@@ -393,17 +411,30 @@ public sealed partial class UndoController
         }
     }
 
-    private static void NormalizePowerIconVisualState(NPower powerNode)
+    internal static void NormalizePowerIconVisualState(NPower powerNode)
     {
+        ClearObjectTweenFields(powerNode);
         powerNode.Visible = true;
         powerNode.Modulate = Colors.White;
+        powerNode.SelfModulate = Colors.White;
         if (GetPrivateFieldValue<TextureRect>(powerNode, "_icon") is not { } icon)
             return;
 
         icon.Visible = true;
+        icon.Position = Vector2.Zero;
+        icon.Texture = powerNode.Model.Icon;
         icon.Modulate = Colors.White;
         icon.SelfModulate = Colors.White;
         icon.Scale = Vector2.One;
+
+        if (GetPrivateFieldValue<CpuParticles2D>(powerNode, "_powerFlash") is { } powerFlash)
+        {
+            powerFlash.Texture = powerNode.Model.BigIcon;
+            powerFlash.Emitting = false;
+            powerFlash.Modulate = Colors.White;
+            powerFlash.SelfModulate = Colors.White;
+        }
+
         if (icon.Material is not ShaderMaterial material)
             return;
 
@@ -412,7 +443,7 @@ public sealed partial class UndoController
         icon.Material = materialCopy;
     }
 
-    private static void NormalizeCreaturePowerIconVisualStates(CombatState combatState, string reason)
+    private static void NormalizeCreaturePowerIconVisualStates(CombatState combatState, string reason, bool logDiagnostics = true)
     {
         NCombatRoom? combatRoom = NCombatRoom.Instance;
         if (combatRoom == null)
@@ -435,14 +466,21 @@ public sealed partial class UndoController
             if (powerContainer == null || powerNodes == null)
                 continue;
 
+            if (stateDisplay != null)
+            {
+                ClearTween(stateDisplay, "_hoverTween");
+                SetPrivateFieldValue(stateDisplay, "_hoverTween", null);
+            }
+
             Color containerModulate = powerContainer.Modulate;
-            if (IsVisibleDarkColor(containerModulate))
+            if (IsVisibleDarkColor(containerModulate) || IsVisibleDarkColor(powerContainer.SelfModulate))
                 corrected++;
 
-            powerContainer.Modulate = new Color(1f, 1f, 1f, Math.Max(containerModulate.A, 1f));
+            powerContainer.Modulate = Colors.White;
+            powerContainer.SelfModulate = Colors.White;
             foreach (NPower powerNode in powerNodes.OfType<NPower>())
             {
-                if (IsVisibleDarkColor(powerNode.Modulate))
+                if (IsVisibleDarkColor(powerNode.Modulate) || IsVisibleDarkColor(powerNode.SelfModulate))
                     corrected++;
 
                 if (GetPrivateFieldValue<TextureRect>(powerNode, "_icon") is { } icon
@@ -451,9 +489,11 @@ public sealed partial class UndoController
                     corrected++;
                 }
 
-                LogPowerIconDiagnostic(powerNode, $"normalize_{reason}_before");
+                if (logDiagnostics)
+                    LogPowerIconDiagnostic(powerNode, $"normalize_{reason}_before");
                 NormalizePowerIconVisualState(powerNode);
-                LogPowerIconDiagnostic(powerNode, $"normalize_{reason}_after");
+                if (logDiagnostics)
+                    LogPowerIconDiagnostic(powerNode, $"normalize_{reason}_after");
             }
         }
 

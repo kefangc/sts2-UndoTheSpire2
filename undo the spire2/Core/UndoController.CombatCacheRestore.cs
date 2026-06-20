@@ -261,16 +261,16 @@ public sealed partial class UndoController
         InvokePrivateMethod(relicInventory, "UpdateNavigation");
     }
 
-    private static void NormalizeCurrentRelicInventoryIconVisualState()
+    private static void NormalizeCurrentRelicInventoryIconVisualState(bool logDiagnostics = true)
     {
         NRelicInventory? relicInventory = NRun.Instance?.GlobalUi?.RelicInventory;
         if (relicInventory == null)
             return;
 
-        NormalizeRelicInventoryIconVisualState(relicInventory);
+        NormalizeRelicInventoryIconVisualState(relicInventory, logDiagnostics);
     }
 
-    private static void NormalizeRelicInventoryIconVisualState(NRelicInventory relicInventory)
+    private static void NormalizeRelicInventoryIconVisualState(NRelicInventory relicInventory, bool logDiagnostics = true)
     {
         if (GetPrivateFieldValue<System.Collections.IList>(relicInventory, "_relicNodes") is not { } relicNodes)
             return;
@@ -278,37 +278,63 @@ public sealed partial class UndoController
         int corrected = 0;
         foreach (NRelicInventoryHolder holder in relicNodes.OfType<NRelicInventoryHolder>())
         {
-            GetPrivateFieldValue<Tween>(holder, "_hoverTween")?.Kill();
-            SetPrivateFieldValue(holder, "_hoverTween", null);
-            GetPrivateFieldValue<Tween>(holder, "_obtainedTween")?.Kill();
-            SetPrivateFieldValue(holder, "_obtainedTween", null);
-
             NRelic relic = holder.Relic;
             TextureRect icon = relic.Icon;
-            LogRelicIconDiagnostic(relic, "normalize_before");
-            if (IsVisibleDarkColor(icon.Modulate) || IsVisibleDarkColor(icon.SelfModulate))
+            if (logDiagnostics)
+                LogRelicIconDiagnostic(relic, "normalize_before");
+            if (IsVisibleDarkColor(icon.Modulate) || IsVisibleDarkColor(icon.SelfModulate)
+                || IsVisibleDarkColor(holder.Modulate) || IsVisibleDarkColor(holder.SelfModulate)
+                || IsVisibleDarkColor(relic.Modulate) || IsVisibleDarkColor(relic.SelfModulate))
                 corrected++;
 
-            icon.Visible = true;
-            icon.SelfModulate = Colors.White;
-
-            if (icon.Material is ShaderMaterial material)
-            {
-                ShaderMaterial materialCopy = (ShaderMaterial)material.Duplicate(true);
-                materialCopy.SetShaderParameter("pulse", relic.Model.Status == RelicStatus.Active ? 1 : 0);
-                materialCopy.SetShaderParameter("is_used", relic.Model.Status == RelicStatus.Disabled ? 1 : 0);
-                icon.Material = materialCopy;
-            }
-
-            relic.Model.UpdateTexture(icon);
-            if (!relic.Model.IsMelted)
-                icon.SelfModulate = Colors.White;
+            NormalizeRelicInventoryHolderVisualState(holder);
             InvokePrivateMethod(holder, "RefreshStatus");
             InvokePrivateMethod(holder, "RefreshAmount");
-            LogRelicIconDiagnostic(relic, "normalize_after");
+            NormalizeRelicInventoryHolderVisualState(holder);
+            if (logDiagnostics)
+                LogRelicIconDiagnostic(relic, "normalize_after");
         }
 
         if (corrected > 0)
             UndoDebugLog.Write($"relic_icon_visual_state_normalized corrected={corrected}");
+    }
+
+    internal static void NormalizeRelicInventoryHolderVisualState(NRelicInventoryHolder holder)
+    {
+        GetPrivateFieldValue<Tween>(holder, "_hoverTween")?.Kill();
+        SetPrivateFieldValue(holder, "_hoverTween", null);
+        GetPrivateFieldValue<Tween>(holder, "_obtainedTween")?.Kill();
+        SetPrivateFieldValue(holder, "_obtainedTween", null);
+        holder.Visible = true;
+        holder.Modulate = Colors.White;
+        holder.SelfModulate = Colors.White;
+
+        NormalizeRelicIconVisualState(holder.Relic);
+    }
+
+    internal static void NormalizeRelicIconVisualState(NRelic relic)
+    {
+        relic.Visible = true;
+        relic.Modulate = Colors.White;
+        relic.SelfModulate = Colors.White;
+
+        TextureRect icon = relic.Icon;
+        icon.Visible = true;
+        icon.Scale = Vector2.One;
+        icon.SelfModulate = relic.Model.IsMelted ? Colors.DarkRed : Colors.White;
+        icon.Modulate = relic.Model.Status == RelicStatus.Disabled ? new Color("#808080") : Colors.White;
+
+        if (icon.Material is ShaderMaterial material)
+        {
+            ShaderMaterial materialCopy = (ShaderMaterial)material.Duplicate(true);
+            materialCopy.SetShaderParameter("pulse", relic.Model.Status == RelicStatus.Active ? 1 : 0);
+            materialCopy.SetShaderParameter("is_used", relic.Model.Status == RelicStatus.Disabled ? 1 : 0);
+            materialCopy.SetShaderParameter("is_wax", relic.Model.IsWax ? 1 : 0);
+            icon.Material = materialCopy;
+        }
+
+        relic.Model.UpdateTexture(icon);
+        if (!relic.Model.IsMelted)
+            icon.SelfModulate = Colors.White;
     }
 }
