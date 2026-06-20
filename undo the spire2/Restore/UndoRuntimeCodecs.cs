@@ -39,6 +39,7 @@ internal static partial class UndoRuntimeStateCodecRegistry
         new AfterimagePlayedCardsPowerCodec(),
         new MonologuePlayedCardsPowerCodec(),
         new MonologueDynamicVarsPowerCodec(),
+        new SlowDynamicVarsPowerCodec(),
         new NightmareSelectedCardPowerCodec(),
         new DampenPowerCodec(),
         new RevivePendingPowerCodec(),

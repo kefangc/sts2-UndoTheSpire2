@@ -422,6 +422,56 @@ internal static partial class UndoRuntimeStateCodecRegistry
         }
     }
 
+    private sealed class SlowDynamicVarsPowerCodec : UndoPowerRuntimeCodec<UndoNamedDecimalFieldsRuntimeComplexState>
+    {
+        private const string SlowAmountKey = "SlowAmount";
+
+        public override string CodecId => "power:SlowPower.dynamicVars";
+
+        public override bool CanHandle(PowerModel power)
+        {
+            return power is SlowPower && power.DynamicVars.ContainsKey(SlowAmountKey);
+        }
+
+        public override UndoNamedDecimalFieldsRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
+        {
+            if (!power.DynamicVars.ContainsKey(SlowAmountKey))
+                return null;
+
+            return new UndoNamedDecimalFieldsRuntimeComplexState
+            {
+                CodecId = CodecId,
+                Entries =
+                [
+                    new UndoNamedDecimalRuntimeEntry
+                    {
+                        Name = SlowAmountKey,
+                        Value = power.DynamicVars[SlowAmountKey].BaseValue
+                    }
+                ]
+            };
+        }
+
+        public override void Restore(PowerModel power, UndoNamedDecimalFieldsRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            bool restoredAny = false;
+            foreach (UndoNamedDecimalRuntimeEntry entry in state.Entries)
+            {
+                if (!string.Equals(entry.Name, SlowAmountKey, StringComparison.Ordinal)
+                    || !power.DynamicVars.ContainsKey(entry.Name))
+                {
+                    continue;
+                }
+
+                power.DynamicVars[entry.Name].BaseValue = entry.Value;
+                restoredAny = true;
+            }
+
+            if (restoredAny)
+                InvokeDisplayAmountChanged(power);
+        }
+    }
+
     private sealed class NightmareSelectedCardPowerCodec : UndoPowerRuntimeCodec<UndoDetachedCardRuntimeComplexState>
     {
         public override string CodecId => "power:NightmarePower.selectedCard";
