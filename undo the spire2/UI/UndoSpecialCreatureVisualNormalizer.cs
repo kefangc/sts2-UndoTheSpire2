@@ -12,6 +12,7 @@ using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Monsters;
 using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Models.Relics;
+using MegaCrit.Sts2.Core.Nodes.Audio;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Vfx;
@@ -64,6 +65,7 @@ internal static class UndoSpecialCreatureVisualNormalizer
             RefreshCreatureStatusVisual(creature, combatRoom);
 
         RefreshKaiserCrabBossBackground(combatState, combatRoom);
+        RefreshSurroundedPlayerFacing(combatState, combatRoom);
     }
 
     public static void RefreshSingle(Creature creature, NCombatRoom combatRoom, bool normalizeAnimation = true)
@@ -284,6 +286,44 @@ internal static class UndoSpecialCreatureVisualNormalizer
     {
         foreach (GpuParticles2D particles in EnumerateDescendants(root).OfType<GpuParticles2D>())
             particles.Emitting = false;
+    }
+
+    private static void RefreshSurroundedPlayerFacing(CombatState combatState, NCombatRoom combatRoom)
+    {
+        foreach (Player player in combatState.Players)
+        {
+            SurroundedPower? surrounded = player.Creature.GetPower<SurroundedPower>();
+            if (surrounded == null)
+                continue;
+
+            bool changed = false;
+            changed |= RefreshSurroundedCreatureFacing(player.Creature, surrounded.Facing, combatRoom);
+            foreach (Creature pet in player.Creature.Pets)
+                changed |= RefreshSurroundedCreatureFacing(pet, surrounded.Facing, combatRoom);
+
+            if (LocalContext.GetMe(combatState) == player)
+                NRunMusicController.Instance?.UpdateMusicParameter("kaiser_crab_direction", surrounded.Facing == SurroundedPower.Direction.Left ? 1f : 2f);
+
+            if (changed)
+                UndoDebugLog.Write($"surrounded_facing_visual_normalized player={player.NetId} facing={surrounded.Facing}");
+        }
+    }
+
+    private static bool RefreshSurroundedCreatureFacing(Creature creature, SurroundedPower.Direction facing, NCombatRoom combatRoom)
+    {
+        NCreature? creatureNode = combatRoom.GetCreatureNode(creature);
+        Node2D? body = creatureNode?.Body;
+        if (body == null || !GodotObject.IsInstanceValid(body))
+            return false;
+
+        float x = body.Scale.X;
+        bool shouldFlip = (facing == SurroundedPower.Direction.Right && x < 0f)
+            || (facing == SurroundedPower.Direction.Left && x > 0f);
+        if (!shouldFlip)
+            return false;
+
+        body.Scale *= new Vector2(-1f, 1f);
+        return true;
     }
 
     private static IEnumerable<Node> EnumerateDescendants(Node root)

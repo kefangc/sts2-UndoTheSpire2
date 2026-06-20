@@ -285,6 +285,7 @@ public sealed partial class UndoController
 
             NRelic relic = holder.Relic;
             TextureRect icon = relic.Icon;
+            LogRelicIconDiagnostic(relic, "normalize_before");
             if (IsVisibleDarkColor(icon.Modulate) || IsVisibleDarkColor(icon.SelfModulate))
                 corrected++;
 
@@ -304,6 +305,7 @@ public sealed partial class UndoController
                 icon.SelfModulate = Colors.White;
             InvokePrivateMethod(holder, "RefreshStatus");
             InvokePrivateMethod(holder, "RefreshAmount");
+            LogRelicIconDiagnostic(relic, "normalize_after");
         }
 
         if (corrected > 0)
