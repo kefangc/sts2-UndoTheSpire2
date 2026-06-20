@@ -37,6 +37,8 @@ internal static partial class UndoRuntimeStateCodecRegistry
         new PowerIntFieldsCodec<OutbreakPower>("power:OutbreakPower.timesPoisoned", true, "timesPoisoned"),
         new VitalSparkTriggeredPlayersPowerCodec(),
         new AfterimagePlayedCardsPowerCodec(),
+        new MonologuePlayedCardsPowerCodec(),
+        new MonologueDynamicVarsPowerCodec(),
         new NightmareSelectedCardPowerCodec(),
         new DampenPowerCodec(),
         new RevivePendingPowerCodec(),
