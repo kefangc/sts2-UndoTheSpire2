@@ -329,6 +329,149 @@ internal static partial class UndoRuntimeStateCodecRegistry
         }
     }
 
+    private sealed class MonologuePlayedCardsPowerCodec : UndoPowerRuntimeCodec<UndoCardIntMapRuntimeComplexState>
+    {
+        public override string CodecId => "power:MonologuePower.amountsForPlayedCards";
+
+        public override bool CanHandle(PowerModel power)
+        {
+            return power is MonologuePower;
+        }
+
+        public override UndoCardIntMapRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
+        {
+            object? internalData = GetPowerInternalData(power);
+            if (internalData == null || UndoReflectionUtil.FindField(internalData.GetType(), "amountsForPlayedCards")?.GetValue(internalData) is not Dictionary<CardModel, int> cards)
+                return null;
+
+            return new UndoCardIntMapRuntimeComplexState
+            {
+                CodecId = CodecId,
+                Entries = cards.Select(pair => new UndoCardIntMapEntry
+                {
+                    Card = UndoStableRefs.CaptureCardRef(context.RunState, pair.Key),
+                    Value = pair.Value
+                }).ToList()
+            };
+        }
+
+        public override void Restore(PowerModel power, UndoCardIntMapRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            object? internalData = GetPowerInternalData(power);
+            if (internalData == null || UndoReflectionUtil.FindField(internalData.GetType(), "amountsForPlayedCards")?.GetValue(internalData) is not Dictionary<CardModel, int> cards)
+                return;
+
+            cards.Clear();
+            foreach (UndoCardIntMapEntry entry in state.Entries)
+                cards[UndoStableRefs.ResolveCardRef(context.RunState, entry.Card)] = entry.Value;
+
+            InvokeDisplayAmountChanged(power);
+        }
+    }
+
+    private sealed class MonologueDynamicVarsPowerCodec : UndoPowerRuntimeCodec<UndoNamedDecimalFieldsRuntimeComplexState>
+    {
+        private static readonly string[] DynamicVarKeys = ["Strength", "StrengthApplied"];
+
+        public override string CodecId => "power:MonologuePower.dynamicVars";
+
+        public override bool CanHandle(PowerModel power)
+        {
+            return power is MonologuePower && DynamicVarKeys.Any(key => power.DynamicVars.ContainsKey(key));
+        }
+
+        public override UndoNamedDecimalFieldsRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
+        {
+            List<UndoNamedDecimalRuntimeEntry> entries = [];
+            foreach (string key in DynamicVarKeys)
+            {
+                if (!power.DynamicVars.ContainsKey(key))
+                    continue;
+
+                entries.Add(new UndoNamedDecimalRuntimeEntry
+                {
+                    Name = key,
+                    Value = power.DynamicVars[key].BaseValue
+                });
+            }
+
+            if (entries.Count == 0)
+                return null;
+
+            return new UndoNamedDecimalFieldsRuntimeComplexState
+            {
+                CodecId = CodecId,
+                Entries = entries
+            };
+        }
+
+        public override void Restore(PowerModel power, UndoNamedDecimalFieldsRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            bool restoredAny = false;
+            foreach (UndoNamedDecimalRuntimeEntry entry in state.Entries)
+            {
+                if (!power.DynamicVars.ContainsKey(entry.Name))
+                    continue;
+
+                power.DynamicVars[entry.Name].BaseValue = entry.Value;
+                restoredAny = true;
+            }
+
+            if (restoredAny)
+                InvokeDisplayAmountChanged(power);
+        }
+    }
+
+    private sealed class SlowDynamicVarsPowerCodec : UndoPowerRuntimeCodec<UndoNamedDecimalFieldsRuntimeComplexState>
+    {
+        private const string SlowAmountKey = "SlowAmount";
+
+        public override string CodecId => "power:SlowPower.dynamicVars";
+
+        public override bool CanHandle(PowerModel power)
+        {
+            return power is SlowPower && power.DynamicVars.ContainsKey(SlowAmountKey);
+        }
+
+        public override UndoNamedDecimalFieldsRuntimeComplexState? Capture(PowerModel power, UndoRuntimeCaptureContext context)
+        {
+            if (!power.DynamicVars.ContainsKey(SlowAmountKey))
+                return null;
+
+            return new UndoNamedDecimalFieldsRuntimeComplexState
+            {
+                CodecId = CodecId,
+                Entries =
+                [
+                    new UndoNamedDecimalRuntimeEntry
+                    {
+                        Name = SlowAmountKey,
+                        Value = power.DynamicVars[SlowAmountKey].BaseValue
+                    }
+                ]
+            };
+        }
+
+        public override void Restore(PowerModel power, UndoNamedDecimalFieldsRuntimeComplexState state, UndoRuntimeRestoreContext context)
+        {
+            bool restoredAny = false;
+            foreach (UndoNamedDecimalRuntimeEntry entry in state.Entries)
+            {
+                if (!string.Equals(entry.Name, SlowAmountKey, StringComparison.Ordinal)
+                    || !power.DynamicVars.ContainsKey(entry.Name))
+                {
+                    continue;
+                }
+
+                power.DynamicVars[entry.Name].BaseValue = entry.Value;
+                restoredAny = true;
+            }
+
+            if (restoredAny)
+                InvokeDisplayAmountChanged(power);
+        }
+    }
+
     private sealed class NightmareSelectedCardPowerCodec : UndoPowerRuntimeCodec<UndoDetachedCardRuntimeComplexState>
     {
         public override string CodecId => "power:NightmarePower.selectedCard";

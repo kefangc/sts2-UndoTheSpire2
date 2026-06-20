@@ -166,8 +166,25 @@ public sealed partial class UndoController
         if (runState != null)
             RebuildPotionContainer(runState);
 
+        _ = TaskHelper.RunSafely(GuardCombatIconVisualStateAfterRestoreAsync(combatState));
         NotifyCombatStateChanged("UndoRefreshCombatUiAsync");
         UndoDebugLog.Write($"combat_ui_refresh_perf {UndoPerformanceDiagnostics.FormatDelta(perfBaseline)}");
+    }
+
+    private static async Task GuardCombatIconVisualStateAfterRestoreAsync(CombatState combatState)
+    {
+        for (int frame = 0; frame < 240; frame++)
+        {
+            await WaitOneFrameAsync();
+            if (NCombatRoom.Instance == null)
+                return;
+
+            if (frame < 30 || frame % 15 == 0)
+            {
+                NormalizeCreaturePowerIconVisualStates(combatState, "guard", logDiagnostics: false);
+                NormalizeCurrentRelicInventoryIconVisualState(logDiagnostics: false);
+            }
+        }
     }
 
     private static async Task RefreshCombatUiAfterHandDiscardChoiceAsync(CombatState combatState, bool officialHandChoiceUiSettled)
@@ -382,26 +399,42 @@ public sealed partial class UndoController
 
                 NPower powerNode = NPower.Create(power);
                 powerNode.Container = powerContainer;
+                LogPowerIconDiagnostic(powerNode, "rebuild_before_add");
                 NormalizePowerIconVisualState(powerNode);
                 powerNodes.Add(powerNode);
                 powerContainer.AddChildSafely(powerNode);
+                NormalizePowerIconVisualState(powerNode);
+                LogPowerIconDiagnostic(powerNode, "rebuild_after_add");
             }
 
             InvokePrivateMethod(powerContainer, "UpdatePositions");
         }
     }
 
-    private static void NormalizePowerIconVisualState(NPower powerNode)
+    internal static void NormalizePowerIconVisualState(NPower powerNode)
     {
+        ClearObjectTweenFields(powerNode);
         powerNode.Visible = true;
         powerNode.Modulate = Colors.White;
+        powerNode.SelfModulate = Colors.White;
         if (GetPrivateFieldValue<TextureRect>(powerNode, "_icon") is not { } icon)
             return;
 
         icon.Visible = true;
+        icon.Position = Vector2.Zero;
+        icon.Texture = powerNode.Model.Icon;
         icon.Modulate = Colors.White;
         icon.SelfModulate = Colors.White;
         icon.Scale = Vector2.One;
+
+        if (GetPrivateFieldValue<CpuParticles2D>(powerNode, "_powerFlash") is { } powerFlash)
+        {
+            powerFlash.Texture = powerNode.Model.BigIcon;
+            powerFlash.Emitting = false;
+            powerFlash.Modulate = Colors.White;
+            powerFlash.SelfModulate = Colors.White;
+        }
+
         if (icon.Material is not ShaderMaterial material)
             return;
 
@@ -410,7 +443,7 @@ public sealed partial class UndoController
         icon.Material = materialCopy;
     }
 
-    private static void NormalizeCreaturePowerIconVisualStates(CombatState combatState, string reason)
+    private static void NormalizeCreaturePowerIconVisualStates(CombatState combatState, string reason, bool logDiagnostics = true)
     {
         NCombatRoom? combatRoom = NCombatRoom.Instance;
         if (combatRoom == null)
@@ -433,14 +466,21 @@ public sealed partial class UndoController
             if (powerContainer == null || powerNodes == null)
                 continue;
 
+            if (stateDisplay != null)
+            {
+                ClearTween(stateDisplay, "_hoverTween");
+                SetPrivateFieldValue(stateDisplay, "_hoverTween", null);
+            }
+
             Color containerModulate = powerContainer.Modulate;
-            if (IsVisibleDarkColor(containerModulate))
+            if (IsVisibleDarkColor(containerModulate) || IsVisibleDarkColor(powerContainer.SelfModulate))
                 corrected++;
 
-            powerContainer.Modulate = new Color(1f, 1f, 1f, Math.Max(containerModulate.A, 1f));
+            powerContainer.Modulate = Colors.White;
+            powerContainer.SelfModulate = Colors.White;
             foreach (NPower powerNode in powerNodes.OfType<NPower>())
             {
-                if (IsVisibleDarkColor(powerNode.Modulate))
+                if (IsVisibleDarkColor(powerNode.Modulate) || IsVisibleDarkColor(powerNode.SelfModulate))
                     corrected++;
 
                 if (GetPrivateFieldValue<TextureRect>(powerNode, "_icon") is { } icon
@@ -449,7 +489,11 @@ public sealed partial class UndoController
                     corrected++;
                 }
 
+                if (logDiagnostics)
+                    LogPowerIconDiagnostic(powerNode, $"normalize_{reason}_before");
                 NormalizePowerIconVisualState(powerNode);
+                if (logDiagnostics)
+                    LogPowerIconDiagnostic(powerNode, $"normalize_{reason}_after");
             }
         }
 
@@ -460,6 +504,141 @@ public sealed partial class UndoController
     private static bool IsVisibleDarkColor(Color color)
     {
         return color.A > 0.05f && color.R < 0.2f && color.G < 0.2f && color.B < 0.2f;
+    }
+
+    private static void LogPowerIconDiagnostic(NPower powerNode, string reason)
+    {
+        try
+        {
+            PowerModel model = powerNode.Model;
+            TextureRect? icon = GetPrivateFieldValue<TextureRect>(powerNode, "_icon");
+            CpuParticles2D? powerFlash = GetPrivateFieldValue<CpuParticles2D>(powerNode, "_powerFlash");
+            ShaderMaterial? material = icon?.Material as ShaderMaterial;
+            UndoDebugLog.Write(
+                $"power_icon_diag reason={reason} model={model.Id} nodeReady={powerNode.IsNodeReady()} insideTree={powerNode.IsInsideTree()} "
+                + $"nodeVisible={powerNode.Visible} nodeMod={FormatColorForIconDiagnostic(powerNode.Modulate)} "
+                + $"expectedIconPath={model.IconPath} resolvedBigIconPath={model.ResolvedBigIconPath} "
+                + $"icon={FormatTextureRectForIconDiagnostic(icon)} "
+                + $"flashTexture={FormatTextureForIconDiagnostic(powerFlash?.Texture)} "
+                + $"shader={FormatShaderForIconDiagnostic(material, "pulse")}");
+        }
+        catch (Exception ex)
+        {
+            UndoDebugLog.Write($"power_icon_diag_failed reason={reason} error={ex.GetType().Name}:{ex.Message}");
+        }
+    }
+
+    private static void LogRelicIconDiagnostic(NRelic relic, string reason)
+    {
+        try
+        {
+            TextureRect? icon = relic.Icon;
+            TextureRect? outline = relic.Outline;
+            ShaderMaterial? material = icon?.Material as ShaderMaterial;
+            RelicModel model = relic.Model;
+            UndoDebugLog.Write(
+                $"relic_icon_diag reason={reason} model={model.Id} status={model.Status} melted={model.IsMelted} wax={model.IsWax} "
+                + $"nodeReady={relic.IsNodeReady()} insideTree={relic.IsInsideTree()} expectedIconPath={model.IconPath} "
+                + $"icon={FormatTextureRectForIconDiagnostic(icon)} outline={FormatTextureRectForIconDiagnostic(outline)} "
+                + $"shader={FormatShaderForIconDiagnostic(material, "pulse", "is_used", "is_wax")}");
+        }
+        catch (Exception ex)
+        {
+            UndoDebugLog.Write($"relic_icon_diag_failed reason={reason} error={ex.GetType().Name}:{ex.Message}");
+        }
+    }
+
+    private static string FormatTextureRectForIconDiagnostic(TextureRect? textureRect)
+    {
+        if (textureRect == null)
+            return "null";
+
+        return $"ready={textureRect.IsNodeReady()},visible={textureRect.Visible},mod={FormatColorForIconDiagnostic(textureRect.Modulate)},"
+            + $"self={FormatColorForIconDiagnostic(textureRect.SelfModulate)},scale={FormatVector2ForIconDiagnostic(textureRect.Scale)},"
+            + $"texture={FormatTextureForIconDiagnostic(textureRect.Texture)},material={FormatResourceForIconDiagnostic(textureRect.Material)}";
+    }
+
+    private static string FormatTextureForIconDiagnostic(Texture2D? texture)
+    {
+        if (texture == null)
+            return "null";
+
+        string dimensions = "unknown";
+        try
+        {
+            dimensions = $"{texture.GetWidth()}x{texture.GetHeight()}";
+        }
+        catch
+        {
+        }
+
+        if (texture is AtlasTexture atlasTexture)
+        {
+            return $"{texture.GetType().Name}(path={FormatResourcePathForIconDiagnostic(texture)},size={dimensions},"
+                + $"atlas={FormatResourcePathForIconDiagnostic(atlasTexture.Atlas)},region={FormatRectForIconDiagnostic(atlasTexture.Region)})";
+        }
+
+        return $"{texture.GetType().Name}(path={FormatResourcePathForIconDiagnostic(texture)},size={dimensions})";
+    }
+
+    private static string FormatShaderForIconDiagnostic(ShaderMaterial? material, params string[] parameterNames)
+    {
+        if (material == null)
+            return "null";
+
+        string parameters = string.Join(",", parameterNames.Select(parameterName => $"{parameterName}={FormatShaderParameterForIconDiagnostic(material, parameterName)}"));
+        return $"{FormatResourceForIconDiagnostic(material)}[{parameters}]";
+    }
+
+    private static string FormatShaderParameterForIconDiagnostic(ShaderMaterial material, string parameterName)
+    {
+        try
+        {
+            Variant value = material.GetShaderParameter(parameterName);
+            return value.ToString();
+        }
+        catch (Exception ex)
+        {
+            return $"error:{ex.GetType().Name}";
+        }
+    }
+
+    private static string FormatResourceForIconDiagnostic(Resource? resource)
+    {
+        if (resource == null)
+            return "null";
+
+        return $"{resource.GetType().Name}(path={FormatResourcePathForIconDiagnostic(resource)},valid={GodotObject.IsInstanceValid(resource)})";
+    }
+
+    private static string FormatResourcePathForIconDiagnostic(Resource? resource)
+    {
+        if (resource == null)
+            return "null";
+
+        try
+        {
+            return string.IsNullOrWhiteSpace(resource.ResourcePath) ? "<empty>" : resource.ResourcePath;
+        }
+        catch
+        {
+            return "<unreadable>";
+        }
+    }
+
+    private static string FormatColorForIconDiagnostic(Color color)
+    {
+        return FormattableString.Invariant($"({color.R:0.###},{color.G:0.###},{color.B:0.###},{color.A:0.###})");
+    }
+
+    private static string FormatVector2ForIconDiagnostic(Vector2 vector)
+    {
+        return FormattableString.Invariant($"({vector.X:0.###},{vector.Y:0.###})");
+    }
+
+    private static string FormatRectForIconDiagnostic(Rect2 rect)
+    {
+        return FormattableString.Invariant($"({rect.Position.X:0.###},{rect.Position.Y:0.###},{rect.Size.X:0.###},{rect.Size.Y:0.###})");
     }
 
     private static void RebuildOrbManagerNodes(NOrbManager orbManager, OrbQueue orbQueue)

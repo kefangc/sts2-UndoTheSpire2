@@ -44,5 +44,8 @@ Desktop.ini
 # Local development docs
 doc/
 
+# Steam workshop upload artifacts
+workshop_upload/
+
 # Claude local workspace files
 .claude/

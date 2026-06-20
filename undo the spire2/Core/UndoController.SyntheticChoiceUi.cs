@@ -21,6 +21,7 @@ using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Cards;
 using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Models.Orbs;
 using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
@@ -279,7 +280,8 @@ public sealed partial class UndoController
 
     private static bool ShouldCaptureTransformChoiceVfx(UndoChoiceSpec choiceSpec)
     {
-        return IsSourceChoice(choiceSpec, typeof(EntropyPower));
+        return IsSourceChoice(choiceSpec, typeof(EntropyPower))
+            || IsSourceChoice(choiceSpec, typeof(Charge));
     }
 
     private async Task PlaySyntheticChoiceVfxAsync(SyntheticChoiceVfxRequest request)
@@ -479,6 +481,9 @@ public sealed partial class UndoController
     private static async Task<UndoChoiceResultKey?> ShowSyntheticSimpleGridAsync(UndoChoiceSpec choiceSpec, Player me)
     {
         IReadOnlyList<CardModel> options = choiceSpec.BuildDisplayedOptionCards(me);
+        if (NOverlayStack.Instance?.Peek() is NCardGridSelectionScreen existingScreen)
+            NOverlayStack.Instance.Remove(existingScreen);
+
         NSimpleCardSelectScreen screen = NSimpleCardSelectScreen.Create(options, choiceSpec.SelectionPrefs);
         NOverlayStack.Instance.Push(screen);
         IEnumerable<CardModel> selected = await screen.CardsSelected();

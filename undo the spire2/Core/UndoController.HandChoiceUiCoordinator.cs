@@ -383,7 +383,7 @@ public sealed partial class UndoController
 
     private bool IsUndoSpecificHandChoiceContext()
     {
-        return IsRestoring || _syntheticChoiceSession != null;
+        return _syntheticChoiceSession != null;
     }
 
     private bool ShouldForceCompletePendingHandChoiceUi(NPlayerHand hand, AbstractModel? source)

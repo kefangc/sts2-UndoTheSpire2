@@ -440,17 +440,9 @@ internal static class UndoActionCodecRegistry
         if (NOverlayStack.Instance?.Peek() is not NCardGridSelectionScreen screen)
             return null;
 
-        if (UndoReflectionUtil.FindField(screen.GetType(), "_completionSource")?.GetValue(screen) is not TaskCompletionSource<IEnumerable<CardModel>> completionSource)
-            return null;
-
-        Task<IEnumerable<CardModel>> task = completionSource.Task;
-        if (task.IsCompleted)
-        {
-            NOverlayStack.Instance?.Remove(screen);
-            return null;
-        }
-
-        return task;
+        NOverlayStack.Instance?.Remove(screen);
+        UndoDebugLog.Write("simple_grid_choice_restore_removed_existing_overlay");
+        return null;
     }
 
     private static int IndexOfReference(IReadOnlyList<CardModel> cards, CardModel target)
